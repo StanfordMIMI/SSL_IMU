@@ -49,9 +49,9 @@ class SslTestNet(nn.Module):
         super(SslTestNet, self).__init__()
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
-        # emb_output_dim = embnet_imu.output_dim
-        self.linear_proj_imu = nn.Linear(9600, common_space_dim)
-        self.linear_proj_emg = nn.Linear(9600, common_space_dim)        # 9600
+        emb_output_dim = embnet_imu.output_dim * 300
+        self.linear_proj_imu = nn.Linear(emb_output_dim, common_space_dim)
+        self.linear_proj_emg = nn.Linear(emb_output_dim, common_space_dim)        # 9600
         self.net_name = 'Combined Net'
 
     def __str__(self):
@@ -94,7 +94,7 @@ class LinearTestNet(nn.Module):
     def forward(self, x_imu, x_emg, lens):
         seq_imu, _ = self.embnet_imu(x_imu, lens)
         seq_emg, _ = self.embnet_emg(x_emg, lens)
-        seq_combined = torch.cat([seq_imu, seq_emg], dim=2)         # !!!
+        seq_combined = torch.cat([seq_imu, seq_imu], dim=2)         # !!!
         output = self.linear(seq_combined)
         return output
 
@@ -105,6 +105,7 @@ class ImuTestRnnEmbedding(nn.Module):
         self.net_name = net_name
         self.rnn_layer = nn.LSTM(x_dim, output_dim, nlayer, bidirectional=True)
         self.output_dim = output_dim * 2
+        self.ratio_to_base_fre = 1
         for name, param in self.rnn_layer.named_parameters():
             if 'weight' in name:
                 nn.init.xavier_normal_(param)
@@ -115,6 +116,7 @@ class ImuTestRnnEmbedding(nn.Module):
     def forward(self, sequence, lens):      # TODO: use a transformer to replace this
         sequence = sequence.transpose(0, 1)
         total_len = sequence.shape[0]
+        lens = lens * self.ratio_to_base_fre
         sequence = pack_padded_sequence(sequence, lens, enforce_sorted=False)
         sequence, (emb, _) = self.rnn_layer(sequence)
         sequence, _ = pad_packed_sequence(sequence, total_length=total_len)
@@ -134,6 +136,7 @@ class EmgTestRnnEmbedding(ImuTestRnnEmbedding):
     def __init__(self, *args, **kwargs):
         super(EmgTestRnnEmbedding, self).__init__(*args, **kwargs)
         self.pooling = nn.AvgPool1d(5, 5)
+        self.ratio_to_base_fre = 5
 
     def down_sampling_via_pooling(self, sequence):
         sequence = sequence.transpose(0, 2)

@@ -75,11 +75,11 @@ class FrameworkSSL:
         test_data = get_data_by_merging_data_struct([self.data[id] for id in test_sub_ids])
         test_data = self.preprocess_data(test_data, 'transform')
 
-        # y_pred, model = self.linear_regressibility(train_data, test_data)
-        # # self.save_model_and_results(test_data['y'], y_pred, OUTPUT_LIST, model, test_sub_ids)
+        y_pred, model = self.linear_regressibility(train_data, test_data)
+        # self.save_model_and_results(test_data['y'], y_pred, OUTPUT_LIST, model, test_sub_ids)
 
         self.reset_emb_net_to_init_state()
-        # model = self.ssl_training(train_data, vali_data)
+        model = self.ssl_training(train_data, vali_data)
         y_pred, model = self.linear_regressibility(train_data, test_data)
 
         plt.show()
@@ -157,7 +157,7 @@ class FrameworkSSL:
 
         if self.config.device is 'cuda':
             model.cuda()
-        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_linear)      # !!! model.linear.parameters
+        optimizer = torch.optim.Adam(model.linear.parameters(), lr=self.config.lr_linear)      # !!! model.linear.parameters
 
         logging.info('\tEpoch | Train_set_Loss | Test_set_Loss | Duration\t\t')
         epoch_end_time = time.time()
@@ -249,7 +249,7 @@ class FrameworkSSL:
             model.cuda()
 
         train_dl, vali_dl = prepare_data(train_step_lens, vali_step_lens, int(self.config.batch_size))
-        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_ssl, betas=(0.99, 0.9999))
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_ssl)
         logging.info('\tEpoch | Validation_set_Loss | Duration\t\t')
         epoch_end_time = time.time()
         dtype = self.config.dtype
@@ -259,7 +259,6 @@ class FrameworkSSL:
             epoch_end_time = time.time()
             train(model, train_dl, optimizer, self.config.loss_fn, self.config.use_ratio)
 
-        plt.show()
         return {'model': model}
 
     def save_model_and_results(self, ):
@@ -586,7 +585,7 @@ EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastu
             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']     # , 'rightexternaloblique'
 OUTPUT_LIST = ['ankle_angle_r']
 SAMPLES_BEFORE_STRIKE, SAMPLES_AFTER_OFF = 0, 0
-config = {'epoch': 20, 'batch_size': 16, 'lr_ssl': 1e-2, 'lr_linear': 1e-3, 'use_ratio': 100, 'emb_output_dim': 32, 'common_space_dim': 128,
+config = {'epoch': 6, 'batch_size': 16, 'lr_ssl': 1e-2, 'lr_linear': 1e-3, 'use_ratio': 100, 'emb_output_dim': 32, 'common_space_dim': 128,
           'device': 'cuda', 'dtype': torch.FloatTensor, 'loss_fn': nce_loss, 'max_trial_num': 2}
 if config['device'] is 'cuda':
     config['dtype'] = torch.cuda.FloatTensor
@@ -595,7 +594,7 @@ if config['device'] is 'cuda':
 if __name__ == '__main__':
     # logging.info("Current commit is {}".format(execute_cmd("git rev-parse HEAD")))
     data_reader = DatasetLoader(['AB25', 'AB27', 'AB28', 'AB30'])
-    ssl_framework = FrameworkSSL(data_reader, ImuTestRnnEmbedding, EmgTestRnnEmbedding, config)
+    ssl_framework = FrameworkSSL(data_reader, ImuTestTransformerEmbedding, EmgTestTransformerEmbedding, config)
     ssl_framework.preprocess_train_evaluation(['AB27', 'AB28', 'AB30'], ['AB25'], ['AB25'])
 
 
