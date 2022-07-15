@@ -18,7 +18,8 @@ def nce_loss(emb1, emb2):
     temperature = 0.1       # TODO: optimize this
 
     def _calculate_similarity(emb1, emb2):
-        emb1 = F.normalize(emb1, p=2, dim=-1)        # TODO: try if removing this could lead to better results
+        # make each vector unit length
+        emb1 = F.normalize(emb1, p=2, dim=-1)
         emb2 = F.normalize(emb2, p=2, dim=-1)
 
         # Similarities [B_1, B_2*L].
@@ -49,9 +50,12 @@ class SslTestNet(nn.Module):
         super(SslTestNet, self).__init__()
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
-        emb_output_dim = embnet_imu.output_dim * 300
-        self.linear_proj_imu = nn.Linear(emb_output_dim, common_space_dim)
-        self.linear_proj_emg = nn.Linear(emb_output_dim, common_space_dim)        # 9600
+        self.interpo_len = 50
+        emb_output_dim = embnet_imu.output_dim * self.interpo_len
+        self.linear_proj_imu = nn.Linear(emb_output_dim, common_space_dim, bias=False)
+        self.linear_proj_emg = nn.Linear(emb_output_dim, common_space_dim, bias=False)
+        self.bn_proj_imu = nn.BatchNorm1d(common_space_dim)
+        self.bn_proj_emg = nn.BatchNorm1d(common_space_dim)
         self.net_name = 'Combined Net'
 
     def __str__(self):
@@ -64,23 +68,21 @@ class SslTestNet(nn.Module):
         def interpo_data(tensor):
             for i_step in range(tensor.shape[0]):
                 tensor = tensor.transpose(1, 2)
-                tensor[i_step:i_step+1, :, :new_seq_len] = F.interpolate(
-                    tensor[i_step:i_step+1, :, :int(lens[i_step])], new_seq_len, mode='linear', align_corners=False)
+                tensor[i_step:i_step+1, :, :self.interpo_len] = F.interpolate(
+                    tensor[i_step:i_step+1, :, :int(lens[i_step])], self.interpo_len, mode='linear', align_corners=True)
                 tensor = tensor.transpose(1, 2)
-            return tensor[:, :new_seq_len, :]
+            return tensor[:, :self.interpo_len, :]
 
         seq_imu, _ = self.embnet_imu(x_imu, lens)
         seq_emg, _ = self.embnet_emg(x_emg, lens)
-        new_seq_len = 150
         seq_imu = interpo_data(seq_imu)
         seq_emg = interpo_data(seq_emg)
 
-        # temp_imu = seq_imu          # !!!
         seq_imu = torch.flatten(seq_imu, start_dim=1)
         seq_emg = torch.flatten(seq_emg, start_dim=1)
-        seq_imu = self.linear_proj_imu(seq_imu)
-        seq_emg = self.linear_proj_imu(seq_emg)
-        return seq_imu, seq_emg, None          # !!!
+        seq_imu = self.bn_proj_imu(self.linear_proj_imu(seq_imu))
+        seq_emg = self.bn_proj_emg(self.linear_proj_emg(seq_emg))
+        return seq_imu, seq_emg
 
 
 class LinearTestNet(nn.Module):
@@ -89,22 +91,24 @@ class LinearTestNet(nn.Module):
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
         emb_output_dim = embnet_imu.output_dim
-        self.linear = nn.Linear(emb_output_dim * 2, output_dim)
+        self.linear = nn.Linear(emb_output_dim * 2, output_dim, bias=False)
 
     def forward(self, x_imu, x_emg, lens):
         seq_imu, _ = self.embnet_imu(x_imu, lens)
         seq_emg, _ = self.embnet_emg(x_emg, lens)
-        seq_combined = torch.cat([seq_imu, seq_imu], dim=2)         # !!!
+        seq_combined = torch.cat([seq_imu, seq_emg], dim=2)
         output = self.linear(seq_combined)
         return output
 
 
 class ImuTestRnnEmbedding(nn.Module):
-    def __init__(self, x_dim, output_dim, net_name, nlayer=1):
+    def __init__(self, x_dim, output_dim, net_name, nlayer=2, linear_dim=64):
         super(ImuTestRnnEmbedding, self).__init__()
         self.net_name = net_name
-        self.rnn_layer = nn.LSTM(x_dim, output_dim, nlayer, bidirectional=True)
-        self.output_dim = output_dim * 2
+        self.rnn_layer = nn.LSTM(x_dim, linear_dim, nlayer, bidirectional=True, bias=True)
+        self.linear = nn.Linear(linear_dim*2, output_dim)
+        self.bn = nn.BatchNorm1d(output_dim)
+        self.output_dim = output_dim
         self.ratio_to_base_fre = 1
         for name, param in self.rnn_layer.named_parameters():
             if 'weight' in name:
@@ -121,10 +125,13 @@ class ImuTestRnnEmbedding(nn.Module):
         sequence, (emb, _) = self.rnn_layer(sequence)
         sequence, _ = pad_packed_sequence(sequence, total_length=total_len)
         sequence = self.down_sampling_via_pooling(sequence)
+        sequence = F.relu(self.linear(sequence))
+        sequence = sequence.transpose(0, 1).transpose(1, 2)
+        sequence = self.bn(sequence)
+        sequence = sequence.transpose(1, 2)
         emb = emb[-2:]
         emb = emb.transpose(0, 1)
         emb = torch.flatten(emb, start_dim=1)
-        sequence = sequence.transpose(0, 1)
         emb = emb.transpose(0, 1)
         return sequence, emb
 
@@ -173,6 +180,7 @@ class ImuTestTransformerEmbedding(nn.Module):
         self.d_model = d_model
         self.output_dim = output_dim
         self.linear = nn.Linear(d_model, output_dim)
+        self.bn = nn.BatchNorm1d(output_dim)
         self.device = device
 
     def forward(self, sequence, lens):
@@ -188,14 +196,12 @@ class ImuTestTransformerEmbedding(nn.Module):
         src = self.pos_encoder(sequence)
         msk = self.generate_padding_mask(lens, sequence.shape[0])
         output = self.transformer_encoder(src, src_key_padding_mask=msk)
-        output = self.linear(output)
         output = self.down_sampling_via_pooling(output)
-        output = output.transpose(0, 1)
+        output = F.relu(self.linear(output))
+        output = output.transpose(0, 1).transpose(1, 2)
+        output = self.bn(output)
+        output = output.transpose(1, 2)
         return output, None
-
-    # def generate_square_subsequent_mask(self, sz):
-    #     """Generates an upper-triangular matrix of -inf, with zeros on diag."""
-    #     self.src_mask = torch.triu(torch.ones(sz, sz) * float('-inf'), diagonal=1)
 
     def generate_padding_mask(self, lens, seq_len):
         msk = np.ones([len(lens), seq_len], dtype=bool)

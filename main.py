@@ -18,7 +18,7 @@ import time
 from types import SimpleNamespace
 import prettytable as pt
 from utils import get_data_by_merging_data_struct, fix_seed, DataStruct, data_filter
-from const import IMU_SEGMENT_LIST, DATA_PATH, AMBULATIONS, GRAVITY
+from const import IMU_SEGMENT_LIST, DATA_PATH, AMBULATIONS, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE
 from scipy.signal import find_peaks
 
 
@@ -62,21 +62,21 @@ class FrameworkSSL:
         validate_sub_ids: a list of subject id for model validation
         test_sub_ids: a list of subject id for model testing
         """
-        logging.info('Train the model with subject ids: {}'.format(train_sub_ids))
         train_data = get_data_by_merging_data_struct([self.data[id] for id in train_sub_ids])
         train_data = self.preprocess_data(train_data, 'fit_transform')
         train_data['IMU'], train_data['EMG'] = self.unison_shuffled_copies(train_data['IMU'], train_data['EMG'])
+        logging.info('Train the model with subject ids: {}. Number of steps: {}'.format(train_sub_ids, train_data['IMU'].shape[0]))
 
-        logging.info('Validate the model with subject ids: {}'.format(validate_sub_ids))
         vali_data = get_data_by_merging_data_struct([self.data[id] for id in validate_sub_ids])
         vali_data = self.preprocess_data(vali_data, 'transform')
+        logging.info('Validate the model with subject ids: {}. Number of steps: {}'.format(validate_sub_ids, vali_data['IMU'].shape[0]))
 
-        logging.info('Test the model with subject ids: {}'.format(test_sub_ids))
         test_data = get_data_by_merging_data_struct([self.data[id] for id in test_sub_ids])
         test_data = self.preprocess_data(test_data, 'transform')
+        logging.info('Test the model with subject ids: {}. Number of steps: {}'.format(test_sub_ids, test_data['IMU'].shape[0]))
 
-        y_pred, model = self.linear_regressibility(train_data, test_data)
-        # self.save_model_and_results(test_data['y'], y_pred, OUTPUT_LIST, model, test_sub_ids)
+        # y_pred, model = self.linear_regressibility(train_data, test_data)
+        # # self.save_model_and_results(test_data['y'], y_pred, OUTPUT_LIST, model, test_sub_ids)
 
         self.reset_emb_net_to_init_state()
         model = self.ssl_training(train_data, vali_data)
@@ -177,9 +177,14 @@ class FrameworkSSL:
                 plt.plot(test_data['y'].ravel())
                 plt.plot(torch.cat(y_pred_test).numpy().ravel())
 
-            # plt.figure()
-            # plt.plot(torch.cat(y_pred_test)[:, 0], test_data['y'][:, 0], '.', color='b')
-            # print(model.embnet_imu.conv_1.weight[0])
+
+            # print('LSTM imu weight: {:.3f} ({:.3f}); LSTM emg weight: {:.3f} ({:.3f}); LSTM imu bias: {:.3f} ({:.3f}); LSTM emg bias: {:.3f} ({:.3f});'.format(
+            #     *[fun(x.cpu().detach().numpy())
+            #       for x in [
+            #           model.embnet_imu.rnn_layer.weight_hh_l0, model.embnet_emg.rnn_layer.weight_hh_l0,
+            #           model.embnet_imu.rnn_layer.bias_hh_l0, model.embnet_emg.rnn_layer.bias_hh_l0]
+            #       for fun in [lambda x: np.mean(abs(x)), np.std]]))
+
 
             logging.info("\t{:3}\t{:12.3f}\t{:12.3f}\t{:13.2f}s\t\t".format(i_epoch, train_loss, test_loss, time.time() - epoch_end_time))
             epoch_end_time = time.time()
@@ -190,8 +195,6 @@ class FrameworkSSL:
         all_scores = FrameworkSSL.get_peak_scores(test_data['y'], y_pred, OUTPUT_LIST, test_step_lens)
         all_scores = [{'subject': 'all', **scores} for scores in all_scores]
         self.print_table(all_scores)
-
-        # print(np.concatenate([test_data['y'], y_pred], axis=1)[:20])
 
         return y_pred, model
 
@@ -220,14 +223,9 @@ class FrameworkSSL:
                 xb_imu = x[0].float().type(dtype)
                 xb_emg = x[1].float().type(dtype)
                 lens = x[2].float()
-                emb_imu, emb_emg, temp = model(xb_imu, xb_emg, lens)
+                emb_imu, emb_emg = model(xb_imu, xb_emg, lens)
                 loss_fn(emb_imu, emb_emg).backward()
                 optimizer.step()
-
-                # # FOR DEBUG
-                # if i_batch == 0:
-                #     plt.figure()
-                #     plt.plot(temp[0, :, :3].cpu().detach().numpy())
 
         def eval_during_training(model, dl, loss_fn):
             model.eval()
@@ -237,7 +235,7 @@ class FrameworkSSL:
                     xb_imu = x[0].float().type(dtype)
                     xb_emg = x[1].float().type(dtype)
                     lens = x[2].float()
-                    emb_imu, emb_emg, _ = model(xb_imu, xb_emg, lens)       # !!!
+                    emb_imu, emb_emg = model(xb_imu, xb_emg, lens)
                     validation_loss.append(loss_fn(emb_imu, emb_emg).item())
             return np.mean(validation_loss)
 
@@ -249,7 +247,7 @@ class FrameworkSSL:
             model.cuda()
 
         train_dl, vali_dl = prepare_data(train_step_lens, vali_step_lens, int(self.config.batch_size))
-        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_ssl)
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_ssl, weight_decay=1e-4)
         logging.info('\tEpoch | Validation_set_Loss | Duration\t\t')
         epoch_end_time = time.time()
         dtype = self.config.dtype
@@ -257,6 +255,14 @@ class FrameworkSSL:
             vali_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
             logging.info("\t{:3}\t{:15.3f}\t{:13.2f}s\t\t".format(i_epoch, vali_loss, time.time() - epoch_end_time))
             epoch_end_time = time.time()
+
+            # print('Linear imu weight: {:.3f} ({:.3f}); Linear emg weight: {:.3f} ({:.3f}); LSTM imu weight: {:.3f} ({:.3f}); LSTM emg weight: {:.3f} ({:.3f});'.format(
+            #     *[fun(x.cpu().detach().numpy())
+            #       for x in [
+            #         model.linear_proj_imu.weight, model.linear_proj_emg.weight,
+            #         model.embnet_imu.rnn_layer.weight_hh_l0, model.embnet_emg.rnn_layer.weight_hh_l0]
+            #       for fun in [lambda x: np.mean(abs(x)), np.std]]))
+
             train(model, train_dl, optimizer, self.config.loss_fn, self.config.use_ratio)
 
         return {'model': model}
@@ -295,12 +301,6 @@ class FrameworkSSL:
         # data['y'] = self.normalize_data(data['y'], 'y', method, 'by_each_column')
         data['y'] = self.normalize_data(data['y'], 'y', method, 'by_each_column')
 
-        # For DEBUG
-        # plt.figure()
-        # [plt.plot(data['IMU'][i, :, 0]) for i in range(data['IMU'].shape[0])]
-        # plt.figure()
-        # [plt.plot(data['EMG'][i, :, 0]) for i in range(data['EMG'].shape[0])]
-        # plt.show()
         return data
 
     @staticmethod
@@ -375,7 +375,7 @@ class FrameworkSSL:
 
 class DatasetLoader:
     def __init__(self, subject_list):
-        self.sample_rate = 200
+        self.sample_rate = IMU_SAMPLE_RATE
         self.step_len_max, self.step_len_min = int(1.5*self.sample_rate), int(0.3*self.sample_rate)
         self.columns = self.load_columns()
         self.input_col_imu = IMU_LIST
@@ -391,9 +391,12 @@ class DatasetLoader:
                 data_trials = {}
                 [data_trials.update({trial: [trial_data['data_200'][:], trial_data['data_1000'][:]]})
                  for trial, trial_data in hf.items() if len(data_trials.keys()) < config['max_trial_num']]
-                # if config['trial_num'] is 'all':
-                #     data_trials = {trial: [trial_data['data_200'][:], trial_data['data_1000'][:]]
-                #                    for trial, trial_data in hf.items() if i_trial < config['trial_num']}
+
+                for trial, trial_data in data_trials.items():
+                    condition = trial.split('_')[0]
+                    input_col_loc_emg = [self.columns[condition]['1000'].index(x) for x in EMG_LIST]
+                    emg_data = trial_data[1][:, input_col_loc_emg]
+                    trial_data[1][:, input_col_loc_emg] = data_filter(np.abs(emg_data), 20, EMG_SAMPLE_RATE)
             self.data_contin[subject] = data_trials
         self.trials = list(data_trials.keys())
 
@@ -452,7 +455,7 @@ class DatasetLoader:
         gyr_all = np.deg2rad(data_df[['gyr_x', 'gyr_y', 'gyr_z']])
         gyr_magnitude = np.linalg.norm(gyr_all, axis=1)
 
-        imu_sample_rate = 100
+        imu_sample_rate = IMU_SAMPLE_RATE
         stance_phase_sample_thd_lower = 0.3 * imu_sample_rate
         stance_phase_sample_thd_higher = 1 * imu_sample_rate
         data_len = data_df.shape[0]
@@ -585,8 +588,8 @@ EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastu
             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']     # , 'rightexternaloblique'
 OUTPUT_LIST = ['ankle_angle_r']
 SAMPLES_BEFORE_STRIKE, SAMPLES_AFTER_OFF = 0, 0
-config = {'epoch': 6, 'batch_size': 16, 'lr_ssl': 1e-2, 'lr_linear': 1e-3, 'use_ratio': 100, 'emb_output_dim': 32, 'common_space_dim': 128,
-          'device': 'cuda', 'dtype': torch.FloatTensor, 'loss_fn': nce_loss, 'max_trial_num': 2}
+config = {'epoch': 10, 'batch_size': 32, 'lr_ssl': 1e-2, 'lr_linear': 1e-2, 'use_ratio': 100, 'emb_output_dim': 32, 'common_space_dim': 128,
+          'device': 'cuda', 'dtype': torch.FloatTensor, 'loss_fn': nce_loss, 'max_trial_num': 40}
 if config['device'] is 'cuda':
     config['dtype'] = torch.cuda.FloatTensor
 
@@ -594,7 +597,7 @@ if config['device'] is 'cuda':
 if __name__ == '__main__':
     # logging.info("Current commit is {}".format(execute_cmd("git rev-parse HEAD")))
     data_reader = DatasetLoader(['AB25', 'AB27', 'AB28', 'AB30'])
-    ssl_framework = FrameworkSSL(data_reader, ImuTestTransformerEmbedding, EmgTestTransformerEmbedding, config)
+    ssl_framework = FrameworkSSL(data_reader, ImuTestRnnEmbedding, EmgTestRnnEmbedding, config)     # ImuTestTransformerEmbedding, EmgTestTransformerEmbedding
     ssl_framework.preprocess_train_evaluation(['AB27', 'AB28', 'AB30'], ['AB25'], ['AB25'])
 
 

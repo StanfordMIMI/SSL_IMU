@@ -8,3 +8,5 @@ IMU_SEGMENT_LIST = ['foot', 'shank', 'thigh', 'trunk']
 
 GRAVITY = 9.81
 STEP_TYPES = STANCE, STANCE_SWING = range(2)
+IMU_SAMPLE_RATE = 200
+EMG_SAMPLE_RATE = 1000
