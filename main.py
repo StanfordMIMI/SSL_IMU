@@ -11,9 +11,11 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import ast
 from sklearn.metrics import r2_score, mean_squared_error as mse
 import torch
+from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
+from ignite.handlers.param_scheduler import create_lr_scheduler_with_warmup
 from torch.utils.data import DataLoader, TensorDataset
-from model import nce_loss, ImuTestTransformerEmbedding, \
-    LinearTestNet, ImuTestRnnEmbedding, EmgTestRnnEmbedding, SslTestNet, EmgTestTransformerEmbedding
+from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, EmgFcnnEmbedding, \
+    LinearTestNet, ImuRnnEmbedding, EmgRnnEmbedding, SslNet, EmgTransformerEmbedding
 import time
 from types import SimpleNamespace
 import prettytable as pt
@@ -75,8 +77,8 @@ class FrameworkSSL:
         test_data = self.preprocess_data(test_data, 'transform')
         logging.info('Test the model with subject ids: {}. Number of steps: {}'.format(test_sub_ids, test_data['IMU'].shape[0]))
 
-        # y_pred, model = self.linear_regressibility(train_data, test_data)
-        # # self.save_model_and_results(test_data['y'], y_pred, OUTPUT_LIST, model, test_sub_ids)
+        y_pred, model = self.linear_regressibility(train_data, test_data)
+        # self.save_model_and_results(test_data['y'], y_pred, OUTPUT_LIST, model, test_sub_ids)
 
         self.reset_emb_net_to_init_state()
         model = self.ssl_training(train_data, vali_data)
@@ -101,7 +103,7 @@ class FrameworkSSL:
             y_true = torch.from_numpy(data['y']).float()
             step_lens = torch.from_numpy(step_lens)
             ds = TensorDataset(x_imu, x_emg, step_lens, y_true)
-            dl = DataLoader(ds, batch_size=batch_size)
+            dl = DataLoader(ds, batch_size=batch_size, shuffle=True)
             return dl
 
         def convert_batch_data(batch_data):
@@ -157,16 +159,16 @@ class FrameworkSSL:
 
         if self.config.device is 'cuda':
             model.cuda()
-        optimizer = torch.optim.Adam(model.linear.parameters(), lr=self.config.lr_linear)      # !!! model.linear.parameters
+        optimizer = torch.optim.Adam(model.linear.parameters(), lr=self.config.lr_linear, weight_decay=1e-5)      # !!! model.linear.parameters
 
         logging.info('\tEpoch | Train_set_Loss | Test_set_Loss | Duration\t\t')
         epoch_end_time = time.time()
         dtype = self.config.dtype
-        for i_epoch in range(self.config.epoch):
+        for i_epoch in range(self.config.epoch_linear):
             test_loss, y_pred_test = eval_during_training(model, test_dl, torch.nn.MSELoss(), 100)
             train_loss, y_pred_train = eval_during_training(model, train_dl, torch.nn.MSELoss(), 100)
 
-            if i_epoch in [self.config.epoch-1]:
+            if i_epoch in [self.config.epoch_linear-1]:
                 plt.figure()
                 plt.title('Train')
                 plt.plot(train_data['y'].ravel())
@@ -176,7 +178,6 @@ class FrameworkSSL:
                 plt.title('Test')
                 plt.plot(test_data['y'].ravel())
                 plt.plot(torch.cat(y_pred_test).numpy().ravel())
-
 
             # print('LSTM imu weight: {:.3f} ({:.3f}); LSTM emg weight: {:.3f} ({:.3f}); LSTM imu bias: {:.3f} ({:.3f}); LSTM emg bias: {:.3f} ({:.3f});'.format(
             #     *[fun(x.cpu().detach().numpy())
@@ -204,7 +205,7 @@ class FrameworkSSL:
             x_train_emg = torch.from_numpy(train_data['EMG']).float()
             train_step_lens = torch.from_numpy(train_step_lens)
             train_ds = TensorDataset(x_train_imu, x_train_emg, train_step_lens)
-            train_dl = DataLoader(train_ds, batch_size=batch_size)
+            train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
 
             x_vali_imu = torch.from_numpy(vali_data['IMU']).float()
             x_vali_emg = torch.from_numpy(vali_data['EMG']).float()
@@ -242,16 +243,19 @@ class FrameworkSSL:
         train_step_lens = self._get_step_len(train_data['IMU'])
         vali_step_lens = self._get_step_len(vali_data['IMU'])
 
-        model = SslTestNet(self.emb_net_imu, self.emb_net_emg, self.config.common_space_dim)
+        model = SslNet(self.emb_net_imu, self.emb_net_emg, self.config.common_space_dim)
         if self.config.device is 'cuda':
             model.cuda()
 
         train_dl, vali_dl = prepare_data(train_step_lens, vali_step_lens, int(self.config.batch_size))
-        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_ssl, weight_decay=1e-4)
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_ssl, weight_decay=1e-5)
+
+        # scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_ssl/4))
+
         logging.info('\tEpoch | Validation_set_Loss | Duration\t\t')
         epoch_end_time = time.time()
         dtype = self.config.dtype
-        for i_epoch in range(self.config.epoch):
+        for i_epoch in range(self.config.epoch_ssl):
             vali_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
             logging.info("\t{:3}\t{:15.3f}\t{:13.2f}s\t\t".format(i_epoch, vali_loss, time.time() - epoch_end_time))
             epoch_end_time = time.time()
@@ -264,6 +268,7 @@ class FrameworkSSL:
             #       for fun in [lambda x: np.mean(abs(x)), np.std]]))
 
             train(model, train_dl, optimizer, self.config.loss_fn, self.config.use_ratio)
+            # scheduler.step()
 
         return {'model': model}
 
@@ -288,19 +293,23 @@ class FrameworkSSL:
         return scaled_data
 
     def preprocess_data(self, data, method):        # TODO: Try by_each_column
-        data['IMU'][:, :, self.data_reader.input_col_loc_acc] = self.normalize_data(
-            data['IMU'][:, :, self.data_reader.input_col_loc_acc], 'acc', method, 'by_all_columns')
-        data['IMU'][:, :, self.data_reader.input_col_loc_gyr] = self.normalize_data(
-            data['IMU'][:, :, self.data_reader.input_col_loc_gyr], 'gyr', method, 'by_all_columns')
+        if len(self.data_reader.input_col_loc_acc):
+            data['IMU'][:, :, self.data_reader.input_col_loc_acc] = self.normalize_data(
+                data['IMU'][:, :, self.data_reader.input_col_loc_acc], 'acc', method, 'by_all_columns')
+        if len(self.data_reader.input_col_loc_gyr):
+            data['IMU'][:, :, self.data_reader.input_col_loc_gyr] = self.normalize_data(
+                data['IMU'][:, :, self.data_reader.input_col_loc_gyr], 'gyr', method, 'by_all_columns')
         data['EMG'] = self.normalize_data(data['EMG'], 'EMG', method, 'by_all_columns')
 
         # data['y'][:, :, 0] = -data['y'][:, :, 0]
         # data['y'][(data['y'] == 0.).all(axis=2), :] = np.nan
         # data['y'] = np.nanmax(data['y'], axis=1)
         # data['y'][np.isnan(data['y'])] = 0.
-        # data['y'] = self.normalize_data(data['y'], 'y', method, 'by_each_column')
         data['y'] = self.normalize_data(data['y'], 'y', method, 'by_each_column')
-
+        from model import interpo_data, interpo_len
+        step_lens = self._get_step_len(data['IMU'])
+        y_tensor = interpo_data(torch.from_numpy(data['y']), interpo_len, step_lens)
+        data['y'] = y_tensor.numpy()
         return data
 
     @staticmethod
@@ -376,7 +385,7 @@ class FrameworkSSL:
 class DatasetLoader:
     def __init__(self, subject_list):
         self.sample_rate = IMU_SAMPLE_RATE
-        self.step_len_max, self.step_len_min = int(1.5*self.sample_rate), int(0.3*self.sample_rate)
+        self.step_len_max, self.step_len_min = int(1.5*self.sample_rate), int(0.2*self.sample_rate)
         self.columns = self.load_columns()
         self.input_col_imu = IMU_LIST
         self.input_col_emg = EMG_LIST
@@ -437,13 +446,16 @@ class DatasetLoader:
     @staticmethod
     def strike_off_to_step_and_remove_incorrect_step(strike_list, off_list, step_len_max, step_len_min):
         steps_200 = []
-        strike_np, off_np = np.array(strike_list), np.array(off_list)
-        for i_strike in range(len(strike_np)):
-            potential_offs = off_np[strike_np[i_strike] + step_len_min < off_np]
-            potential_offs = potential_offs[potential_offs < strike_np[i_strike] + step_len_max - SAMPLES_BEFORE_STRIKE - SAMPLES_AFTER_OFF]
-            if len(potential_offs) > 0:
-                if i_strike != len(strike_np) - 1 and potential_offs[0] < strike_list[i_strike+1]:
-                    steps_200.append([strike_np[i_strike] - SAMPLES_BEFORE_STRIKE, potential_offs[0] + SAMPLES_AFTER_OFF])
+        if config['from_strike_to_off']:
+            event_1, event_2 = np.array(strike_list), np.array(off_list)
+        else:
+            event_2, event_1 = np.array(strike_list), np.array(off_list)
+        for i_event_1 in range(len(event_1)):
+            potential_event_2 = event_2[event_1[i_event_1] + step_len_min < event_2]
+            potential_event_2 = potential_event_2[potential_event_2 < event_1[i_event_1] + step_len_max - SAMPLES_BEFORE_STEP - SAMPLES_AFTER_STEP]
+            if len(potential_event_2) > 0:
+                if i_event_1 != len(event_1) - 1 and potential_event_2[0] < event_1[i_event_1+1]:
+                    steps_200.append([event_1[i_event_1] - SAMPLES_BEFORE_STEP, potential_event_2[0] + SAMPLES_AFTER_STEP])
         steps_1000 = [[5 * step[0], 5 * step[1]] for step in steps_200]
         return steps_200, steps_1000
 
@@ -583,22 +595,24 @@ class DatasetLoader:
         return peaks[max_index]
 
 
-IMU_LIST = [segment + sensor + axis for segment in IMU_SEGMENT_LIST for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']]
-EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
-            'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']     # , 'rightexternaloblique'
-OUTPUT_LIST = ['ankle_angle_r']
-SAMPLES_BEFORE_STRIKE, SAMPLES_AFTER_OFF = 0, 0
-config = {'epoch': 10, 'batch_size': 32, 'lr_ssl': 1e-2, 'lr_linear': 1e-2, 'use_ratio': 100, 'emb_output_dim': 32, 'common_space_dim': 128,
-          'device': 'cuda', 'dtype': torch.FloatTensor, 'loss_fn': nce_loss, 'max_trial_num': 40}
+IMU_LIST = [segment + sensor + axis for segment in ['foot'] for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']]
+EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus']
+# EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
+#             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
+OUTPUT_LIST = ['knee_angle_r']
+SAMPLES_BEFORE_STEP, SAMPLES_AFTER_STEP = 0, 0
+config = {'epoch_ssl': 60, 'epoch_linear': 30, 'batch_size': 128, 'lr_ssl': 3e-3, 'lr_linear': 3e-4, 'use_ratio': 100,         # !!!
+          'emb_output_dim': 32, 'common_space_dim': 128, 'device': 'cuda', 'dtype': torch.FloatTensor,
+          'from_strike_to_off': False, 'loss_fn': nce_loss, 'max_trial_num': 2000}
 if config['device'] is 'cuda':
     config['dtype'] = torch.cuda.FloatTensor
 
 
 if __name__ == '__main__':
     # logging.info("Current commit is {}".format(execute_cmd("git rev-parse HEAD")))
-    data_reader = DatasetLoader(['AB25', 'AB27', 'AB28', 'AB30'])
-    ssl_framework = FrameworkSSL(data_reader, ImuTestRnnEmbedding, EmgTestRnnEmbedding, config)     # ImuTestTransformerEmbedding, EmgTestTransformerEmbedding
-    ssl_framework.preprocess_train_evaluation(['AB27', 'AB28', 'AB30'], ['AB25'], ['AB25'])
+    data_reader = DatasetLoader(['AB25', 'AB28'])           # , 'AB28', 'AB30'
+    ssl_framework = FrameworkSSL(data_reader, ImuFcnnEmbedding, EmgFcnnEmbedding, config)     # ImuTestTransformerEmbedding, EmgTestTransformerEmbedding
+    ssl_framework.preprocess_train_evaluation(['AB28'], ['AB25'], ['AB25'])
 
 
 

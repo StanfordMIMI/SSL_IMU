@@ -8,9 +8,8 @@ import math
 import numpy as np
 from utils import fix_seed
 import matplotlib.pyplot as plt
-# from scipy.interpolate import interp1d
 
-
+interpo_len = 50
 fix_seed()
 
 
@@ -45,9 +44,9 @@ def nce_loss(emb1, emb2):
     return loss / batch_size
 
 
-class SslTestNet(nn.Module):
+class SslNet(nn.Module):
     def __init__(self, embnet_imu, embnet_emg, common_space_dim):
-        super(SslTestNet, self).__init__()
+        super(SslNet, self).__init__()
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
         self.interpo_len = 50
@@ -85,9 +84,9 @@ class SslTestNet(nn.Module):
         return seq_imu, seq_emg
 
 
-class LinearTestNet(nn.Module):
+class LinearRegressNet(nn.Module):
     def __init__(self, embnet_imu, embnet_emg, output_dim):
-        super(LinearTestNet, self).__init__()
+        super(LinearRegressNet, self).__init__()
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
         emb_output_dim = embnet_imu.output_dim
@@ -101,9 +100,28 @@ class LinearTestNet(nn.Module):
         return output
 
 
-class ImuTestRnnEmbedding(nn.Module):
+class LinearTestNet(nn.Module):
+    def __init__(self, embnet_imu, embnet_emg, output_dim):
+        super(LinearTestNet, self).__init__()
+        self.embnet_imu = embnet_imu
+        self.embnet_emg = embnet_emg
+        emb_output_dim = embnet_imu.output_dim
+        self.output_dim = output_dim
+        self.linear = nn.Linear(emb_output_dim * 2 * interpo_len, interpo_len * output_dim)
+
+    def forward(self, x_imu, x_emg, lens):
+        seq_imu, _ = self.embnet_imu(x_imu, lens)
+        seq_emg, _ = self.embnet_emg(x_emg, lens)
+        seq_combined = torch.cat([seq_imu, seq_emg], dim=2)
+        seq_combined = torch.flatten(seq_combined, start_dim=1)
+        output = self.linear(seq_combined)
+        output = output.view([-1, interpo_len, self.output_dim])
+        return output
+
+
+class ImuRnnEmbedding(nn.Module):
     def __init__(self, x_dim, output_dim, net_name, nlayer=2, linear_dim=64):
-        super(ImuTestRnnEmbedding, self).__init__()
+        super(ImuRnnEmbedding, self).__init__()
         self.net_name = net_name
         self.rnn_layer = nn.LSTM(x_dim, linear_dim, nlayer, bidirectional=True, bias=True)
         self.linear = nn.Linear(linear_dim*2, output_dim)
@@ -117,7 +135,7 @@ class ImuTestRnnEmbedding(nn.Module):
     def __str__(self):
         return self.net_name
 
-    def forward(self, sequence, lens):      # TODO: use a transformer to replace this
+    def forward(self, sequence, lens):
         sequence = sequence.transpose(0, 1)
         total_len = sequence.shape[0]
         lens = lens * self.ratio_to_base_fre
@@ -139,9 +157,9 @@ class ImuTestRnnEmbedding(nn.Module):
         return sequence
 
 
-class EmgTestRnnEmbedding(ImuTestRnnEmbedding):
+class EmgRnnEmbedding(ImuRnnEmbedding):
     def __init__(self, *args, **kwargs):
-        super(EmgTestRnnEmbedding, self).__init__(*args, **kwargs)
+        super(EmgRnnEmbedding, self).__init__(*args, **kwargs)
         self.pooling = nn.AvgPool1d(5, 5)
         self.ratio_to_base_fre = 5
 
@@ -171,7 +189,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class ImuTestTransformerEmbedding(nn.Module):
+class ImuTransformerEmbedding(nn.Module):
     def __init__(self, d_model, output_dim, net_name, nlayers=1, nhead=1, d_hid=20, dropout=0, device='cuda'):
         super().__init__()
         self.pos_encoder = PositionalEncoding(d_model, dropout)
@@ -193,9 +211,9 @@ class ImuTestTransformerEmbedding(nn.Module):
             output Tensor of shape [seq_len, batch_size, ntoken]
         """
         sequence = sequence.transpose(0, 1)
-        src = self.pos_encoder(sequence)
+        # sequence = self.pos_encoder(sequence)
         msk = self.generate_padding_mask(lens, sequence.shape[0])
-        output = self.transformer_encoder(src, src_key_padding_mask=msk)
+        output = self.transformer_encoder(sequence, src_key_padding_mask=msk)
         output = self.down_sampling_via_pooling(output)
         output = F.relu(self.linear(output))
         output = output.transpose(0, 1).transpose(1, 2)
@@ -213,9 +231,9 @@ class ImuTestTransformerEmbedding(nn.Module):
         return sequence
 
 
-class EmgTestTransformerEmbedding(ImuTestTransformerEmbedding):
+class EmgTransformerEmbedding(ImuTransformerEmbedding):
     def __init__(self, *args, **kwargs):
-        super(EmgTestTransformerEmbedding, self).__init__(*args, **kwargs)
+        super(EmgTransformerEmbedding, self).__init__(*args, **kwargs)
         self.pooling = nn.AvgPool1d(5, 5)
 
     def down_sampling_via_pooling(self, sequence):
@@ -225,6 +243,45 @@ class EmgTestTransformerEmbedding(ImuTestTransformerEmbedding):
         return sequence
 
 
+def interpo_data(tensor, interpo_len, lens):
+    for i_step in range(tensor.shape[0]):
+        tensor = tensor.transpose(1, 2)
+        tensor[i_step:i_step+1, :, :interpo_len] = F.interpolate(
+            tensor[i_step:i_step+1, :, :int(lens[i_step])], interpo_len, mode='linear', align_corners=True)
+        tensor = tensor.transpose(1, 2)
+    return tensor[:, :interpo_len, :]
+
+
+class ImuFcnnEmbedding(nn.Module):
+    def __init__(self, x_dim, output_dim, net_name):
+        super(ImuFcnnEmbedding, self).__init__()
+        self.net_name = net_name
+        self.interpo_len = 50
+        hid_dim = 256
+        self.linear1 = nn.Linear(x_dim * self.interpo_len, hid_dim)
+        self.bn1 = nn.BatchNorm1d(hid_dim)
+        self.linear2 = nn.Linear(hid_dim, output_dim * self.interpo_len)
+        self.bn2 = nn.BatchNorm1d(output_dim * self.interpo_len)
+        self.output_dim = output_dim
+        self.ratio_to_base_fre = 1
+
+    def __str__(self):
+        return self.net_name
+
+    def forward(self, sequence, lens):
+        lens = lens * self.ratio_to_base_fre
+        sequence = interpo_data(sequence, interpo_len, lens)
+        original_shape = sequence.shape
+        sequence = self.bn1(torch.sigmoid(self.linear1(sequence.view(sequence.shape[0], -1))))
+        sequence = self.bn2(torch.sigmoid(self.linear2(sequence)))
+        sequence = sequence.view(original_shape[0], original_shape[1], -1)
+        return sequence, None
+
+
+class EmgFcnnEmbedding(ImuFcnnEmbedding):
+    def __init__(self, *args, **kwargs):
+        super(EmgFcnnEmbedding, self).__init__(*args, **kwargs)
+        self.ratio_to_base_fre = 5
 
 
 
