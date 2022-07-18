@@ -64,18 +64,8 @@ class SslNet(nn.Module):
         self.scalars = scalars
 
     def forward(self, x_imu, x_emg, lens):
-        def interpo_data(tensor):
-            for i_step in range(tensor.shape[0]):
-                tensor = tensor.transpose(1, 2)
-                tensor[i_step:i_step+1, :, :self.interpo_len] = F.interpolate(
-                    tensor[i_step:i_step+1, :, :int(lens[i_step])], self.interpo_len, mode='linear', align_corners=True)
-                tensor = tensor.transpose(1, 2)
-            return tensor[:, :self.interpo_len, :]
-
         seq_imu, _ = self.embnet_imu(x_imu, lens)
         seq_emg, _ = self.embnet_emg(x_emg, lens)
-        seq_imu = interpo_data(seq_imu)
-        seq_emg = interpo_data(seq_emg)
 
         seq_imu = torch.flatten(seq_imu, start_dim=1)
         seq_emg = torch.flatten(seq_emg, start_dim=1)
