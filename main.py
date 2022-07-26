@@ -1,3 +1,4 @@
+import copy
 import os
 import h5py
 import matplotlib.pyplot as plt
@@ -11,17 +12,28 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import ast
 from sklearn.metrics import r2_score, mean_squared_error as mse
 import torch
+from torch.nn import functional as F
 from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
 from ignite.handlers.param_scheduler import create_lr_scheduler_with_warmup
 from torch.utils.data import DataLoader, TensorDataset
 from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, EmgFcnnEmbedding, \
-    LinearTestNet, ImuRnnEmbedding, EmgRnnEmbedding, SslNet, EmgTransformerEmbedding
+    LinearTestNet, ImuRnnEmbedding, EmgRnnEmbedding, SslNet, EmgTransformerEmbedding, ImuResnetEmbedding, \
+    ImuCnnEmbedding
 import time
 from types import SimpleNamespace
 import prettytable as pt
 from utils import get_data_by_merging_data_struct, fix_seed, DataStruct, data_filter
 from const import IMU_SEGMENT_LIST, DATA_PATH, AMBULATIONS, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE
 from scipy.signal import find_peaks
+
+
+def interpo_data(tensor, interpo_len, lens):
+    for i_step in range(tensor.shape[0]):
+        tensor = tensor.transpose(1, 2)
+        tensor[i_step:i_step+1, :, :interpo_len] = F.interpolate(
+            tensor[i_step:i_step+1, :, :int(lens[i_step])], interpo_len, mode='linear', align_corners=True)
+        tensor = tensor.transpose(1, 2)
+    return tensor[:, :interpo_len, :]
 
 
 class FrameworkSSL:
@@ -78,14 +90,21 @@ class FrameworkSSL:
         logging.info('Test the model with subject ids: {}. Number of steps: {}'.format(test_sub_ids, test_data['IMU'].shape[0]))
 
         y_pred, model = self.linear_regressibility(train_data, test_data)
+        self.reset_emb_net_to_init_state()
+        # self.show_params([self.emb_net_imu.linear1.weight, self.emb_net_imu.linear1.bias, self.emb_net_imu.linear2.weight, self.emb_net_imu.linear2.bias])
         # self.save_model_and_results(test_data['y'], y_pred, OUTPUT_LIST, model, test_sub_ids)
 
-        self.reset_emb_net_to_init_state()
-        model = self.ssl_training(train_data, vali_data)
-        y_pred, model = self.linear_regressibility(train_data, test_data)
+        # model = self.ssl_training(train_data, vali_data)
+        # y_pred, model = self.linear_regressibility(train_data, test_data)
 
         plt.show()
         plt.close('all')
+
+    @staticmethod
+    def show_params(params):
+        plt.figure()
+        for i, param in enumerate(params):
+            plt.plot(param.cpu().detach().numpy(), [i for _ in param], '.', markersize=1)
 
     @staticmethod
     def print_table(results):
@@ -125,19 +144,17 @@ class FrameworkSSL:
                 loss_fn(y_pred, y_true).backward()
                 optimizer.step()
 
-        def eval_during_training(model, dl, loss_fn, ratio_of_data_from_dl=100):
+        def eval_during_training(model, dl, loss_fn):
             model.eval()
             with torch.no_grad():
-                loss, y_pred_list = [], []
+                loss, y_pred_list, y_true_list = [], [], []
                 for batch_data in dl:
-                    n = random.randint(1, 100)
-                    if n > ratio_of_data_from_dl:
-                        continue  # increase the speed of epoch
                     xb_imu, xb_emg, lens, y_true = convert_batch_data(batch_data)
                     y_pred = model(xb_imu, xb_emg, lens)
                     loss.append(loss_fn(y_true, y_pred).item())
                     y_pred_list.append(y_pred.detach().cpu())
-            return np.mean(loss), y_pred_list
+                    y_true_list.append(y_true.detach().cpu())
+            return np.mean(loss), y_pred_list, y_true_list
 
         def evaluate_after_training(test_dl):
             model.eval()
@@ -165,27 +182,17 @@ class FrameworkSSL:
         epoch_end_time = time.time()
         dtype = self.config.dtype
         for i_epoch in range(self.config.epoch_linear):
-            test_loss, y_pred_test = eval_during_training(model, test_dl, torch.nn.MSELoss(), 100)
-            train_loss, y_pred_train = eval_during_training(model, train_dl, torch.nn.MSELoss(), 100)
+            test_loss, y_pred_test, y_true_test = eval_during_training(model, test_dl, torch.nn.MSELoss())
+            train_loss, y_pred_train, y_true_train = eval_during_training(model, train_dl, torch.nn.MSELoss())
 
             if i_epoch in [self.config.epoch_linear-1]:
                 plt.figure()
                 plt.title('Train')
-                plt.plot(train_data['y'].ravel())
-                plt.plot(torch.cat(y_pred_train).numpy().ravel())
+                plt.plot(torch.cat(y_true_train).numpy().ravel(), torch.cat(y_pred_train).numpy().ravel(), '.')
 
                 plt.figure()
                 plt.title('Test')
-                plt.plot(test_data['y'].ravel())
-                plt.plot(torch.cat(y_pred_test).numpy().ravel())
-
-            # print('LSTM imu weight: {:.3f} ({:.3f}); LSTM emg weight: {:.3f} ({:.3f}); LSTM imu bias: {:.3f} ({:.3f}); LSTM emg bias: {:.3f} ({:.3f});'.format(
-            #     *[fun(x.cpu().detach().numpy())
-            #       for x in [
-            #           model.embnet_imu.rnn_layer.weight_hh_l0, model.embnet_emg.rnn_layer.weight_hh_l0,
-            #           model.embnet_imu.rnn_layer.bias_hh_l0, model.embnet_emg.rnn_layer.bias_hh_l0]
-            #       for fun in [lambda x: np.mean(abs(x)), np.std]]))
-
+                plt.plot(torch.cat(y_true_test).numpy().ravel(), torch.cat(y_pred_test).numpy().ravel(), '.')
 
             logging.info("\t{:3}\t{:12.3f}\t{:12.3f}\t{:13.2f}s\t\t".format(i_epoch, train_loss, test_loss, time.time() - epoch_end_time))
             epoch_end_time = time.time()
@@ -253,23 +260,29 @@ class FrameworkSSL:
         # scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_ssl/4))
 
         logging.info('\tEpoch | Validation_set_Loss | Duration\t\t')
-        epoch_end_time = time.time()
         dtype = self.config.dtype
+        epoch_end_time = time.time()
+        current_best_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
+        logging.info("\t{:3}\t{:15.3f}\t{:13.2f}s\t\t".format(0, current_best_loss, time.time() - epoch_end_time))
+        best_model = copy.deepcopy(model)
         for i_epoch in range(self.config.epoch_ssl):
-            vali_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
-            logging.info("\t{:3}\t{:15.3f}\t{:13.2f}s\t\t".format(i_epoch, vali_loss, time.time() - epoch_end_time))
             epoch_end_time = time.time()
 
             # print('Linear imu weight: {:.3f} ({:.3f}); Linear emg weight: {:.3f} ({:.3f}); LSTM imu weight: {:.3f} ({:.3f}); LSTM emg weight: {:.3f} ({:.3f});'.format(
             #     *[fun(x.cpu().detach().numpy())
             #       for x in [
-            #         model.linear_proj_imu.weight, model.linear_proj_emg.weight,
-            #         model.embnet_imu.rnn_layer.weight_hh_l0, model.embnet_emg.rnn_layer.weight_hh_l0]
+            #         model.embnet_imu.layer4_2.bn1.running_mean, model.embnet_imu.layer4_2.bn1.running_var,
+            #         model.embnet_emg.layer4_2.bn1.running_mean, model.embnet_emg.layer4_2.bn1.running_var]
             #       for fun in [lambda x: np.mean(abs(x)), np.std]]))
 
             train(model, train_dl, optimizer, self.config.loss_fn, self.config.use_ratio)
+            vali_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
+            logging.info("\t{:3}\t{:15.3f}\t{:13.2f}s\t\t".format(i_epoch+1, vali_loss, time.time() - epoch_end_time))
+            if vali_loss < current_best_loss:
+                current_best_loss = vali_loss
+                best_model = copy.deepcopy(model)
             # scheduler.step()
-
+        model = best_model
         return {'model': model}
 
     def save_model_and_results(self, ):
@@ -299,18 +312,39 @@ class FrameworkSSL:
         if len(self.data_reader.input_col_loc_gyr):
             data['IMU'][:, :, self.data_reader.input_col_loc_gyr] = self.normalize_data(
                 data['IMU'][:, :, self.data_reader.input_col_loc_gyr], 'gyr', method, 'by_all_columns')
-        data['EMG'] = self.normalize_data(data['EMG'], 'EMG', method, 'by_all_columns')
+        data['EMG'] = self.down_sample_data(data['EMG'], data['IMU'].shape[1])
+        data['EMG'] = self.normalize_data(data['EMG'], 'EMG', method, 'by_each_column')
 
-        # data['y'][:, :, 0] = -data['y'][:, :, 0]
-        # data['y'][(data['y'] == 0.).all(axis=2), :] = np.nan
-        # data['y'] = np.nanmax(data['y'], axis=1)
-        # data['y'][np.isnan(data['y'])] = 0.
-        data['y'] = self.normalize_data(data['y'], 'y', method, 'by_each_column')
-        from model import interpo_data, interpo_len
-        step_lens = self._get_step_len(data['IMU'])
-        y_tensor = interpo_data(torch.from_numpy(data['y']), interpo_len, step_lens)
-        data['y'] = y_tensor.numpy()
+        # get max
+        data['y'][(data['y'] == 0.).all(axis=2), :] = np.nan
+
+        max_vals = np.nanmax(data['y'][:, 40:, :], axis=1)
+        incorrect_rows = (max_vals > 0).ravel()
+        max_vals = np.delete(max_vals, incorrect_rows, 0)
+        data['IMU'] = np.delete(data['IMU'], incorrect_rows, 0)
+        data['EMG'] = np.delete(data['EMG'], incorrect_rows, 0)
+        max_vals[np.isnan(max_vals)] = 0.
+
+        data['y'] = self.normalize_data(max_vals, 'y', method, 'by_each_column')
+
+        # # interpolation
+        # if config['interpo_len'] is not None:
+        #     step_lens = self._get_step_len(data['IMU'])
+        #     base_len = data['IMU'].shape[1]
+        #     for key_ in ['IMU', 'EMG', 'y']:
+        #         ratio = int(data[key_].shape[1] / base_len)
+        #         step_lens_modal = [x * ratio for x in step_lens]
+        #         y_tensor = interpo_data(torch.from_numpy(data[key_]), config['interpo_len'], step_lens_modal)
+        #         data[key_] = y_tensor.numpy()
         return data
+
+    @staticmethod
+    def down_sample_data(data, new_len):
+        ratio = int(data.shape[1] / new_len)
+        new_data = data[:, ::ratio, :]
+        if new_data.shape[1] != new_len:
+            raise RuntimeError('Check ori_len and new_len')
+        return new_data
 
     @staticmethod
     def build_linear_classifier(x_train, y_train, x_validation=None, y_validation=None, validation_weight=None):
@@ -350,13 +384,18 @@ class FrameworkSSL:
     def get_peak_scores(y_true, y_pred, y_fields, lens):
         scores = []
         for col, field in enumerate(y_fields):
-            r2, rmse, cor_value = [np.zeros(y_true.shape[0]) for _ in range(3)]
-            for i_step in range(y_true.shape[0]):
-                y_true_one_step = y_true[i_step, :lens[i_step], col]
-                y_pred_one_step = y_pred[i_step, :lens[i_step], col]
-                r2[i_step] = r2_score(y_true_one_step, y_pred_one_step)
-                rmse[i_step] = np.sqrt(mse(y_true_one_step, y_pred_one_step))
-                cor_value[i_step] = pearsonr(y_true_one_step, y_pred_one_step)[0]
+            if len(y_true.shape) == 2:
+                r2 = r2_score(y_true[:, col], y_pred[:, col])
+                rmse = np.sqrt(mse(y_true[:, col], y_pred[:, col]))
+                cor_value = pearsonr(y_true[:, col], y_pred[:, col])[0]
+            else:
+                r2, rmse, cor_value = [np.zeros(y_true.shape[0]) for _ in range(3)]
+                for i_step in range(y_true.shape[0]):
+                    y_true_one_step = y_true[i_step, :lens[i_step], col]
+                    y_pred_one_step = y_pred[i_step, :lens[i_step], col]
+                    r2[i_step] = r2_score(y_true_one_step, y_pred_one_step)
+                    rmse[i_step] = np.sqrt(mse(y_true_one_step, y_pred_one_step))
+                    cor_value[i_step] = pearsonr(y_true_one_step, y_pred_one_step)[0]
             score_one_field = {'field': field, 'r2': r2, 'rmse': rmse, 'cor_value': cor_value}
             scores.append(score_one_field)
         return scores
@@ -385,7 +424,7 @@ class FrameworkSSL:
 class DatasetLoader:
     def __init__(self, subject_list):
         self.sample_rate = IMU_SAMPLE_RATE
-        self.step_len_max, self.step_len_min = int(1.5*self.sample_rate), int(0.2*self.sample_rate)
+        self.step_len_max, self.step_len_min = int(256*self.sample_rate/200), int(40*self.sample_rate/200)
         self.columns = self.load_columns()
         self.input_col_imu = IMU_LIST
         self.input_col_emg = EMG_LIST
@@ -399,7 +438,8 @@ class DatasetLoader:
             with h5py.File(DATA_PATH + subject + '.h5', 'r') as hf:
                 data_trials = {}
                 [data_trials.update({trial: [trial_data['data_200'][:], trial_data['data_1000'][:]]})
-                 for trial, trial_data in hf.items() if len(data_trials.keys()) < config['max_trial_num']]
+                    for trial, trial_data in hf.items() if len(data_trials.keys()) < config['max_trial_num'] and
+                 trial.split('_')[0].lower() not in config['remove_trial_type']]
 
                 for trial, trial_data in data_trials.items():
                     condition = trial.split('_')[0]
@@ -408,6 +448,17 @@ class DatasetLoader:
                     trial_data[1][:, input_col_loc_emg] = data_filter(np.abs(emg_data), 20, EMG_SAMPLE_RATE)
             self.data_contin[subject] = data_trials
         self.trials = list(data_trials.keys())
+
+    @staticmethod
+    def clean_abnormal_data(data, thd):
+        for axis in range(data.shape[1]):
+            data_axis = data[:, axis]
+            ok = np.abs(data_axis) < thd
+            if (~ok).any():
+                xp = ok.ravel().nonzero()[0]
+                fp = data_axis[ok]
+                x = (~ok).ravel().nonzero()[0]
+                data_axis[~ok] = np.interp(x, xp, fp)
 
     @staticmethod
     def load_columns():
@@ -424,6 +475,8 @@ class DatasetLoader:
         for subject in self.subject_list:
             data_struct = DataStruct(len(self.input_col_imu), len(self.input_col_emg), len(self.output_col), self.step_len_max)
             for trial in self.trials:
+                if trial not in self.data_contin[subject].keys():
+                    continue
                 trial_type = trial.split('_')[0]
                 input_col_loc_imu = [self.columns[trial_type]['200'].index(x) for x in self.input_col_imu]
                 input_col_loc_emg = [self.columns[trial_type]['1000'].index(x) for x in self.input_col_emg]
@@ -432,9 +485,11 @@ class DatasetLoader:
                 gyr_loc = [self.columns[trial_type]['200'].index('foot_Gyro_' + axis) for axis in ['X', 'Y', 'Z']]
                 trial_data_200, trial_data_1000 = self.data_contin[subject][trial]
                 acc_data, gyr_data = trial_data_200[:, acc_loc], trial_data_200[:, gyr_loc]
-                strike_list, off_list = self.get_walking_strike_off(acc_data, gyr_data, 10)
+                self.clean_abnormal_data(acc_data, 15)
+                self.clean_abnormal_data(gyr_data, 15)
+                strike_list, off_list, gyr_y = self.get_walking_strike_off(acc_data, gyr_data, 10)
                 steps_200, steps_1000 = self.strike_off_to_step_and_remove_incorrect_step(
-                    strike_list, off_list, self.step_len_max, self.step_len_min)
+                    gyr_y, strike_list, off_list, self.step_len_max, self.step_len_min)
                 for step_200, step_1000 in zip(steps_200, steps_1000):
                     data_x_200 = trial_data_200[step_200[0]:step_200[1], input_col_loc_imu]       # 遇到 out of xxx，写exception 跳过该步
                     data_x_1000 = trial_data_1000[step_1000[0]:step_1000[1], input_col_loc_emg]
@@ -444,17 +499,19 @@ class DatasetLoader:
         return self.data
 
     @staticmethod
-    def strike_off_to_step_and_remove_incorrect_step(strike_list, off_list, step_len_max, step_len_min):
+    def strike_off_to_step_and_remove_incorrect_step(gyr_y, strike_list, off_list, step_len_max, step_len_min):
         steps_200 = []
         if config['from_strike_to_off']:
             event_1, event_2 = np.array(strike_list), np.array(off_list)
+            event_1_height_thd, event_2_height_thd = 0, 4
         else:
             event_2, event_1 = np.array(strike_list), np.array(off_list)
+            event_2_height_thd, event_1_height_thd = 0, 4
         for i_event_1 in range(len(event_1)):
             potential_event_2 = event_2[event_1[i_event_1] + step_len_min < event_2]
             potential_event_2 = potential_event_2[potential_event_2 < event_1[i_event_1] + step_len_max - SAMPLES_BEFORE_STEP - SAMPLES_AFTER_STEP]
-            if len(potential_event_2) > 0:
-                if i_event_1 != len(event_1) - 1 and potential_event_2[0] < event_1[i_event_1+1]:
+            if len(potential_event_2) == 1:
+                if gyr_y[event_1[i_event_1]] > event_1_height_thd and gyr_y[potential_event_2] > event_2_height_thd:
                     steps_200.append([event_1[i_event_1] - SAMPLES_BEFORE_STEP, potential_event_2[0] + SAMPLES_AFTER_STEP])
         steps_1000 = [[5 * step[0], 5 * step[1]] for step in steps_200]
         return steps_200, steps_1000
@@ -550,17 +607,16 @@ class DatasetLoader:
             plt.plot(strike_list, gyr_y[strike_list], 'g*')
             plt.plot(off_list, gyr_y[off_list], 'r*')
 
-        return strike_list, off_list
+        return strike_list, off_list, gyr_y
 
     @staticmethod
     def __find_stationary_phase(gyr_magnitude, acc_magnitude, foot_stationary_acc_thd, foot_stationary_gyr_thd):
-        """ Old function, require 10 continuous setps """
         data_len = gyr_magnitude.shape[0]
         stationary_flag, stationary_flag_temp = np.zeros(gyr_magnitude.shape), np.zeros(gyr_magnitude.shape)
         stationary_flag_temp[
             (acc_magnitude < foot_stationary_acc_thd) & (abs(gyr_magnitude) < foot_stationary_gyr_thd)] = 1
         for i_sample in range(data_len):
-            if stationary_flag_temp[i_sample - 5:i_sample + 5].all():
+            if stationary_flag_temp[i_sample - 12:i_sample + 12].all():
                 stationary_flag[i_sample] = 1
         return stationary_flag
 
@@ -595,25 +651,36 @@ class DatasetLoader:
         return peaks[max_index]
 
 
-IMU_LIST = [segment + sensor + axis for segment in ['foot'] for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']]
+SUB_LIST = [
+    'AB06', 'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13',
+    'AB14', 'AB15', 'AB16', 'AB17', 'AB18', 'AB19', 'AB21', 'AB23',
+    'AB24', 'AB25',
+    'AB27',
+    'AB28', 'AB30'
+]
+IMU_LIST = [segment + sensor + axis for segment in ['shank', 'thigh'] for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']]
 EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus']
 # EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
 #             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
 OUTPUT_LIST = ['knee_angle_r']
+# 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'ankle_angle_r'
+# 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 SAMPLES_BEFORE_STEP, SAMPLES_AFTER_STEP = 0, 0
-config = {'epoch_ssl': 60, 'epoch_linear': 30, 'batch_size': 128, 'lr_ssl': 3e-3, 'lr_linear': 3e-4, 'use_ratio': 100,         # !!!
-          'emb_output_dim': 32, 'common_space_dim': 128, 'device': 'cuda', 'dtype': torch.FloatTensor,
-          'from_strike_to_off': False, 'loss_fn': nce_loss, 'max_trial_num': 2000}
+config = {'epoch_ssl': 200, 'epoch_linear': 200, 'batch_size': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4, 'use_ratio': 100,
+          'emb_output_dim': 56, 'common_space_dim': 56, 'device': 'cuda', 'dtype': torch.FloatTensor,
+          'interpo_len': None, 'remove_trial_type': ['treadmill'],
+          'from_strike_to_off': True, 'loss_fn': nce_loss, 'max_trial_num': 1000}
 if config['device'] is 'cuda':
     config['dtype'] = torch.cuda.FloatTensor
 
 
 if __name__ == '__main__':
     # logging.info("Current commit is {}".format(execute_cmd("git rev-parse HEAD")))
-    data_reader = DatasetLoader(['AB25', 'AB28'])           # , 'AB28', 'AB30'
-    ssl_framework = FrameworkSSL(data_reader, ImuFcnnEmbedding, EmgFcnnEmbedding, config)     # ImuTestTransformerEmbedding, EmgTestTransformerEmbedding
-    ssl_framework.preprocess_train_evaluation(['AB28'], ['AB25'], ['AB25'])
-
+    test_set = ['AB25', 'AB27', 'AB28', 'AB30']
+    train_set = [item for item in SUB_LIST if item not in test_set]
+    data_reader = DatasetLoader(train_set + [sub for sub in test_set if sub not in train_set])
+    ssl_framework = FrameworkSSL(data_reader, ImuCnnEmbedding, ImuCnnEmbedding, config)
+    ssl_framework.preprocess_train_evaluation(train_set, test_set, test_set)
 
 
 

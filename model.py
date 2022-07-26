@@ -50,9 +50,9 @@ class SslNet(nn.Module):
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
         self.interpo_len = 50
-        emb_output_dim = embnet_imu.output_dim * self.interpo_len
-        self.linear_proj_imu = nn.Linear(emb_output_dim, common_space_dim, bias=False)
-        self.linear_proj_emg = nn.Linear(emb_output_dim, common_space_dim, bias=False)
+        emb_output_dim = embnet_imu.output_dim
+        self.linear_proj_imu = nn.Linear(emb_output_dim, common_space_dim)
+        self.linear_proj_emg = nn.Linear(emb_output_dim, common_space_dim)
         self.bn_proj_imu = nn.BatchNorm1d(common_space_dim)
         self.bn_proj_emg = nn.BatchNorm1d(common_space_dim)
         self.net_name = 'Combined Net'
@@ -97,7 +97,7 @@ class LinearTestNet(nn.Module):
         self.embnet_emg = embnet_emg
         emb_output_dim = embnet_imu.output_dim
         self.output_dim = output_dim
-        self.linear = nn.Linear(emb_output_dim * 2 * interpo_len, interpo_len * output_dim)
+        self.linear = nn.Linear(emb_output_dim * 2, output_dim)
 
     def forward(self, x_imu, x_emg, lens):
         seq_imu, _ = self.embnet_imu(x_imu, lens)
@@ -105,7 +105,7 @@ class LinearTestNet(nn.Module):
         seq_combined = torch.cat([seq_imu, seq_emg], dim=2)
         seq_combined = torch.flatten(seq_combined, start_dim=1)
         output = self.linear(seq_combined)
-        output = output.view([-1, interpo_len, self.output_dim])
+        # output = output.view([-1, interpo_len, self.output_dim])
         return output
 
 
@@ -233,15 +233,6 @@ class EmgTransformerEmbedding(ImuTransformerEmbedding):
         return sequence
 
 
-def interpo_data(tensor, interpo_len, lens):
-    for i_step in range(tensor.shape[0]):
-        tensor = tensor.transpose(1, 2)
-        tensor[i_step:i_step+1, :, :interpo_len] = F.interpolate(
-            tensor[i_step:i_step+1, :, :int(lens[i_step])], interpo_len, mode='linear', align_corners=True)
-        tensor = tensor.transpose(1, 2)
-    return tensor[:, :interpo_len, :]
-
-
 class ImuFcnnEmbedding(nn.Module):
     def __init__(self, x_dim, output_dim, net_name):
         super(ImuFcnnEmbedding, self).__init__()
@@ -259,8 +250,6 @@ class ImuFcnnEmbedding(nn.Module):
         return self.net_name
 
     def forward(self, sequence, lens):
-        lens = lens * self.ratio_to_base_fre
-        sequence = interpo_data(sequence, interpo_len, lens)
         original_shape = sequence.shape
         sequence = self.bn1(torch.sigmoid(self.linear1(sequence.view(sequence.shape[0], -1))))
         sequence = self.bn2(torch.sigmoid(self.linear2(sequence)))
@@ -269,12 +258,122 @@ class ImuFcnnEmbedding(nn.Module):
 
 
 class EmgFcnnEmbedding(ImuFcnnEmbedding):
-    def __init__(self, *args, **kwargs):
-        super(EmgFcnnEmbedding, self).__init__(*args, **kwargs)
-        self.ratio_to_base_fre = 5
+    pass
 
 
+"""Implementation 1"""
 
+
+class RestNetBasicBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(RestNetBasicBlock, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=9, stride=1, padding=4)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=9, stride=1, padding=4)
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        output = self.conv1(x)
+        output = F.relu(self.bn1(output))
+        output = self.conv2(output)
+        output = self.bn2(output)
+        return self.relu(x + output)
+
+
+class RestNetDownBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride):
+        super(RestNetDownBlock, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=9, stride=stride[0], padding=4)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=9, stride=stride[1], padding=4)
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.extra = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride[0], padding=0),
+            nn.BatchNorm1d(out_channels)
+        )
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        extra_x = self.extra(x)
+        output = self.conv1(x)
+        out = F.relu(self.bn1(output))
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        return self.relu(extra_x + out)
+
+
+class ImuResnetEmbedding(nn.Module):
+    def __init__(self, x_dim, output_dim, net_name):
+        super(ImuResnetEmbedding, self).__init__()
+        self.conv1 = nn.Conv1d(x_dim, 64, kernel_size=7, stride=2, padding=3)
+        self.bn1 = nn.BatchNorm1d(64)
+        # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+
+        self.output_dim = output_dim
+        self.net_name = net_name
+        self.layer1 = nn.Sequential(RestNetBasicBlock(64, 64), RestNetBasicBlock(64, 64))
+        self.layer2 = nn.Sequential(RestNetDownBlock(64, 128, [2, 1]), RestNetBasicBlock(128, 128))
+        self.layer3 = nn.Sequential(RestNetDownBlock(128, 256, [2, 1]), RestNetBasicBlock(256, 256))
+        # self.layer4 = nn.Sequential(RestNetDownBlock(256, output_dim, [2, 1]), RestNetBasicBlock(output_dim, output_dim))
+        self.layer4_1 = RestNetDownBlock(256, output_dim, [2, 1])
+        self.layer4_2 = RestNetBasicBlock(output_dim, output_dim)
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        # self.fc = nn.Linear(512, output_dim)
+
+    def forward(self, sequence, lens):
+        out = sequence.transpose(1, 2)
+        out = self.conv1(out)
+        out = self.bn1(out)
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4_2(self.layer4_1(out))
+        out = self.avgpool(out)
+        return out, None
+
+
+class ImuCnnEmbedding(nn.Module):
+    def __init__(self, x_dim, output_dim, net_name):
+        super(ImuCnnEmbedding, self).__init__()
+        self.conv1 = nn.Conv1d(x_dim, 8, kernel_size=7, stride=2, padding=3)
+        self.bn1 = nn.BatchNorm1d(8)
+        # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+
+        self.output_dim = output_dim
+        self.net_name = net_name
+        self.layer1 = nn.Sequential(RestNetBasicBlock(8, 8), RestNetBasicBlock(8, 8))
+        self.layer2 = nn.Sequential(RestNetDownBlock(8, 16, [2, 1]), RestNetBasicBlock(16, 16))
+        self.layer3 = nn.Sequential(RestNetDownBlock(16, 32, [2, 1]), RestNetBasicBlock(32, 32))
+        self.layer4 = nn.Sequential(RestNetDownBlock(32, output_dim, [2, 1]), RestNetBasicBlock(output_dim, output_dim))
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        # self.fc = nn.Linear(512, output_dim)
+
+    def forward(self, sequence, lens):
+        out = sequence.transpose(1, 2)
+        out = self.conv1(out)
+        if sequence.shape[0] != 128:
+            print(round(out.abs().mean().item(), 4), end=' ')
+        out = self.bn1(out)
+        if sequence.shape[0] != 128:
+            print(round(out.abs().mean().item(), 4), end=' ')
+        out = self.layer1(out)
+        if sequence.shape[0] != 128:
+            print(round(out.abs().mean().item(), 4), end=' ')
+        out = self.layer2(out)
+        if sequence.shape[0] != 128:
+            print(round(out.abs().mean().item(), 4), end=' ')
+        out = self.layer3(out)
+        if sequence.shape[0] != 128:
+            print(round(out.abs().mean().item(), 4), end=' ')
+        out = self.layer4(out)
+        if sequence.shape[0] != 128:
+            print(round(out.abs().mean().item(), 4), end=' ')
+        out = self.avgpool(out)
+        if sequence.shape[0] != 128:
+            print(round(out.abs().mean().item(), 4))
+        return out, None
 
 
 
