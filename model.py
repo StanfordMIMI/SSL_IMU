@@ -103,7 +103,7 @@ class LinearTestNet(nn.Module):
         seq_imu, _ = self.embnet_imu(x_imu, lens)
         seq_emg, _ = self.embnet_emg(x_emg, lens)
         seq_combined = torch.cat([seq_imu, seq_emg], dim=2)
-        seq_combined = torch.flatten(seq_combined, start_dim=1)
+        # seq_combined = torch.flatten(seq_combined, start_dim=1)
         output = self.linear(seq_combined)
         # output = output.view([-1, interpo_len, self.output_dim])
         return output
@@ -179,16 +179,19 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+# class Tokenization(nn.Module)
+
+
 class ImuTransformerEmbedding(nn.Module):
     def __init__(self, d_model, output_dim, net_name, nlayers=1, nhead=1, d_hid=20, dropout=0, device='cuda'):
         super().__init__()
+        self.group_ratio = 16
         self.pos_encoder = PositionalEncoding(d_model, dropout)
-        encoder_layers = TransformerEncoderLayer(d_model, nhead, d_hid, dropout)
+        self.d_model = d_model * 16     # !!!
+        encoder_layers = TransformerEncoderLayer(self.d_model, nhead, d_hid, dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
-        self.d_model = d_model
         self.output_dim = output_dim
-        self.linear = nn.Linear(d_model, output_dim)
-        self.bn = nn.BatchNorm1d(output_dim)
+        self.linear = nn.Linear(self.d_model, output_dim * self.group_ratio)
         self.device = device
 
     def forward(self, sequence, lens):
@@ -200,16 +203,27 @@ class ImuTransformerEmbedding(nn.Module):
         Returns:
             output Tensor of shape [seq_len, batch_size, ntoken]
         """
+        sequence = self.group_samples(sequence)
         sequence = sequence.transpose(0, 1)
         # sequence = self.pos_encoder(sequence)
+        lens = lens / self.group_ratio
         msk = self.generate_padding_mask(lens, sequence.shape[0])
         output = self.transformer_encoder(sequence, src_key_padding_mask=msk)
         output = self.down_sampling_via_pooling(output)
-        output = F.relu(self.linear(output))
-        output = output.transpose(0, 1).transpose(1, 2)
-        output = self.bn(output)
-        output = output.transpose(1, 2)
+        output = self.linear(output)
+        output = output.transpose(0, 1)
+        output = self.ungroup_samples(output)
         return output, None
+
+    def group_samples(self, sequence):          # !!! TODO: try overlapping
+        shape_1 = int(sequence.shape[1] / self.group_ratio)
+        temp = sequence.reshape([sequence.shape[0], shape_1, -1])
+        return temp
+
+    def ungroup_samples(self, sequence):
+        shape_1 = sequence.shape[1] * self.group_ratio
+        temp = sequence.reshape([sequence.shape[0], shape_1, -1])
+        return temp
 
     def generate_padding_mask(self, lens, seq_len):
         msk = np.ones([len(lens), seq_len], dtype=bool)
@@ -218,18 +232,6 @@ class ImuTransformerEmbedding(nn.Module):
         return torch.from_numpy(msk).to(self.device)
 
     def down_sampling_via_pooling(self, sequence):
-        return sequence
-
-
-class EmgTransformerEmbedding(ImuTransformerEmbedding):
-    def __init__(self, *args, **kwargs):
-        super(EmgTransformerEmbedding, self).__init__(*args, **kwargs)
-        self.pooling = nn.AvgPool1d(5, 5)
-
-    def down_sampling_via_pooling(self, sequence):
-        sequence = sequence.transpose(0, 2)
-        sequence = self.pooling(sequence)
-        sequence = sequence.transpose(0, 2)
         return sequence
 
 

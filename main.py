@@ -17,7 +17,7 @@ from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
 from ignite.handlers.param_scheduler import create_lr_scheduler_with_warmup
 from torch.utils.data import DataLoader, TensorDataset
 from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, EmgFcnnEmbedding, \
-    LinearTestNet, ImuRnnEmbedding, EmgRnnEmbedding, SslNet, EmgTransformerEmbedding, ImuResnetEmbedding, \
+    LinearTestNet, ImuRnnEmbedding, EmgRnnEmbedding, SslNet, ImuResnetEmbedding, \
     ImuCnnEmbedding
 import time
 from types import SimpleNamespace
@@ -176,7 +176,7 @@ class FrameworkSSL:
 
         if self.config.device is 'cuda':
             model.cuda()
-        optimizer = torch.optim.Adam(model.linear.parameters(), lr=self.config.lr_linear, weight_decay=1e-5)      # !!! model.linear.parameters
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_linear, weight_decay=1e-5)      # !!! model.linear.parameters
 
         logging.info('\tEpoch | Train_set_Loss | Test_set_Loss | Duration\t\t')
         epoch_end_time = time.time()
@@ -188,11 +188,13 @@ class FrameworkSSL:
             if i_epoch in [self.config.epoch_linear-1]:
                 plt.figure()
                 plt.title('Train')
-                plt.plot(torch.cat(y_true_train).numpy().ravel(), torch.cat(y_pred_train).numpy().ravel(), '.')
+                plt.plot(torch.cat(y_true_train).numpy().ravel())
+                plt.plot(torch.cat(y_pred_train).numpy().ravel())
 
                 plt.figure()
                 plt.title('Test')
-                plt.plot(torch.cat(y_true_test).numpy().ravel(), torch.cat(y_pred_test).numpy().ravel(), '.')
+                plt.plot(torch.cat(y_true_test).numpy().ravel())
+                plt.plot(torch.cat(y_pred_test).numpy().ravel())
 
             logging.info("\t{:3}\t{:12.3f}\t{:12.3f}\t{:13.2f}s\t\t".format(i_epoch, train_loss, test_loss, time.time() - epoch_end_time))
             epoch_end_time = time.time()
@@ -315,27 +317,17 @@ class FrameworkSSL:
         data['EMG'] = self.down_sample_data(data['EMG'], data['IMU'].shape[1])
         data['EMG'] = self.normalize_data(data['EMG'], 'EMG', method, 'by_each_column')
 
-        # get max
-        data['y'][(data['y'] == 0.).all(axis=2), :] = np.nan
+        data['y'] = self.normalize_data(data['y'], 'y', method, 'by_each_column')
 
-        max_vals = np.nanmax(data['y'][:, 40:, :], axis=1)
-        incorrect_rows = (max_vals > 0).ravel()
-        max_vals = np.delete(max_vals, incorrect_rows, 0)
-        data['IMU'] = np.delete(data['IMU'], incorrect_rows, 0)
-        data['EMG'] = np.delete(data['EMG'], incorrect_rows, 0)
-        max_vals[np.isnan(max_vals)] = 0.
-
-        data['y'] = self.normalize_data(max_vals, 'y', method, 'by_each_column')
-
-        # # interpolation
-        # if config['interpo_len'] is not None:
-        #     step_lens = self._get_step_len(data['IMU'])
-        #     base_len = data['IMU'].shape[1]
-        #     for key_ in ['IMU', 'EMG', 'y']:
-        #         ratio = int(data[key_].shape[1] / base_len)
-        #         step_lens_modal = [x * ratio for x in step_lens]
-        #         y_tensor = interpo_data(torch.from_numpy(data[key_]), config['interpo_len'], step_lens_modal)
-        #         data[key_] = y_tensor.numpy()
+        # interpolation
+        if config['interpo_len'] is not None:
+            step_lens = self._get_step_len(data['IMU'])
+            base_len = data['IMU'].shape[1]
+            for key_ in ['IMU', 'EMG', 'y']:
+                ratio = int(data[key_].shape[1] / base_len)
+                step_lens_modal = [x * ratio for x in step_lens]
+                y_tensor = interpo_data(torch.from_numpy(data[key_]), config['interpo_len'], step_lens_modal)
+                data[key_] = y_tensor.numpy()
         return data
 
     @staticmethod
@@ -496,6 +488,14 @@ class DatasetLoader:
                     data_y_200 = trial_data_200[step_200[0]:step_200[1], output_col_loc]
                     data_struct.add_new_step(data_x_200, data_x_1000, data_y_200)
             self.data[subject] = data_struct
+        # # FOR DEBUG
+        # colors=['C0', 'C1', 'C2']
+        # for subject in self.subject_list:
+        #     for axis in range(6, 9):
+        #         data_smooth = data_filter(self.data[subject].x_200[0][:, axis], 15, 200)
+        #         plt.plot(data_smooth, color=colors[axis % 3])
+        #         # plt.plot(trial_data_200[:, input_col_loc_imu][:, axis], color=colors[axis])
+        # plt.show()
         return self.data
 
     @staticmethod
@@ -665,7 +665,7 @@ EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus']
 OUTPUT_LIST = ['knee_angle_r']
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
-SAMPLES_BEFORE_STEP, SAMPLES_AFTER_STEP = 0, 0
+SAMPLES_BEFORE_STEP, SAMPLES_AFTER_STEP = 0, 0          # !!! change to 40
 config = {'epoch_ssl': 200, 'epoch_linear': 200, 'batch_size': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4, 'use_ratio': 100,
           'emb_output_dim': 56, 'common_space_dim': 56, 'device': 'cuda', 'dtype': torch.FloatTensor,
           'interpo_len': None, 'remove_trial_type': ['treadmill'],
@@ -679,7 +679,7 @@ if __name__ == '__main__':
     test_set = ['AB25', 'AB27', 'AB28', 'AB30']
     train_set = [item for item in SUB_LIST if item not in test_set]
     data_reader = DatasetLoader(train_set + [sub for sub in test_set if sub not in train_set])
-    ssl_framework = FrameworkSSL(data_reader, ImuCnnEmbedding, ImuCnnEmbedding, config)
+    ssl_framework = FrameworkSSL(data_reader, ImuTransformerEmbedding, ImuTransformerEmbedding, config)
     ssl_framework.preprocess_train_evaluation(train_set, test_set, test_set)
 
 
