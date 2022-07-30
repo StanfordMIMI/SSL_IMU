@@ -14,7 +14,7 @@ fix_seed()
 
 
 def nce_loss(emb1, emb2):
-    temperature = 0.1       # TODO: optimize this
+    temperature = 0.4       # TODO: optimize this
 
     def _calculate_similarity(emb1, emb2):
         # make each vector unit length
@@ -49,7 +49,6 @@ class SslNet(nn.Module):
         super(SslNet, self).__init__()
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
-        self.interpo_len = 50
         emb_output_dim = embnet_imu.output_dim
         self.linear_proj_imu = nn.Linear(emb_output_dim, common_space_dim)
         self.linear_proj_emg = nn.Linear(emb_output_dim, common_space_dim)
@@ -67,32 +66,16 @@ class SslNet(nn.Module):
         seq_imu, _ = self.embnet_imu(x_imu, lens)
         seq_emg, _ = self.embnet_emg(x_emg, lens)
 
+        seq_imu = self.bn_proj_imu(self.linear_proj_imu(seq_imu).transpose(1, 2)).transpose(1, 2)
+        seq_emg = self.bn_proj_emg(self.linear_proj_emg(seq_emg).transpose(1, 2)).transpose(1, 2)
         seq_imu = torch.flatten(seq_imu, start_dim=1)
         seq_emg = torch.flatten(seq_emg, start_dim=1)
-        seq_imu = self.bn_proj_imu(self.linear_proj_imu(seq_imu))
-        seq_emg = self.bn_proj_emg(self.linear_proj_emg(seq_emg))
         return seq_imu, seq_emg
 
 
 class LinearRegressNet(nn.Module):
     def __init__(self, embnet_imu, embnet_emg, output_dim):
         super(LinearRegressNet, self).__init__()
-        self.embnet_imu = embnet_imu
-        self.embnet_emg = embnet_emg
-        emb_output_dim = embnet_imu.output_dim
-        self.linear = nn.Linear(emb_output_dim * 2, output_dim, bias=False)
-
-    def forward(self, x_imu, x_emg, lens):
-        seq_imu, _ = self.embnet_imu(x_imu, lens)
-        seq_emg, _ = self.embnet_emg(x_emg, lens)
-        seq_combined = torch.cat([seq_imu, seq_emg], dim=2)
-        output = self.linear(seq_combined)
-        return output
-
-
-class LinearTestNet(nn.Module):
-    def __init__(self, embnet_imu, embnet_emg, output_dim):
-        super(LinearTestNet, self).__init__()
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
         emb_output_dim = embnet_imu.output_dim
@@ -103,18 +86,16 @@ class LinearTestNet(nn.Module):
         seq_imu, _ = self.embnet_imu(x_imu, lens)
         seq_emg, _ = self.embnet_emg(x_emg, lens)
         seq_combined = torch.cat([seq_imu, seq_emg], dim=2)
-        # seq_combined = torch.flatten(seq_combined, start_dim=1)
         output = self.linear(seq_combined)
-        # output = output.view([-1, interpo_len, self.output_dim])
         return output
 
 
 class ImuRnnEmbedding(nn.Module):
-    def __init__(self, x_dim, output_dim, net_name, nlayer=2, linear_dim=64):
+    def __init__(self, x_dim, output_dim, net_name, nlayer=2, linear_dim=32):
         super(ImuRnnEmbedding, self).__init__()
         self.net_name = net_name
         self.rnn_layer = nn.LSTM(x_dim, linear_dim, nlayer, bidirectional=True, bias=True)
-        self.linear = nn.Linear(linear_dim*2, output_dim)
+        self.linear = nn.Linear(linear_dim*2, output_dim, bias=False)
         self.bn = nn.BatchNorm1d(output_dim)
         self.output_dim = output_dim
         self.ratio_to_base_fre = 1
@@ -134,9 +115,7 @@ class ImuRnnEmbedding(nn.Module):
         sequence, _ = pad_packed_sequence(sequence, total_length=total_len)
         sequence = self.down_sampling_via_pooling(sequence)
         sequence = F.relu(self.linear(sequence))
-        sequence = sequence.transpose(0, 1).transpose(1, 2)
-        sequence = self.bn(sequence)
-        sequence = sequence.transpose(1, 2)
+        sequence = sequence.transpose(0, 1)
         emb = emb[-2:]
         emb = emb.transpose(0, 1)
         emb = torch.flatten(emb, start_dim=1)
@@ -187,7 +166,7 @@ class ImuTransformerEmbedding(nn.Module):
         super().__init__()
         self.group_ratio = 16
         self.pos_encoder = PositionalEncoding(d_model, dropout)
-        self.d_model = d_model * 16     # !!!
+        self.d_model = d_model * self.group_ratio     # !!!
         encoder_layers = TransformerEncoderLayer(self.d_model, nhead, d_hid, dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.output_dim = output_dim

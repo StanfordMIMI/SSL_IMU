@@ -14,11 +14,10 @@ from sklearn.metrics import r2_score, mean_squared_error as mse
 import torch
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
-from ignite.handlers.param_scheduler import create_lr_scheduler_with_warmup
 from torch.utils.data import DataLoader, TensorDataset
 from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, EmgFcnnEmbedding, \
-    LinearTestNet, ImuRnnEmbedding, EmgRnnEmbedding, SslNet, ImuResnetEmbedding, \
-    ImuCnnEmbedding
+    ImuRnnEmbedding, EmgRnnEmbedding, SslNet, ImuResnetEmbedding, \
+    ImuCnnEmbedding, LinearRegressNet
 import time
 from types import SimpleNamespace
 import prettytable as pt
@@ -48,7 +47,7 @@ class FrameworkSSL:
         imu_dim, emg_dim = len(IMU_LIST), len(EMG_LIST)
         self.emb_net_imu = emb_net_imu(imu_dim, self.config.emb_output_dim, 'IMU Embedding')
         self.emb_net_emg = emb_net_emg(emg_dim, self.config.emb_output_dim, 'EMG Embedding')
-        self.linear_regress_net = LinearTestNet(self.emb_net_imu, self.emb_net_emg, len(OUTPUT_LIST))
+        self.linear_regress_net = LinearRegressNet(self.emb_net_imu, self.emb_net_emg, len(OUTPUT_LIST))
         self.init_state_emb_net_imu = self.emb_net_imu.state_dict()
         self.init_state_emb_net_emg = self.emb_net_emg.state_dict()
         self.init_state_linear_regress = self.linear_regress_net.state_dict()
@@ -78,7 +77,6 @@ class FrameworkSSL:
         """
         train_data = get_data_by_merging_data_struct([self.data[id] for id in train_sub_ids])
         train_data = self.preprocess_data(train_data, 'fit_transform')
-        train_data['IMU'], train_data['EMG'] = self.unison_shuffled_copies(train_data['IMU'], train_data['EMG'])
         logging.info('Train the model with subject ids: {}. Number of steps: {}'.format(train_sub_ids, train_data['IMU'].shape[0]))
 
         vali_data = get_data_by_merging_data_struct([self.data[id] for id in validate_sub_ids])
@@ -91,11 +89,10 @@ class FrameworkSSL:
 
         y_pred, model = self.linear_regressibility(train_data, test_data)
         self.reset_emb_net_to_init_state()
-        # self.show_params([self.emb_net_imu.linear1.weight, self.emb_net_imu.linear1.bias, self.emb_net_imu.linear2.weight, self.emb_net_imu.linear2.bias])
         # self.save_model_and_results(test_data['y'], y_pred, OUTPUT_LIST, model, test_sub_ids)
 
-        # model = self.ssl_training(train_data, vali_data)
-        # y_pred, model = self.linear_regressibility(train_data, test_data)
+        model = self.ssl_training(train_data, vali_data)
+        y_pred, model = self.linear_regressibility(train_data, test_data)
 
         plt.show()
         plt.close('all')
@@ -115,7 +112,7 @@ class FrameworkSSL:
                         for value in test_result.values()])
         logging.info(tb)
 
-    def linear_regressibility(self, train_data, test_data):
+    def linear_regressibility(self, train_data, test_data, verbose=False):
         def prepare_data(data, step_lens, batch_size):
             x_imu = torch.from_numpy(data['IMU']).float()
             x_emg = torch.from_numpy(data['EMG']).float()
@@ -141,7 +138,10 @@ class FrameworkSSL:
                 optimizer.zero_grad()
                 xb_imu, xb_emg, lens, y_true = convert_batch_data(batch_data)
                 y_pred = model(xb_imu, xb_emg, lens)
-                loss_fn(y_pred, y_true).backward()
+                loss = loss_fn(y_pred, y_true)
+                loss.backward()
+                if verbose:
+                    print(f'| epoch {i_epoch:3d} | {i_batch:5d}/{len(train_dl):4d} batches | loss {loss.item():5.2f}')
                 optimizer.step()
 
         def eval_during_training(model, dl, loss_fn):
@@ -173,30 +173,38 @@ class FrameworkSSL:
         test_dl = prepare_data(test_data, test_step_lens, int(self.config.batch_size))
 
         model = self.linear_regress_net
+        # num_params = sum(param.numel() for param in model.embnet_imu.rnn_layer.parameters())
+        # print(num_params)
+        # num_params = sum(param.numel() for param in model.embnet_imu.linear.parameters())
+        # print(num_params)
 
-        if self.config.device is 'cuda':
+        if self.config.device == 'cuda':
             model.cuda()
-        optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_linear, weight_decay=1e-5)      # !!! model.linear.parameters
+        optimizer = torch.optim.Adam(model.linear.parameters(), lr=self.config.lr_linear, weight_decay=1e-5)      # !!! model.linear.parameters
 
-        logging.info('\tEpoch | Train_set_Loss | Test_set_Loss | Duration\t\t')
+        # logging.info('\tEpoch | Train_set_Loss | Test_set_Loss | Duration\t\t')
         epoch_end_time = time.time()
         dtype = self.config.dtype
         for i_epoch in range(self.config.epoch_linear):
-            test_loss, y_pred_test, y_true_test = eval_during_training(model, test_dl, torch.nn.MSELoss())
             train_loss, y_pred_train, y_true_train = eval_during_training(model, train_dl, torch.nn.MSELoss())
+            test_loss, y_pred_test, y_true_test = eval_during_training(model, test_dl, torch.nn.MSELoss())
 
             if i_epoch in [self.config.epoch_linear-1]:
                 plt.figure()
                 plt.title('Train')
-                plt.plot(torch.cat(y_true_train).numpy().ravel())
-                plt.plot(torch.cat(y_pred_train).numpy().ravel())
+                plt.plot(torch.cat(y_true_train).numpy()[:, :, 0].ravel())
+                plt.plot(torch.cat(y_pred_train).numpy()[:, :, 0].ravel())
 
                 plt.figure()
                 plt.title('Test')
-                plt.plot(torch.cat(y_true_test).numpy().ravel())
-                plt.plot(torch.cat(y_pred_test).numpy().ravel())
-
-            logging.info("\t{:3}\t{:12.3f}\t{:12.3f}\t{:13.2f}s\t\t".format(i_epoch, train_loss, test_loss, time.time() - epoch_end_time))
+                plt.plot(torch.cat(y_true_test).numpy()[:, :, 0].ravel())
+                plt.plot(torch.cat(y_pred_test).numpy()[:, :, 0].ravel())
+            if verbose:
+                print('-' * 80)
+            logging.info(f'| Linear Regressibility | epoch {i_epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
+                         f'train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
+            if verbose:
+                print('-' * 80)
             epoch_end_time = time.time()
             train(model, train_dl, optimizer, torch.nn.MSELoss(), self.config.use_ratio)
         # plt.show()
@@ -208,7 +216,7 @@ class FrameworkSSL:
 
         return y_pred, model
 
-    def ssl_training(self, train_data, vali_data):
+    def ssl_training(self, train_data, vali_data, verbose=False):
         def prepare_data(train_step_lens, vali_step_lens, batch_size):
             x_train_imu = torch.from_numpy(train_data['IMU']).float()
             x_train_emg = torch.from_numpy(train_data['EMG']).float()
@@ -234,7 +242,10 @@ class FrameworkSSL:
                 xb_emg = x[1].float().type(dtype)
                 lens = x[2].float()
                 emb_imu, emb_emg = model(xb_imu, xb_emg, lens)
-                loss_fn(emb_imu, emb_emg).backward()
+                loss = loss_fn(emb_imu, emb_emg)
+                loss.backward()
+                if verbose:
+                    print(f'| epoch {i_epoch:3d} | {i_batch:5d}/{len(train_dl):4d} batches | loss {loss.item():5.4f}')
                 optimizer.step()
 
         def eval_during_training(model, dl, loss_fn):
@@ -253,7 +264,7 @@ class FrameworkSSL:
         vali_step_lens = self._get_step_len(vali_data['IMU'])
 
         model = SslNet(self.emb_net_imu, self.emb_net_emg, self.config.common_space_dim)
-        if self.config.device is 'cuda':
+        if self.config.device == 'cuda':
             model.cuda()
 
         train_dl, vali_dl = prepare_data(train_step_lens, vali_step_lens, int(self.config.batch_size))
@@ -261,30 +272,27 @@ class FrameworkSSL:
 
         # scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_ssl/4))
 
-        logging.info('\tEpoch | Validation_set_Loss | Duration\t\t')
+        # logging.info('\tEpoch | Validation_set_Loss | Duration\t\t')
         dtype = self.config.dtype
         epoch_end_time = time.time()
-        current_best_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
-        logging.info("\t{:3}\t{:15.3f}\t{:13.2f}s\t\t".format(0, current_best_loss, time.time() - epoch_end_time))
-        best_model = copy.deepcopy(model)
+        # current_best_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
+        # best_model = copy.deepcopy(model)
         for i_epoch in range(self.config.epoch_ssl):
             epoch_end_time = time.time()
-
-            # print('Linear imu weight: {:.3f} ({:.3f}); Linear emg weight: {:.3f} ({:.3f}); LSTM imu weight: {:.3f} ({:.3f}); LSTM emg weight: {:.3f} ({:.3f});'.format(
-            #     *[fun(x.cpu().detach().numpy())
-            #       for x in [
-            #         model.embnet_imu.layer4_2.bn1.running_mean, model.embnet_imu.layer4_2.bn1.running_var,
-            #         model.embnet_emg.layer4_2.bn1.running_mean, model.embnet_emg.layer4_2.bn1.running_var]
-            #       for fun in [lambda x: np.mean(abs(x)), np.std]]))
-
             train(model, train_dl, optimizer, self.config.loss_fn, self.config.use_ratio)
-            vali_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
-            logging.info("\t{:3}\t{:15.3f}\t{:13.2f}s\t\t".format(i_epoch+1, vali_loss, time.time() - epoch_end_time))
-            if vali_loss < current_best_loss:
-                current_best_loss = vali_loss
-                best_model = copy.deepcopy(model)
+            train_loss = eval_during_training(model, train_dl, self.config.loss_fn)
+            test_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
+            if verbose:
+                print('-' * 80)
+            logging.info(f'| SSL | epoch {i_epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
+                         f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
+            if verbose:
+                print('-' * 80)
+            # if test_loss < current_best_loss:
+            #     current_best_loss = test_loss
+            #     best_model = copy.deepcopy(model)
             # scheduler.step()
-        model = best_model
+        # model = best_model
         return {'model': model}
 
     def save_model_and_results(self, ):
@@ -337,14 +345,6 @@ class FrameworkSSL:
         if new_data.shape[1] != new_len:
             raise RuntimeError('Check ori_len and new_len')
         return new_data
-
-    @staticmethod
-    def build_linear_classifier(x_train, y_train, x_validation=None, y_validation=None, validation_weight=None):
-        raise RuntimeError('Method not implemented')
-
-    @staticmethod
-    def predict(model, x_test):
-        raise RuntimeError('Method not implemented')
 
     def hyperparam_tuning(self, model, x_test):
         raise RuntimeError('Method not implemented')
@@ -488,14 +488,6 @@ class DatasetLoader:
                     data_y_200 = trial_data_200[step_200[0]:step_200[1], output_col_loc]
                     data_struct.add_new_step(data_x_200, data_x_1000, data_y_200)
             self.data[subject] = data_struct
-        # # FOR DEBUG
-        # colors=['C0', 'C1', 'C2']
-        # for subject in self.subject_list:
-        #     for axis in range(6, 9):
-        #         data_smooth = data_filter(self.data[subject].x_200[0][:, axis], 15, 200)
-        #         plt.plot(data_smooth, color=colors[axis % 3])
-        #         # plt.plot(trial_data_200[:, input_col_loc_imu][:, axis], color=colors[axis])
-        # plt.show()
         return self.data
 
     @staticmethod
@@ -561,16 +553,16 @@ class DatasetLoader:
         gyr_thd = 2.6
         acc_thd = 1.2 / GRAVITY
         max_distance = self.sample_rate * 2  # distance from stationary phase should be smaller than 2 seconds
-
-        if cut_off_fre_strike_off is not None:
-            acc_data = data_filter(acc_data, cut_off_fre_strike_off, self.sample_rate, filter_order=2)
-            gyr_data = data_filter(gyr_data, cut_off_fre_strike_off, self.sample_rate, filter_order=2)
-
+        acc_magnitude = np.linalg.norm(acc_data, axis=1)
+        gyr_magnitude = np.linalg.norm(gyr_data, axis=1)
         gyr_y = gyr_data[:, 1]
         data_len = gyr_data.shape[0]
 
-        acc_magnitude = np.linalg.norm(acc_data, axis=1)
-        gyr_magnitude = np.linalg.norm(gyr_data, axis=1)
+        if cut_off_fre_strike_off is not None:
+            acc_magnitude = data_filter(acc_magnitude, cut_off_fre_strike_off, self.sample_rate, filter_order=2)
+            gyr_magnitude = data_filter(gyr_magnitude, cut_off_fre_strike_off, self.sample_rate, filter_order=2)
+            gyr_y = data_filter(gyr_y, cut_off_fre_strike_off, self.sample_rate, filter_order=2)
+
         acc_magnitude = acc_magnitude - 1       # remove the gravity
 
         stationary_flag = self.__find_stationary_phase(
@@ -655,22 +647,21 @@ SUB_LIST = [
     'AB06', 'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13',
     'AB14', 'AB15', 'AB16', 'AB17', 'AB18', 'AB19', 'AB21', 'AB23',
     'AB24', 'AB25',
-    'AB27',
-    'AB28', 'AB30'
+    'AB27', 'AB28', 'AB30'
 ]
 IMU_LIST = [segment + sensor + axis for segment in ['shank', 'thigh'] for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']]
 EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus']
 # EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
 #             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
 OUTPUT_LIST = ['knee_angle_r']
-# 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'ankle_angle_r'
+# 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 SAMPLES_BEFORE_STEP, SAMPLES_AFTER_STEP = 0, 0          # !!! change to 40
-config = {'epoch_ssl': 200, 'epoch_linear': 200, 'batch_size': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4, 'use_ratio': 100,
-          'emb_output_dim': 56, 'common_space_dim': 56, 'device': 'cuda', 'dtype': torch.FloatTensor,
-          'interpo_len': None, 'remove_trial_type': ['treadmill'],
-          'from_strike_to_off': True, 'loss_fn': nce_loss, 'max_trial_num': 1000}
-if config['device'] is 'cuda':
+config = {'epoch_ssl': 100, 'epoch_linear': 100, 'batch_size': 512, 'lr_ssl': 1e-4, 'lr_linear': 1e-4, 'use_ratio': 100,
+          'emb_output_dim': 64, 'common_space_dim': 1, 'device': 'cuda', 'dtype': torch.FloatTensor,
+          'interpo_len': None, 'remove_trial_type': ['stair', 'ramp', 'overground'],
+          'from_strike_to_off': True, 'loss_fn': nce_loss, 'max_trial_num': 2000}
+if config['device'] == 'cuda':
     config['dtype'] = torch.cuda.FloatTensor
 
 
@@ -679,7 +670,7 @@ if __name__ == '__main__':
     test_set = ['AB25', 'AB27', 'AB28', 'AB30']
     train_set = [item for item in SUB_LIST if item not in test_set]
     data_reader = DatasetLoader(train_set + [sub for sub in test_set if sub not in train_set])
-    ssl_framework = FrameworkSSL(data_reader, ImuTransformerEmbedding, ImuTransformerEmbedding, config)
+    ssl_framework = FrameworkSSL(data_reader, ImuTransformerEmbedding, ImuTransformerEmbedding, config)     # ImuTransformerEmbedding, ImuTransformerEmbedding
     ssl_framework.preprocess_train_evaluation(train_set, test_set, test_set)
 
 
