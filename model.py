@@ -9,13 +9,32 @@ import numpy as np
 from utils import fix_seed
 import matplotlib.pyplot as plt
 
-interpo_len = 50
 fix_seed()
+temperature = 0.1       # TODO: optimize this
+
+
+def nx_xent_loss(emb1, emb2):
+    def _calculate_similarity(emb1, emb2):
+        # make each vector unit length
+        emb1 = F.normalize(emb1, p=2, dim=-1)
+        emb2 = F.normalize(emb2, p=2, dim=-1)
+
+        similarity = torch.matmul(emb1, emb2.transpose(1, 2))
+        return similarity / temperature
+
+    emb1_pos, emb2_pos = torch.unsqueeze(emb1, 1), torch.unsqueeze(emb2, 1)
+    sim_pos = _calculate_similarity(emb1_pos, emb2_pos)
+    emb1_all, emb2_all = torch.unsqueeze(emb1, 0), torch.unsqueeze(emb2, 0)
+    sim_all = _calculate_similarity(emb1_all, emb2_all)
+
+    logsumexp_pos = torch.flatten(sim_pos)
+    logsumexp_all = torch.logsumexp(sim_all, dim=2)
+    logsumexp_all = torch.flatten(logsumexp_all)
+    loss = (logsumexp_all - logsumexp_pos).mean()
+    return loss
 
 
 def nce_loss(emb1, emb2):
-    temperature = 0.4       # TODO: optimize this
-
     def _calculate_similarity(emb1, emb2):
         # make each vector unit length
         emb1 = F.normalize(emb1, p=2, dim=-1)
@@ -50,10 +69,14 @@ class SslNet(nn.Module):
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
         emb_output_dim = embnet_imu.output_dim
-        self.linear_proj_imu = nn.Linear(emb_output_dim, common_space_dim)
-        self.linear_proj_emg = nn.Linear(emb_output_dim, common_space_dim)
-        self.bn_proj_imu = nn.BatchNorm1d(common_space_dim)
-        self.bn_proj_emg = nn.BatchNorm1d(common_space_dim)
+        self.linear_proj_imu_1 = nn.Linear(emb_output_dim, emb_output_dim)
+        self.linear_proj_emg_1 = nn.Linear(emb_output_dim, emb_output_dim)
+        self.linear_proj_imu_2 = nn.Linear(emb_output_dim, common_space_dim)
+        self.linear_proj_emg_2 = nn.Linear(emb_output_dim, common_space_dim)
+        self.bn_proj_imu_1 = nn.BatchNorm1d(emb_output_dim)
+        self.bn_proj_emg_1 = nn.BatchNorm1d(emb_output_dim)
+        self.bn_proj_imu_2 = nn.BatchNorm1d(common_space_dim)
+        self.bn_proj_emg_2 = nn.BatchNorm1d(common_space_dim)
         self.net_name = 'Combined Net'
 
     def __str__(self):
@@ -66,8 +89,10 @@ class SslNet(nn.Module):
         seq_imu, _ = self.embnet_imu(x_imu, lens)
         seq_emg, _ = self.embnet_emg(x_emg, lens)
 
-        seq_imu = self.bn_proj_imu(self.linear_proj_imu(seq_imu).transpose(1, 2)).transpose(1, 2)
-        seq_emg = self.bn_proj_emg(self.linear_proj_emg(seq_emg).transpose(1, 2)).transpose(1, 2)
+        seq_imu = F.relu(self.bn_proj_imu_1(self.linear_proj_imu_1(seq_imu).transpose(1, 2)).transpose(1, 2))
+        seq_emg = F.relu(self.bn_proj_emg_1(self.linear_proj_emg_1(seq_emg).transpose(1, 2)).transpose(1, 2))
+        seq_imu = self.bn_proj_imu_2(self.linear_proj_imu_2(seq_imu).transpose(1, 2)).transpose(1, 2)
+        seq_emg = self.bn_proj_emg_2(self.linear_proj_emg_2(seq_emg).transpose(1, 2)).transpose(1, 2)
         seq_imu = torch.flatten(seq_imu, start_dim=1)
         seq_emg = torch.flatten(seq_emg, start_dim=1)
         return seq_imu, seq_emg
@@ -95,13 +120,13 @@ class ImuRnnEmbedding(nn.Module):
         super(ImuRnnEmbedding, self).__init__()
         self.net_name = net_name
         self.rnn_layer = nn.LSTM(x_dim, linear_dim, nlayer, bidirectional=True, bias=True)
-        self.linear = nn.Linear(linear_dim*2, output_dim, bias=False)
+        self.linear = nn.Linear(linear_dim*2, output_dim)
         self.bn = nn.BatchNorm1d(output_dim)
         self.output_dim = output_dim
         self.ratio_to_base_fre = 1
-        for name, param in self.rnn_layer.named_parameters():
+        for name, param in self.linear.named_parameters():
             if 'weight' in name:
-                nn.init.xavier_normal_(param)
+                nn.init.xavier_normal_(param, gain=10)
 
     def __str__(self):
         return self.net_name
@@ -113,30 +138,13 @@ class ImuRnnEmbedding(nn.Module):
         sequence = pack_padded_sequence(sequence, lens, enforce_sorted=False)
         sequence, (emb, _) = self.rnn_layer(sequence)
         sequence, _ = pad_packed_sequence(sequence, total_length=total_len)
-        sequence = self.down_sampling_via_pooling(sequence)
-        sequence = F.relu(self.linear(sequence))
+        sequence = self.linear(sequence)
         sequence = sequence.transpose(0, 1)
         emb = emb[-2:]
         emb = emb.transpose(0, 1)
         emb = torch.flatten(emb, start_dim=1)
         emb = emb.transpose(0, 1)
         return sequence, emb
-
-    def down_sampling_via_pooling(self, sequence):
-        return sequence
-
-
-class EmgRnnEmbedding(ImuRnnEmbedding):
-    def __init__(self, *args, **kwargs):
-        super(EmgRnnEmbedding, self).__init__(*args, **kwargs)
-        self.pooling = nn.AvgPool1d(5, 5)
-        self.ratio_to_base_fre = 5
-
-    def down_sampling_via_pooling(self, sequence):
-        sequence = sequence.transpose(0, 2)
-        sequence = self.pooling(sequence)
-        sequence = sequence.transpose(0, 2)
-        return sequence
 
 
 class PositionalEncoding(nn.Module):
@@ -158,19 +166,18 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-# class Tokenization(nn.Module)
-
-
 class ImuTransformerEmbedding(nn.Module):
     def __init__(self, d_model, output_dim, net_name, nlayers=1, nhead=1, d_hid=20, dropout=0, device='cuda'):
         super().__init__()
-        self.group_ratio = 16
+        self.patch_len = 16
+        self.patch_step_len = 8
+        self.pad_len = int(self.patch_step_len / 2)
         self.pos_encoder = PositionalEncoding(d_model, dropout)
-        self.d_model = d_model * self.group_ratio     # !!!
+        self.d_model = int(d_model * (256 / self.patch_len))
         encoder_layers = TransformerEncoderLayer(self.d_model, nhead, d_hid, dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.output_dim = output_dim
-        self.linear = nn.Linear(self.d_model, output_dim * self.group_ratio)
+        self.linear = nn.Linear(self.d_model, output_dim * self.patch_step_len)
         self.device = device
 
     def forward(self, sequence, lens):
@@ -182,27 +189,23 @@ class ImuTransformerEmbedding(nn.Module):
         Returns:
             output Tensor of shape [seq_len, batch_size, ntoken]
         """
-        sequence = self.group_samples(sequence)
+        sequence = self.divide_into_patches(sequence)
         sequence = sequence.transpose(0, 1)
-        # sequence = self.pos_encoder(sequence)
-        lens = lens / self.group_ratio
-        msk = self.generate_padding_mask(lens, sequence.shape[0])
-        output = self.transformer_encoder(sequence, src_key_padding_mask=msk)
-        output = self.down_sampling_via_pooling(output)
+        output = self.transformer_encoder(sequence)
         output = self.linear(output)
         output = output.transpose(0, 1)
-        output = self.ungroup_samples(output)
+        output = self.flat_patches(output)
         return output, None
 
-    def group_samples(self, sequence):          # !!! TODO: try overlapping
-        shape_1 = int(sequence.shape[1] / self.group_ratio)
-        temp = sequence.reshape([sequence.shape[0], shape_1, -1])
-        return temp
+    def divide_into_patches(self, sequence):
+        sequence = F.pad(sequence, (0, 0, self.pad_len, self.pad_len))
+        sequence = sequence.unfold(1, self.patch_len, self.patch_step_len).flatten(start_dim=2)
+        return sequence
 
-    def ungroup_samples(self, sequence):
-        shape_1 = sequence.shape[1] * self.group_ratio
-        temp = sequence.reshape([sequence.shape[0], shape_1, -1])
-        return temp
+    def flat_patches(self, sequence):
+        shape_1 = sequence.shape[1] * self.patch_step_len
+        sequence = sequence.reshape([sequence.shape[0], shape_1, -1])
+        return sequence
 
     def generate_padding_mask(self, lens, seq_len):
         msk = np.ones([len(lens), seq_len], dtype=bool)
@@ -210,20 +213,17 @@ class ImuTransformerEmbedding(nn.Module):
             msk[i, :int(the_len)] = 0
         return torch.from_numpy(msk).to(self.device)
 
-    def down_sampling_via_pooling(self, sequence):
-        return sequence
-
 
 class ImuFcnnEmbedding(nn.Module):
     def __init__(self, x_dim, output_dim, net_name):
         super(ImuFcnnEmbedding, self).__init__()
         self.net_name = net_name
-        self.interpo_len = 50
+        self.seq_len = 256
         hid_dim = 256
-        self.linear1 = nn.Linear(x_dim * self.interpo_len, hid_dim)
+        self.linear1 = nn.Linear(x_dim * self.seq_len, hid_dim)
         self.bn1 = nn.BatchNorm1d(hid_dim)
-        self.linear2 = nn.Linear(hid_dim, output_dim * self.interpo_len)
-        self.bn2 = nn.BatchNorm1d(output_dim * self.interpo_len)
+        self.linear2 = nn.Linear(hid_dim, output_dim * self.seq_len)
+        self.bn2 = nn.BatchNorm1d(output_dim * self.seq_len)
         self.output_dim = output_dim
         self.ratio_to_base_fre = 1
 
@@ -236,13 +236,6 @@ class ImuFcnnEmbedding(nn.Module):
         sequence = self.bn2(torch.sigmoid(self.linear2(sequence)))
         sequence = sequence.view(original_shape[0], original_shape[1], -1)
         return sequence, None
-
-
-class EmgFcnnEmbedding(ImuFcnnEmbedding):
-    pass
-
-
-"""Implementation 1"""
 
 
 class RestNetBasicBlock(nn.Module):
