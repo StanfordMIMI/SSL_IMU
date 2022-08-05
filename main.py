@@ -16,8 +16,9 @@ from torch.nn import functional as F
 import wandb
 from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
-from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, ImuRnnEmbedding, SslNet, ImuResnetEmbedding, \
-    ImuCnnEmbedding, LinearRegressNet, nx_xent_loss
+from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, ImuRnnEmbedding, SslContrastiveNet, \
+    ImuResnetEmbedding, \
+    ImuCnnEmbedding, LinearRegressNet, nx_xent_loss, SslReconstructNet
 import time
 from types import SimpleNamespace
 import prettytable as pt
@@ -226,7 +227,7 @@ class FrameworkSSL:
 
         return y_pred, model
 
-    def ssl_training(self, train_data, vali_data, verbose=False):
+    def ssl_training(self, train_data, vali_data):
         def prepare_data(train_step_lens, vali_step_lens, batch_size):
             x_train_imu = torch.from_numpy(train_data['IMU']).float()
             x_train_emg = torch.from_numpy(train_data['EMG']).float()
@@ -254,8 +255,6 @@ class FrameworkSSL:
                 emb_imu, emb_emg = model(xb_imu, xb_emg, lens)
                 loss = loss_fn(emb_imu, emb_emg)
                 loss.backward()
-                if verbose:
-                    print(f'| epoch {i_epoch:3d} | {i_batch:5d}/{len(train_dl):4d} batches | loss {loss.item():5.4f}')
                 optimizer.step()
 
         def eval_during_training(model, dl, loss_fn):
@@ -273,7 +272,7 @@ class FrameworkSSL:
         train_step_lens = self._get_step_len(train_data['IMU'])
         vali_step_lens = self._get_step_len(vali_data['IMU'])
 
-        model = SslNet(self.emb_net_imu, self.emb_net_emg, self.config.common_space_dim)
+        model = SslContrastiveNet(self.emb_net_imu, self.emb_net_emg, self.config.common_space_dim)
         wandb.watch(model, self.config.loss_fn, log='all', log_freq=10)
         if self.config.device == 'cuda':
             model.cuda()
@@ -291,13 +290,8 @@ class FrameworkSSL:
             epoch_end_time = time.time()
             train_loss = eval_during_training(model, train_dl, self.config.loss_fn)
             test_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
-            if verbose:
-                print('-' * 80)
             logging.info(f'| SSL | epoch {i_epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
                          f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
-
-            if verbose:
-                print('-' * 80)
 
             # old_model = copy.deepcopy(model)
 
@@ -691,11 +685,7 @@ config = {'epoch_ssl': 20, 'epoch_linear': 10, 'batch_size_ssl': 512, 'batch_siz
           'interpo_len': None, 'remove_trial_type': [], 'use_ratio': 100,
           'from_strike_to_off': True, 'loss_fn': nx_xent_loss, 'max_trial_num': 30}
 wandb.init(
-    project="IMU_EMG_SSL",
-    notes="tweak baseline",
-    tags=["baseline", "paper1"],
-    config=config,
-)
+    project="IMU_EMG_SSL", notes="tweak baseline", tags=["baseline", "paper1"], config=config, name='a name')
 if config['device'] == 'cuda':
     config['dtype'] = torch.cuda.FloatTensor
 

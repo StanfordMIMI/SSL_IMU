@@ -13,7 +13,7 @@ fix_seed()
 temperature = 0.1       # TODO: optimize this
 
 
-def nx_xent_loss(emb1, emb2):
+def nce_loss(emb1, emb2):
     def _calculate_similarity(emb1, emb2):
         # make each vector unit length
         emb1 = F.normalize(emb1, p=2, dim=-1)
@@ -34,38 +34,9 @@ def nx_xent_loss(emb1, emb2):
     return loss
 
 
-def nce_loss(emb1, emb2):
-    def _calculate_similarity(emb1, emb2):
-        # make each vector unit length
-        emb1 = F.normalize(emb1, p=2, dim=-1)
-        emb2 = F.normalize(emb2, p=2, dim=-1)
-
-        # Similarities [B_1, B_2*L].
-        similarity = torch.matmul(emb1, emb2.transpose(1, 2))
-
-        # [B_1, B_2, L]
-        similarity = torch.flatten(similarity)
-        similarity /= temperature
-        return similarity
-
-    batch_size, feature_dim = emb1.shape  # B
-    emb1_pos, emb2_pos = torch.unsqueeze(emb1, 1), torch.unsqueeze(emb2, 1)
-    sim_pos = _calculate_similarity(emb1_pos, emb2_pos)
-    emb1_all, emb2_all = torch.unsqueeze(emb1, 0), torch.unsqueeze(emb2, 0)
-    sim_all = _calculate_similarity(emb1_all, emb2_all)
-
-    # Compute the log sum exp (numerator) of the NCE loss.
-    logsumexp_pos = torch.logsumexp(sim_pos, dim=0)
-    # Compute the log sum exp (denominator) of the NCE loss.
-    logsumexp_all = torch.logsumexp(sim_all, dim=0)
-    # Compute the loss.
-    loss = logsumexp_all - logsumexp_pos
-    return loss / batch_size
-
-
-class SslNet(nn.Module):
+class SslContrastiveNet(nn.Module):
     def __init__(self, embnet_imu, embnet_emg, common_space_dim):
-        super(SslNet, self).__init__()
+        super(SslContrastiveNet, self).__init__()
         self.embnet_imu = embnet_imu
         self.embnet_emg = embnet_emg
         emb_output_dim = embnet_imu.output_dim
@@ -96,6 +67,27 @@ class SslNet(nn.Module):
         seq_imu = torch.flatten(seq_imu, start_dim=1)
         seq_emg = torch.flatten(seq_emg, start_dim=1)
         return seq_imu, seq_emg
+
+
+class SslReconstructNet(nn.Module):
+    def __init__(self, embnet_imu, _, emg_dim):
+        super(SslReconstructNet, self).__init__()
+        self.embnet_imu = embnet_imu
+        emb_output_dim = embnet_imu.output_dim
+        self.linear_proj_imu_1 = nn.Linear(emb_output_dim, emg_dim)
+        self.bn_proj_imu_1 = nn.BatchNorm1d(emg_dim)
+        self.net_name = 'Combined Net'
+
+    def __str__(self):
+        return self.net_name
+
+    def set_scalars(self, scalars):
+        self.scalars = scalars
+
+    def forward(self, x_imu, x_emg, lens):
+        seq_imu, _ = self.embnet_imu(x_imu, lens)
+        output = self.bn_proj_imu_1(self.linear_proj_imu_1(seq_imu).transpose(1, 2)).transpose(1, 2)
+        return output
 
 
 class LinearRegressNet(nn.Module):
