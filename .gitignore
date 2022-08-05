@@ -3,6 +3,7 @@ runs/
 figures/results/
 figures/exports/
 .idea/
+.wandb/
 *.csv
 
 # Byte-compiled / optimized / DLL files

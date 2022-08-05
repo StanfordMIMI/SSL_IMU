@@ -18,5 +18,3 @@ with open(file_name) as file:
     plt.xlabel('Epoches')
     plt.legend()
     plt.show()
-
-    x=1

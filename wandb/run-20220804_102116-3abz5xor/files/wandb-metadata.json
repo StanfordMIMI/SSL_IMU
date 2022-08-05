@@ -1,0 +1,24 @@
+{
+    "os": "Windows-10-10.0.19044-SP0",
+    "python": "3.9.13",
+    "heartbeatAt": "2022-08-04T02:21:18.554876",
+    "startedAt": "2022-08-04T02:21:16.019840",
+    "docker": null,
+    "gpu": "NVIDIA GeForce GTX 960",
+    "gpu_count": 1,
+    "cpu_count": 8,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "C:\\Users\\SJTU Lab\\Desktop\\SSL_IMU_EMG\\main.py",
+    "codePath": "main.py",
+    "git": {
+        "remote": "https://github.com/TheOne-1/SSL_IMU_EMG.git",
+        "commit": "5502efbea8cfec31408f27fce01ef59cf3b9fc2c"
+    },
+    "email": "alan.tan.tian@outlook.com",
+    "root": "C:/Users/SJTU Lab/Desktop/SSL_IMU_EMG",
+    "host": "SJTU-Lab",
+    "username": "Alan Tan",
+    "executable": "C:\\Program Files\\Python39\\python.exe"
+}

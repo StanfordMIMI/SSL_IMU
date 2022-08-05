@@ -13,6 +13,7 @@ import ast
 from sklearn.metrics import r2_score, mean_squared_error as mse
 import torch
 from torch.nn import functional as F
+import wandb
 from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, ImuRnnEmbedding, SslNet, ImuResnetEmbedding, \
@@ -195,12 +196,6 @@ class FrameworkSSL:
             train_loss, y_pred_train, y_true_train = eval_during_training(model, train_dl, torch.nn.MSELoss())
             test_loss, y_pred_test, y_true_test = eval_during_training(model, test_dl, torch.nn.MSELoss())
 
-            # print('LSTM imu weight: {:.5f} ({:.5f}); LSTM emg weight: {:.5f} ({:.5f}); LSTM imu bias: {:.5f} ({:.5f}); LSTM emg bias: {:.5f} ({:.5f});'.format(
-            #     *[fun(x.cpu().detach().numpy())
-            #       for x in [
-            #           model.embnet_imu.rnn_layer.weight_hh_l0, model.embnet_emg.rnn_layer.weight_hh_l0,
-            #           model.embnet_imu.rnn_layer.bias_hh_l0, model.embnet_emg.rnn_layer.bias_hh_l0]
-            #       for fun in [lambda x: np.mean(abs(x)), np.std]]))
             if i_epoch in [self.config.epoch_linear-1]:
                 plt.figure()
                 plt.title('Train')
@@ -221,12 +216,6 @@ class FrameworkSSL:
 
             # old_model = copy.deepcopy(model)
             train(model, train_dl, optimizer, torch.nn.MSELoss(), self.config.use_ratio)
-
-            # for (name, parms_new), (_, parms_old) in zip(model.named_parameters(), old_model.named_parameters()):
-            #     parms = parms_new - parms_old
-            #     if 'transformer' in name and 'imu' in name:
-            #         print('->name:', name, ' ->change:', round(parms.abs().mean().detach().item(), 5),
-            #               '(', round(parms.abs().std().detach().item(), 5), ')')
 
         # plt.show()
 
@@ -285,6 +274,7 @@ class FrameworkSSL:
         vali_step_lens = self._get_step_len(vali_data['IMU'])
 
         model = SslNet(self.emb_net_imu, self.emb_net_emg, self.config.common_space_dim)
+        wandb.watch(model, self.config.loss_fn, log='all', log_freq=10)
         if self.config.device == 'cuda':
             model.cuda()
 
@@ -293,17 +283,10 @@ class FrameworkSSL:
 
         # scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_ssl/4))
 
-        # logging.info('\tEpoch | Validation_set_Loss | Duration\t\t')
         dtype = self.config.dtype
         current_best_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
         best_model = copy.deepcopy(model)
         for i_epoch in range(self.config.epoch_ssl):
-            # print('LSTM imu weight: {:.3f} ({:.3f}); LSTM emg weight: {:.3f} ({:.3f}); LSTM imu bias: {:.3f} ({:.3f}); LSTM emg bias: {:.3f} ({:.3f});'.format(
-            #     *[fun(x.cpu().detach().numpy())
-            #       for x in [
-            #           model.embnet_imu.rnn_layer.weight_hh_l0, model.embnet_emg.rnn_layer.weight_hh_l0,
-            #           model.embnet_imu.rnn_layer.bias_hh_l0, model.embnet_emg.rnn_layer.bias_hh_l0]
-            #       for fun in [lambda x: np.mean(abs(x)), np.std]]))
 
             epoch_end_time = time.time()
             train_loss = eval_during_training(model, train_dl, self.config.loss_fn)
@@ -313,16 +296,6 @@ class FrameworkSSL:
             logging.info(f'| SSL | epoch {i_epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
                          f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
 
-            # if i_epoch in [0, self.config.epoch_ssl-1]:
-            #     plt.figure()
-            #     plt.title('Train')
-            #     plt.plot(torch.cat(emb_imu_train).transpose(1, 2).transpose(0, 1).numpy()[:, :10, :].ravel())
-            #     plt.plot(torch.cat(emb_emg_train).transpose(1, 2).transpose(0, 1).numpy()[:, :10, :].ravel())
-            #
-            #     plt.figure()
-            #     plt.title('Test')
-            #     plt.plot(torch.cat(emb_imu_test).transpose(1, 2).transpose(0, 1).numpy()[:, :10, :].ravel())
-            #     plt.plot(torch.cat(emb_emg_test).transpose(1, 2).transpose(0, 1).numpy()[:, :10, :].ravel())
             if verbose:
                 print('-' * 80)
 
@@ -330,11 +303,8 @@ class FrameworkSSL:
 
             train(model, train_dl, optimizer, self.config.loss_fn, self.config.use_ratio)
 
-            # for (name, parms_new), (_, parms_old) in zip(model.named_parameters(), old_model.named_parameters()):
-            #     parms = parms_new - parms_old
-            #     if 'rnn' in name and 'imu' in name:
-            #         print('->name:', name, ' ->change:', round(parms.abs().mean().detach().item(), 5),
-            #               '(', round(parms.abs().std().detach().item(), 5), ')')
+            wandb.log({'train loss': train_loss, 'test loss': test_loss})
+            wandb.watch(model)
 
             if test_loss < current_best_loss:
                 current_best_loss = test_loss
@@ -716,10 +686,16 @@ OUTPUT_LIST = ['hip_flexion_r', 'knee_angle_r', 'ankle_angle_r']
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 SAMPLES_BEFORE_STEP, SAMPLES_AFTER_STEP = 0, 0
-config = {'epoch_ssl': 25, 'epoch_linear': 10, 'batch_size_ssl': 512, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
+config = {'epoch_ssl': 20, 'epoch_linear': 10, 'batch_size_ssl': 512, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
           'emb_output_dim': 256, 'common_space_dim': 1, 'device': 'cuda', 'dtype': torch.FloatTensor,
           'interpo_len': None, 'remove_trial_type': [], 'use_ratio': 100,
-          'from_strike_to_off': True, 'loss_fn': nx_xent_loss, 'max_trial_num': 1000}
+          'from_strike_to_off': True, 'loss_fn': nx_xent_loss, 'max_trial_num': 30}
+wandb.init(
+    project="IMU_EMG_SSL",
+    notes="tweak baseline",
+    tags=["baseline", "paper1"],
+    config=config,
+)
 if config['device'] == 'cuda':
     config['dtype'] = torch.cuda.FloatTensor
 
