@@ -70,7 +70,7 @@ class SslContrastiveNet(nn.Module):
 
 
 class SslReconstructNet(nn.Module):
-    def __init__(self, embnet_imu, _, emg_dim):
+    def __init__(self, embnet_imu, emg_dim):
         super(SslReconstructNet, self).__init__()
         self.embnet_imu = embnet_imu
         emb_output_dim = embnet_imu.output_dim
@@ -84,26 +84,23 @@ class SslReconstructNet(nn.Module):
     def set_scalars(self, scalars):
         self.scalars = scalars
 
-    def forward(self, x_imu, x_emg, lens):
+    def forward(self, x_imu, lens):
         seq_imu, _ = self.embnet_imu(x_imu, lens)
         output = self.bn_proj_imu_1(self.linear_proj_imu_1(seq_imu).transpose(1, 2)).transpose(1, 2)
         return output
 
 
 class LinearRegressNet(nn.Module):
-    def __init__(self, embnet_imu, embnet_emg, output_dim):
+    def __init__(self, embnet_imu, _, output_dim):
         super(LinearRegressNet, self).__init__()
         self.embnet_imu = embnet_imu
-        self.embnet_emg = embnet_emg
         emb_output_dim = embnet_imu.output_dim
         self.output_dim = output_dim
-        self.linear = nn.Linear(emb_output_dim * 2, output_dim)
+        self.linear = nn.Linear(emb_output_dim, output_dim)
 
-    def forward(self, x_imu, x_emg, lens):
+    def forward(self, x_imu, _, lens):
         seq_imu, _ = self.embnet_imu(x_imu, lens)
-        seq_emg, _ = self.embnet_emg(x_emg, lens)
-        seq_combined = torch.cat([seq_imu, seq_emg], dim=2)
-        output = self.linear(seq_combined)
+        output = self.linear(seq_imu)
         return output
 
 

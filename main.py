@@ -17,8 +17,7 @@ import wandb
 from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, ImuRnnEmbedding, SslContrastiveNet, \
-    ImuResnetEmbedding, \
-    ImuCnnEmbedding, LinearRegressNet, nx_xent_loss, SslReconstructNet
+    ImuCnnEmbedding, LinearRegressNet, SslReconstructNet
 import time
 from types import SimpleNamespace
 import prettytable as pt
@@ -252,28 +251,42 @@ class FrameworkSSL:
                 xb_imu = x[0].float().type(dtype)
                 xb_emg = x[1].float().type(dtype)
                 lens = x[2].float()
-                emb_imu, emb_emg = model(xb_imu, xb_emg, lens)
-                loss = loss_fn(emb_imu, emb_emg)
+                emg_pred = model(xb_imu, lens)
+                loss = loss_fn(emg_pred, xb_emg)
+                if i_batch % 5 == 0:
+                    train_loss, _, _ = eval_during_training(model, train_dl, self.config.ssl_loss_fn)
+                    test_loss, y_pred_list, y_true_list = eval_during_training(model, vali_dl, self.config.ssl_loss_fn)
+                    wandb.log({'train loss': train_loss, 'test loss': test_loss})
+                    if i_epoch == 0:
+                        plt.figure()
+                        for i in range(3):
+                            plt.plot(y_pred_list[0].numpy()[0, :, i], '--', color='C'+str(i))
+                            plt.plot(y_true_list[0].numpy()[0, :, i], color='C'+str(i))
+                        plt.savefig(self.result_dir + '/emg_batch{}.png'.format(i_batch))
+                        plt.close()
+                    model.train()
                 loss.backward()
                 optimizer.step()
 
         def eval_during_training(model, dl, loss_fn):
             model.eval()
             with torch.no_grad():
-                validation_loss = []
+                validation_loss, y_pred_list, y_true_list = [], [], []
                 for x in dl:
                     xb_imu = x[0].float().type(dtype)
                     xb_emg = x[1].float().type(dtype)
                     lens = x[2].float()
-                    emb_imu, emb_emg = model(xb_imu, xb_emg, lens)
-                    validation_loss.append(loss_fn(emb_imu, emb_emg).item())
-            return np.mean(validation_loss)
+                    emb_imu = model(xb_imu, lens)
+                    validation_loss.append(loss_fn(emb_imu, xb_emg).item())
+                    y_pred_list.append(emb_imu.detach().cpu())
+                    y_true_list.append(xb_emg.detach().cpu())
+            return np.mean(validation_loss), y_pred_list, y_true_list
 
         train_step_lens = self._get_step_len(train_data['IMU'])
         vali_step_lens = self._get_step_len(vali_data['IMU'])
 
-        model = SslContrastiveNet(self.emb_net_imu, self.emb_net_emg, self.config.common_space_dim)
-        wandb.watch(model, self.config.loss_fn, log='all', log_freq=10)
+        model = SslReconstructNet(self.emb_net_imu, len(EMG_LIST))
+        wandb.watch(model, self.config.ssl_loss_fn, log='all', log_freq=10)
         if self.config.device == 'cuda':
             model.cuda()
 
@@ -283,22 +296,19 @@ class FrameworkSSL:
         # scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_ssl/4))
 
         dtype = self.config.dtype
-        current_best_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
+        current_best_loss, _, _ = eval_during_training(model, vali_dl, self.config.ssl_loss_fn)
         best_model = copy.deepcopy(model)
+        epoch_end_time = time.time()
         for i_epoch in range(self.config.epoch_ssl):
 
-            epoch_end_time = time.time()
-            train_loss = eval_during_training(model, train_dl, self.config.loss_fn)
-            test_loss = eval_during_training(model, vali_dl, self.config.loss_fn)
+            train_loss, _, _ = eval_during_training(model, train_dl, self.config.ssl_loss_fn)
+            test_loss, _, _ = eval_during_training(model, vali_dl, self.config.ssl_loss_fn)
             logging.info(f'| SSL | epoch {i_epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
                          f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
+            epoch_end_time = time.time()
+            train(model, train_dl, optimizer, self.config.ssl_loss_fn, self.config.use_ratio)
 
-            # old_model = copy.deepcopy(model)
-
-            train(model, train_dl, optimizer, self.config.loss_fn, self.config.use_ratio)
-
-            wandb.log({'train loss': train_loss, 'test loss': test_loss})
-            wandb.watch(model)
+            # wandb.log({'train loss': train_loss, 'test loss': test_loss})
 
             if test_loss < current_best_loss:
                 current_best_loss = test_loss
@@ -680,12 +690,12 @@ OUTPUT_LIST = ['hip_flexion_r', 'knee_angle_r', 'ankle_angle_r']
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 SAMPLES_BEFORE_STEP, SAMPLES_AFTER_STEP = 0, 0
-config = {'epoch_ssl': 20, 'epoch_linear': 10, 'batch_size_ssl': 512, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
+config = {'epoch_ssl': 25, 'epoch_linear': 20, 'batch_size_ssl': 512, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
           'emb_output_dim': 256, 'common_space_dim': 1, 'device': 'cuda', 'dtype': torch.FloatTensor,
           'interpo_len': None, 'remove_trial_type': [], 'use_ratio': 100,
-          'from_strike_to_off': True, 'loss_fn': nx_xent_loss, 'max_trial_num': 30}
+          'from_strike_to_off': True, 'ssl_loss_fn': torch.nn.MSELoss(), 'max_trial_num': 2000}
 wandb.init(
-    project="IMU_EMG_SSL", notes="tweak baseline", tags=["baseline", "paper1"], config=config, name='a name')
+    project="IMU_EMG_SSL", notes="tweak baseline", tags=["baseline", "paper1"], config=config, name='SSL via EMG reconstruction worked')
 if config['device'] == 'cuda':
     config['dtype'] = torch.cuda.FloatTensor
 
@@ -695,7 +705,7 @@ if __name__ == '__main__':
     test_set = ['AB25', 'AB27', 'AB28', 'AB30']
     train_set = [item for item in SUB_LIST if item not in test_set]
     data_reader = DatasetLoader(train_set + [sub for sub in test_set if sub not in train_set])
-    ssl_framework = FrameworkSSL(data_reader, ImuTransformerEmbedding, ImuTransformerEmbedding, config)
+    ssl_framework = FrameworkSSL(data_reader, ImuRnnEmbedding, ImuRnnEmbedding, config)
     ssl_framework.preprocess_train_evaluation(train_set, test_set, test_set)
 
 
