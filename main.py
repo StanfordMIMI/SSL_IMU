@@ -47,6 +47,7 @@ class FrameworkSSL:
         imu_dim, emg_dim = len(IMU_LIST), len(EMG_LIST)
         self.emb_net_imu = emb_net_imu(imu_dim, self.config.emb_output_dim, 'IMU Embedding')
         self.emb_net_emg = emb_net_emg(emg_dim, self.config.emb_output_dim, 'EMG Embedding')
+        wandb.watch(self.emb_net_imu, self.config.ssl_loss_fn, log='all', log_freq=20)
         self.linear_regress_net = LinearRegressNet(self.emb_net_imu, self.emb_net_emg, len(OUTPUT_LIST))
         self.init_state_emb_net_imu = self.emb_net_imu.state_dict()
         self.init_state_emb_net_emg = self.emb_net_emg.state_dict()
@@ -114,7 +115,7 @@ class FrameworkSSL:
                         for value in test_result.values()])
         logging.info(tb)
 
-    def regressibility(self, train_data, test_data, only_linear_layer, verbose=False):
+    def regressibility(self, train_data, test_data, only_linear_layer):
         def prepare_data(data, step_lens, batch_size):
             x_imu = torch.from_numpy(data['IMU']).float()
             x_emg = torch.from_numpy(data['EMG']).float()
@@ -142,8 +143,6 @@ class FrameworkSSL:
                 y_pred = model(xb_imu, xb_emg, lens)
                 loss = loss_fn(y_pred, y_true)
                 loss.backward()
-                if verbose:
-                    print(f'| epoch {i_epoch:3d} | {i_batch:5d}/{len(train_dl):4d} batches | loss {loss.item():5.2f}')
                 optimizer.step()
 
         def eval_during_training(model, dl, loss_fn):
@@ -189,12 +188,14 @@ class FrameworkSSL:
         else:
             param_to_train = model.parameters()
         optimizer = torch.optim.Adam(param_to_train, lr=self.config.lr_linear, weight_decay=1e-5)
+        scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_linear/4))
 
         epoch_end_time = time.time()
         dtype = self.config.dtype
         for i_epoch in range(self.config.epoch_linear):
             train_loss, y_pred_train, y_true_train = eval_during_training(model, train_dl, torch.nn.MSELoss())
             test_loss, y_pred_test, y_true_test = eval_during_training(model, test_dl, torch.nn.MSELoss())
+            wandb.log({'linear train loss': train_loss, 'linear test loss': test_loss, 'linear lr': scheduler.get_last_lr()[0]})
 
             if i_epoch in [self.config.epoch_linear-1]:
                 plt.figure()
@@ -206,18 +207,12 @@ class FrameworkSSL:
                 plt.title('Test')
                 plt.plot(torch.cat(y_true_test).transpose(1, 2).transpose(0, 1).numpy()[:, :10, :].ravel())
                 plt.plot(torch.cat(y_pred_test).transpose(1, 2).transpose(0, 1).numpy()[:, :10, :].ravel())
-            if verbose:
-                print('-' * 80)
             logging.info(f'| Linear Regressibility | epoch {i_epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
                          f'train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
-            if verbose:
-                print('-' * 80)
             epoch_end_time = time.time()
 
-            # old_model = copy.deepcopy(model)
             train(model, train_dl, optimizer, torch.nn.MSELoss(), self.config.use_ratio)
-
-        # plt.show()
+            scheduler.step()
 
         y_pred, y_true = evaluate_after_training(test_dl)
         all_scores = FrameworkSSL.get_scores(y_true, y_pred, OUTPUT_LIST, test_step_lens)
@@ -254,17 +249,15 @@ class FrameworkSSL:
                 emg_pred = model(xb_imu, lens)
                 loss = loss_fn(emg_pred, xb_emg)
                 if i_batch % 5 == 0:
-                    train_loss, _, _ = eval_during_training(model, train_dl, self.config.ssl_loss_fn)
-                    test_loss, y_pred_list, y_true_list = eval_during_training(model, vali_dl, self.config.ssl_loss_fn)
-                    wandb.log({'train loss': train_loss, 'test loss': test_loss})
-                    if i_epoch == 0:
-                        plt.figure()
-                        for i in range(3):
-                            plt.plot(y_pred_list[0].numpy()[0, :, i], '--', color='C'+str(i))
-                            plt.plot(y_true_list[0].numpy()[0, :, i], color='C'+str(i))
-                        plt.savefig(self.result_dir + '/emg_batch{}.png'.format(i_batch))
-                        plt.close()
-                    model.train()
+                    wandb.log({'ssl batch loss': loss.item()})
+                #     if i_epoch == 0:
+                #         plt.figure()
+                #         for i in range(3):
+                #             plt.plot(y_pred_list[0].numpy()[0, :, i], '--', color='C'+str(i))
+                #             plt.plot(y_true_list[0].numpy()[0, :, i], color='C'+str(i))
+                #         plt.savefig(self.result_dir + '/emg_batch{}.png'.format(i_batch))
+                #         plt.close()
+                #     model.train()
                 loss.backward()
                 optimizer.step()
 
@@ -286,14 +279,13 @@ class FrameworkSSL:
         vali_step_lens = self._get_step_len(vali_data['IMU'])
 
         model = SslReconstructNet(self.emb_net_imu, len(EMG_LIST))
-        wandb.watch(model, self.config.ssl_loss_fn, log='all', log_freq=10)
         if self.config.device == 'cuda':
             model.cuda()
 
         train_dl, vali_dl = prepare_data(train_step_lens, vali_step_lens, int(self.config.batch_size_ssl))
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.lr_ssl, weight_decay=1e-5)
 
-        # scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_ssl/4))
+        scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_ssl/4))
 
         dtype = self.config.dtype
         current_best_loss, _, _ = eval_during_training(model, vali_dl, self.config.ssl_loss_fn)
@@ -308,12 +300,11 @@ class FrameworkSSL:
             epoch_end_time = time.time()
             train(model, train_dl, optimizer, self.config.ssl_loss_fn, self.config.use_ratio)
 
-            # wandb.log({'train loss': train_loss, 'test loss': test_loss})
-
+            wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss, 'ssl lr': scheduler.get_last_lr()[0]})
             if test_loss < current_best_loss:
                 current_best_loss = test_loss
                 best_model = copy.deepcopy(model)
-            # scheduler.step()
+            scheduler.step()
         model = best_model
         return {'model': model}
 
@@ -676,10 +667,10 @@ class DatasetLoader:
 
 
 SUB_LIST = [
-    'AB06', 'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13',
-    'AB14', 'AB15', 'AB16', 'AB17', 'AB18', 'AB19', 'AB21', 'AB23',
-    'AB24', 'AB25',
-    'AB27', 'AB28', 'AB30'
+    'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
+    'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28',
+    'AB30',
+    'AB06', 'AB07', 'AB08', 'AB09',
 ]
 IMU_LIST = [segment + sensor + axis for segment in ['thigh', 'foot'] for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']]
 # IMU_LIST = [segment + sensor + axis for segment in ['foot', 'shank', 'thigh', 'trunk'] for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']]
@@ -690,7 +681,7 @@ OUTPUT_LIST = ['hip_flexion_r', 'knee_angle_r', 'ankle_angle_r']
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 SAMPLES_BEFORE_STEP, SAMPLES_AFTER_STEP = 0, 0
-config = {'epoch_ssl': 25, 'epoch_linear': 20, 'batch_size_ssl': 512, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
+config = {'epoch_ssl': 500, 'epoch_linear': 100, 'batch_size_ssl': 512, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
           'emb_output_dim': 256, 'common_space_dim': 1, 'device': 'cuda', 'dtype': torch.FloatTensor,
           'interpo_len': None, 'remove_trial_type': [], 'use_ratio': 100,
           'from_strike_to_off': True, 'ssl_loss_fn': torch.nn.MSELoss(), 'max_trial_num': 2000}
@@ -702,7 +693,7 @@ if config['device'] == 'cuda':
 
 if __name__ == '__main__':
     # logging.info("Current commit is {}".format(execute_cmd("git rev-parse HEAD")))
-    test_set = ['AB25', 'AB27', 'AB28', 'AB30']
+    test_set = ['AB06', 'AB07', 'AB08', 'AB09']
     train_set = [item for item in SUB_LIST if item not in test_set]
     data_reader = DatasetLoader(train_set + [sub for sub in test_set if sub not in train_set])
     ssl_framework = FrameworkSSL(data_reader, ImuRnnEmbedding, ImuRnnEmbedding, config)
