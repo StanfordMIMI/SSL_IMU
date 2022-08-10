@@ -9,8 +9,10 @@ import numpy as np
 from utils import fix_seed
 import matplotlib.pyplot as plt
 
+# TODO: for RNN, Transformer, FCNN, check if the input follows (batch, channel, time_step)
+
 fix_seed()
-temperature = 0.1       # TODO: optimize this
+temperature = 0.1
 
 
 def nce_loss(emb1, emb2):
@@ -35,11 +37,11 @@ def nce_loss(emb1, emb2):
 
 
 class SslContrastiveNet(nn.Module):
-    def __init__(self, embnet_imu, embnet_emg, common_space_dim):
+    def __init__(self, embnet_acc, embnet_gyr, common_space_dim):
         super(SslContrastiveNet, self).__init__()
-        self.embnet_imu = embnet_imu
-        self.embnet_emg = embnet_emg
-        emb_output_dim = embnet_imu.output_dim
+        self.embnet_acc = embnet_acc
+        self.embnet_gyr = embnet_gyr
+        emb_output_dim = embnet_acc.output_dim * 6
         self.linear_proj_imu_1 = nn.Linear(emb_output_dim, emb_output_dim)
         self.linear_proj_emg_1 = nn.Linear(emb_output_dim, emb_output_dim)
         self.linear_proj_imu_2 = nn.Linear(emb_output_dim, common_space_dim)
@@ -57,25 +59,43 @@ class SslContrastiveNet(nn.Module):
         self.scalars = scalars
 
     def forward(self, x_imu, x_emg, lens):
-        seq_imu, _ = self.embnet_imu(x_imu, lens)
-        seq_emg, _ = self.embnet_emg(x_emg, lens)
+        # seq_imu, _ = self.embnet_imu(x_imu, lens)
+        # seq_emg, _ = self.embnet_emg(x_emg, lens)
+        # seq_imu = F.relu(self.bn_proj_imu_1(self.linear_proj_imu_1(seq_imu).transpose(1, 2)).transpose(1, 2))
+        # seq_emg = F.relu(self.bn_proj_emg_1(self.linear_proj_emg_1(seq_emg).transpose(1, 2)).transpose(1, 2))
+        # seq_imu = self.bn_proj_imu_2(self.linear_proj_imu_2(seq_imu).transpose(1, 2)).transpose(1, 2)
+        # seq_emg = self.bn_proj_emg_2(self.linear_proj_emg_2(seq_emg).transpose(1, 2)).transpose(1, 2)
 
-        seq_imu = F.relu(self.bn_proj_imu_1(self.linear_proj_imu_1(seq_imu).transpose(1, 2)).transpose(1, 2))
-        seq_emg = F.relu(self.bn_proj_emg_1(self.linear_proj_emg_1(seq_emg).transpose(1, 2)).transpose(1, 2))
-        seq_imu = self.bn_proj_imu_2(self.linear_proj_imu_2(seq_imu).transpose(1, 2)).transpose(1, 2)
-        seq_emg = self.bn_proj_emg_2(self.linear_proj_emg_2(seq_emg).transpose(1, 2)).transpose(1, 2)
-        seq_imu = torch.flatten(seq_imu, start_dim=1)
-        seq_emg = torch.flatten(seq_emg, start_dim=1)
+        batch_size = x_imu.shape[0]
+        half_loc = int(x_imu.shape[2] / 2)
+        x_acc = x_imu[:, :, :half_loc]
+        x_gyr = x_imu[:, :, half_loc:]
+
+        x_acc = x_acc.transpose(1, 2).unsqueeze(dim=-1)
+        x_acc = x_acc.reshape(-1, *x_acc.shape[2:])
+        acc_output, _ = self.embnet_acc(x_acc, lens)
+        acc_output = acc_output.reshape(batch_size, -1)
+
+        x_gyr = x_gyr.transpose(1, 2).unsqueeze(dim=-1)
+        x_gyr = x_gyr.reshape(-1, *x_gyr.shape[2:])
+        gyr_output, _ = self.embnet_gyr(x_gyr, lens)
+        gyr_output = gyr_output.reshape(batch_size, -1)
+
+        seq_imu = F.relu(self.bn_proj_imu_1(self.linear_proj_imu_1(acc_output)))
+        seq_emg = F.relu(self.bn_proj_emg_1(self.linear_proj_emg_1(gyr_output)))
+        seq_imu = self.bn_proj_imu_2(self.linear_proj_imu_2(seq_imu))
+        seq_emg = self.bn_proj_emg_2(self.linear_proj_emg_2(seq_emg))
         return seq_imu, seq_emg
 
 
 class SslReconstructNet(nn.Module):
-    def __init__(self, embnet_imu, emg_dim):
+    def __init__(self, embnet_acc, embnet_gyr, emg_dim):
         super(SslReconstructNet, self).__init__()
-        self.embnet_imu = embnet_imu
-        emb_output_dim = embnet_imu.output_dim
-        self.linear_proj_imu_1 = nn.Linear(emb_output_dim, emg_dim)
-        self.bn_proj_imu_1 = nn.BatchNorm1d(emg_dim)
+        self.embnet_acc = embnet_acc
+        self.embnet_gyr = embnet_gyr
+        emb_output_dim = embnet_acc.output_dim + embnet_gyr.output_dim
+        self.linear_proj_1 = nn.Linear(emb_output_dim * 6, emg_dim)
+        # self.bn_proj_1 = nn.BatchNorm1d(emg_dim)
         self.net_name = 'Combined Net'
 
     def __str__(self):
@@ -85,22 +105,56 @@ class SslReconstructNet(nn.Module):
         self.scalars = scalars
 
     def forward(self, x_imu, lens):
-        seq_imu, _ = self.embnet_imu(x_imu, lens)
-        output = self.bn_proj_imu_1(self.linear_proj_imu_1(seq_imu).transpose(1, 2)).transpose(1, 2)
+        batch_size = x_imu.shape[0]
+        half_loc = int(x_imu.shape[2] / 2)
+        x_acc = x_imu[:, :, :half_loc]
+        x_gyr = x_imu[:, :, half_loc:]
+
+        x_acc = x_acc.transpose(1, 2).unsqueeze(dim=-1)
+        x_acc = x_acc.reshape(-1, *x_acc.shape[2:])
+        acc_output, _ = self.embnet_acc(x_acc, lens)
+        acc_output = acc_output.reshape(batch_size, -1)
+
+        x_gyr = x_gyr.transpose(1, 2).unsqueeze(dim=-1)
+        x_gyr = x_gyr.reshape(-1, *x_gyr.shape[2:])
+        gyr_output, _ = self.embnet_gyr(x_gyr, lens)
+        gyr_output = gyr_output.reshape(batch_size, -1)
+
+        imu_output = torch.concat([acc_output, gyr_output], dim=1)
+        output = self.linear_proj_1(imu_output)
         return output
 
 
 class LinearRegressNet(nn.Module):
     def __init__(self, embnet_imu, _, output_dim):
         super(LinearRegressNet, self).__init__()
-        self.embnet_imu = embnet_imu
-        emb_output_dim = embnet_imu.output_dim
-        self.output_dim = output_dim
-        self.linear = nn.Linear(emb_output_dim, output_dim)
+        self.embnet_acc = embnet_imu
 
-    def forward(self, x_imu, _, lens):
-        seq_imu, _ = self.embnet_imu(x_imu, lens)
-        output = self.linear(seq_imu)
+        self.embnet_gyr = _        # !!!
+
+        emb_output_dim = embnet_imu.output_dim
+        self.emb_output_dim = emb_output_dim
+        self.output_dim = output_dim
+        self.linear = nn.Linear(emb_output_dim * 12, output_dim)
+
+    def forward(self, x_imu, x_emg, lens):
+        batch_size = x_imu.shape[0]
+        half_loc = int(x_imu.shape[2] / 2)
+        x_acc = x_imu[:, :, :half_loc]
+        x_gyr = x_imu[:, :, half_loc:]
+
+        x_acc = x_acc.transpose(1, 2).unsqueeze(dim=-1)
+        x_acc = x_acc.reshape(-1, *x_acc.shape[2:])
+        acc_output, _ = self.embnet_acc(x_acc, lens)
+        acc_output = acc_output.reshape(batch_size, -1)
+
+        x_gyr = x_gyr.transpose(1, 2).unsqueeze(dim=-1)
+        x_gyr = x_gyr.reshape(-1, *x_gyr.shape[2:])
+        gyr_output, _ = self.embnet_gyr(x_gyr, lens)
+        gyr_output = gyr_output.reshape(batch_size, -1)
+
+        imu_output = torch.concat([acc_output, gyr_output], dim=1)
+        output = self.linear(imu_output)
         return output
 
 
@@ -294,12 +348,12 @@ class ImuResnetEmbedding(nn.Module):
         out = self.layer3(out)
         out = self.layer4_2(self.layer4_1(out))
         out = self.avgpool(out)
-        return out, None
+        return out.squeeze(dim=-1), None
 
 
-class ImuCnnEmbedding(nn.Module):
+class CnnEmbedding(nn.Module):
     def __init__(self, x_dim, output_dim, net_name):
-        super(ImuCnnEmbedding, self).__init__()
+        super(CnnEmbedding, self).__init__()
         self.conv1 = nn.Conv1d(x_dim, 8, kernel_size=7, stride=2, padding=3)
         self.bn1 = nn.BatchNorm1d(8)
         # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
@@ -314,29 +368,29 @@ class ImuCnnEmbedding(nn.Module):
         # self.fc = nn.Linear(512, output_dim)
 
     def forward(self, sequence, lens):
-        out = sequence.transpose(1, 2)
+        out = sequence.transpose(-1, -2)
         out = self.conv1(out)
-        if sequence.shape[0] != 128:
-            print(round(out.abs().mean().item(), 4), end=' ')
+        # if sequence.shape[0] != 128:
+        #     print(out.shape)
         out = self.bn1(out)
-        if sequence.shape[0] != 128:
-            print(round(out.abs().mean().item(), 4), end=' ')
+        # if sequence.shape[0] != 128:
+        #     print(out.shape)
         out = self.layer1(out)
-        if sequence.shape[0] != 128:
-            print(round(out.abs().mean().item(), 4), end=' ')
+        # if sequence.shape[0] != 128:
+        #     print(out.shape)
         out = self.layer2(out)
-        if sequence.shape[0] != 128:
-            print(round(out.abs().mean().item(), 4), end=' ')
+        # if sequence.shape[0] != 128:
+        #     print(out.shape)
         out = self.layer3(out)
-        if sequence.shape[0] != 128:
-            print(round(out.abs().mean().item(), 4), end=' ')
+        # if sequence.shape[0] != 128:
+        #     print(out.shape)
         out = self.layer4(out)
-        if sequence.shape[0] != 128:
-            print(round(out.abs().mean().item(), 4), end=' ')
+        # if sequence.shape[0] != 128:
+        #     print(out.shape)
         out = self.avgpool(out)
-        if sequence.shape[0] != 128:
-            print(round(out.abs().mean().item(), 4))
-        return out, None
+        # if sequence.shape[0] != 128:
+        #     print(round(out.abs().mean().item(), 4))
+        return out.squeeze(dim=-1), None
 
 
 
