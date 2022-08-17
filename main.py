@@ -17,7 +17,7 @@ import wandb
 from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, ImuRnnEmbedding, SslContrastiveNet, \
-    CnnEmbedding, LinearRegressNet, SslReconstructNet, ImuResnetEmbedding
+    CnnEmbedding, LinearRegressNetOld, SslReconstructNet, ImuResnetEmbedding, SslContrastiveNetOld
 import time
 from types import SimpleNamespace
 import prettytable as pt
@@ -47,7 +47,7 @@ class FrameworkSSL:
         self.emb_net_acc = emb_net(1, self.config.emb_output_dim, 'ACC Embedding')
         self.emb_net_gyr = emb_net(1, self.config.emb_output_dim, 'GYR Embedding')
         self.emb_net_emg = emb_net(1, self.config.emb_output_dim, 'EMG Embedding')
-        self.linear_regress_net = LinearRegressNet(self.emb_net_acc, self.emb_net_gyr, len(OUTPUT_LIST))
+        self.linear_regress_net = LinearRegressNetOld(self.emb_net_acc, self.emb_net_gyr, len(OUTPUT_LIST))
         wandb.watch(self.emb_net_acc, self.config.ssl_loss_fn, log='all', log_freq=20)
         self.init_state_linear_regress = self.linear_regress_net.state_dict()
 
@@ -277,7 +277,7 @@ class FrameworkSSL:
         vali_step_lens = self._get_step_len(vali_data['IMU'])
 
         # model = SslReconstructNet(self.emb_net_acc, self.emb_net_gyr, len(EMG_LIST))
-        model = SslContrastiveNet(self.emb_net_acc, self.emb_net_gyr, self.config.common_space_dim)
+        model = SslContrastiveNetOld(self.emb_net_acc, self.emb_net_gyr, self.config.common_space_dim)
         if self.config.device == 'cuda':
             model.cuda()
 
@@ -660,12 +660,6 @@ class DatasetLoader:
         return peaks[max_index]
 
 
-SUB_LIST = [
-    'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
-    'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28',
-    'AB30',
-    'AB06', 'AB07', 'AB08', 'AB09',
-]
 IMU_LIST = [segment + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for segment in ['thigh', 'foot'] for axis in ['X', 'Y', 'Z']]
 # ACC_LIST = [segment + '_Accel_' + axis for segment in ['thigh', 'foot'] for axis in ['X', 'Y', 'Z']]
 # GYR_LIST = [segment + '_Gyro_' + axis for segment in ['thigh', 'foot'] for axis in ['X', 'Y', 'Z']]
@@ -676,14 +670,19 @@ OUTPUT_LIST = ['knee_angle_r']
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 SAMPLES_BEFORE_STEP, SAMPLES_AFTER_STEP = 0, 0
-config = {'epoch_ssl': 20, 'epoch_linear': 20, 'batch_size_ssl': 512, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
+config = {'epoch_ssl': 20, 'epoch_linear': 4, 'batch_size_ssl': 512, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
           'emb_output_dim': 64, 'common_space_dim': 64 * 6, 'device': 'cuda', 'dtype': torch.FloatTensor,
           'interpo_len': None, 'remove_trial_type': [], 'use_ratio': 100,
-          'from_strike_to_off': True, 'ssl_loss_fn': nce_loss, 'max_trial_num': 2000}
-wandb.init(
-    project="IMU_EMG_SSL", notes="tweak baseline", tags=["baseline", "paper1"], config=config, name='SSL via EMG reconstruction worked')
+          'from_strike_to_off': True, 'ssl_loss_fn': nce_loss, 'max_trial_num': 1000}
+wandb.init(project="IMU_EMG_SSL", notes="tweak baseline", tags=["baseline", "paper1"], config=config, name='SSL via EMG reconstruction worked')
 if config['device'] == 'cuda':
     config['dtype'] = torch.cuda.FloatTensor
+SUB_LIST = [
+    # 'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
+    # 'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28',
+    'AB30',
+    'AB06', 'AB07', 'AB08', 'AB09',
+]
 
 
 if __name__ == '__main__':

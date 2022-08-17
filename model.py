@@ -36,9 +36,9 @@ def nce_loss(emb1, emb2):
     return loss
 
 
-class SslContrastiveNet(nn.Module):
+class SslContrastiveNetOld(nn.Module):
     def __init__(self, embnet_acc, embnet_gyr, common_space_dim):
-        super(SslContrastiveNet, self).__init__()
+        super(SslContrastiveNetOld, self).__init__()
         self.embnet_acc = embnet_acc
         self.embnet_gyr = embnet_gyr
         emb_output_dim = embnet_acc.output_dim * 6
@@ -59,12 +59,6 @@ class SslContrastiveNet(nn.Module):
         self.scalars = scalars
 
     def forward(self, x_imu, x_emg, lens):
-        # seq_imu, _ = self.embnet_imu(x_imu, lens)
-        # seq_emg, _ = self.embnet_emg(x_emg, lens)
-        # seq_imu = F.relu(self.bn_proj_imu_1(self.linear_proj_imu_1(seq_imu).transpose(1, 2)).transpose(1, 2))
-        # seq_emg = F.relu(self.bn_proj_emg_1(self.linear_proj_emg_1(seq_emg).transpose(1, 2)).transpose(1, 2))
-        # seq_imu = self.bn_proj_imu_2(self.linear_proj_imu_2(seq_imu).transpose(1, 2)).transpose(1, 2)
-        # seq_emg = self.bn_proj_emg_2(self.linear_proj_emg_2(seq_emg).transpose(1, 2)).transpose(1, 2)
 
         batch_size = x_imu.shape[0]
         half_loc = int(x_imu.shape[2] / 2)
@@ -83,6 +77,48 @@ class SslContrastiveNet(nn.Module):
 
         seq_imu = F.relu(self.bn_proj_imu_1(self.linear_proj_imu_1(acc_output)))
         seq_emg = F.relu(self.bn_proj_emg_1(self.linear_proj_emg_1(gyr_output)))
+        seq_imu = self.bn_proj_imu_2(self.linear_proj_imu_2(seq_imu))
+        seq_emg = self.bn_proj_emg_2(self.linear_proj_emg_2(seq_emg))
+        return seq_imu, seq_emg
+
+
+class SslContrastiveNet(nn.Module):
+    def __init__(self, embnet_a, embnet_b, common_space_dim):
+        super(SslContrastiveNet, self).__init__()
+        self.embnet_a = embnet_a
+        self.embnet_b = embnet_b
+        emb_output_dim = embnet_a.output_dim * 6
+        self.linear_proj_imu_1 = nn.Linear(emb_output_dim, emb_output_dim)
+        self.linear_proj_emg_1 = nn.Linear(emb_output_dim, emb_output_dim)
+        self.linear_proj_imu_2 = nn.Linear(emb_output_dim, common_space_dim)
+        self.linear_proj_emg_2 = nn.Linear(emb_output_dim, common_space_dim)
+        self.bn_proj_imu_1 = nn.BatchNorm1d(emb_output_dim)
+        self.bn_proj_emg_1 = nn.BatchNorm1d(emb_output_dim)
+        self.bn_proj_imu_2 = nn.BatchNorm1d(common_space_dim)
+        self.bn_proj_emg_2 = nn.BatchNorm1d(common_space_dim)
+        self.net_name = 'Combined Net'
+
+    def __str__(self):
+        return self.net_name
+
+    def set_scalars(self, scalars):
+        self.scalars = scalars
+
+    def forward(self, mod_a, mod_b, lens):
+        batch_size = mod_a.shape[0]
+        mod_a = mod_a.unsqueeze(dim=-1)
+        mod_a = mod_a.view(-1, *mod_a.shape[2:])
+        mod_a_output, _ = self.embnet_a(mod_a, lens)
+        mod_a_output = mod_a_output.reshape(batch_size, -1)
+
+        batch_size = mod_b.shape[0]
+        mod_b = mod_b.unsqueeze(dim=-1)
+        mod_b = mod_b.reshape(-1, *mod_b.shape[2:])
+        mod_b_output, _ = self.embnet_b(mod_b, lens)
+        mod_b_output = mod_b_output.reshape(batch_size, -1)
+
+        seq_imu = F.relu(self.bn_proj_imu_1(self.linear_proj_imu_1(mod_a_output)))
+        seq_emg = F.relu(self.bn_proj_emg_1(self.linear_proj_emg_1(mod_b_output)))
         seq_imu = self.bn_proj_imu_2(self.linear_proj_imu_2(seq_imu))
         seq_emg = self.bn_proj_emg_2(self.linear_proj_emg_2(seq_emg))
         return seq_imu, seq_emg
@@ -126,8 +162,32 @@ class SslReconstructNet(nn.Module):
 
 
 class LinearRegressNet(nn.Module):
-    def __init__(self, embnet_imu, _, output_dim):
+    def __init__(self, emb_nets, mod_channel_num, output_dim):
         super(LinearRegressNet, self).__init__()
+        self.emb_nets = emb_nets
+
+        emb_output_dims = [net.output_dim * channel_num for net, channel_num in zip(self.emb_nets, mod_channel_num)]
+        self.emb_output_dim = sum(emb_output_dims)
+        self.output_dim = output_dim
+        self.linear = nn.Linear(self.emb_output_dim, output_dim)
+
+    def forward(self, x, lens):
+        batch_size = x[0].shape[0]
+        mod_outputs = []
+        for i_mod, x_mod in enumerate(x):
+            x_mod = x_mod.unsqueeze(dim=-1)
+            x_mod = x_mod.reshape(-1, *x_mod.shape[2:])
+            mod_output, _ = self.emb_nets[i_mod](x_mod, lens)
+            mod_outputs.append(mod_output.reshape(batch_size, -1))
+
+        output = torch.concat(mod_outputs, dim=1)
+        output = self.linear(output)
+        return output
+
+
+class LinearRegressNetOld(nn.Module):
+    def __init__(self, embnet_imu, _, output_dim):
+        super(LinearRegressNetOld, self).__init__()
         self.embnet_acc = embnet_imu
 
         self.embnet_gyr = _        # !!!
@@ -369,27 +429,20 @@ class CnnEmbedding(nn.Module):
 
     def forward(self, sequence, lens):
         out = sequence.transpose(-1, -2)
+        # print(out.shape)
         out = self.conv1(out)
-        # if sequence.shape[0] != 128:
-        #     print(out.shape)
+        # print(out.shape)
         out = self.bn1(out)
-        # if sequence.shape[0] != 128:
-        #     print(out.shape)
+        # print(out.shape)
         out = self.layer1(out)
-        # if sequence.shape[0] != 128:
-        #     print(out.shape)
+        # print(out.shape)
         out = self.layer2(out)
-        # if sequence.shape[0] != 128:
-        #     print(out.shape)
+        # print(out.shape)
         out = self.layer3(out)
-        # if sequence.shape[0] != 128:
-        #     print(out.shape)
+        # print(out.shape)
         out = self.layer4(out)
-        # if sequence.shape[0] != 128:
-        #     print(out.shape)
+        # print(out.shape)
         out = self.avgpool(out)
-        # if sequence.shape[0] != 128:
-        #     print(round(out.abs().mean().item(), 4))
         return out.squeeze(dim=-1), None
 
 
