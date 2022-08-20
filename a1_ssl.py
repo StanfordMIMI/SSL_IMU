@@ -137,7 +137,7 @@ class FrameworkSSL:
             data_ds[da_task['name']] = self.normalize_data(output_, da_task['name'], norm_method, 'by_all_columns')
             da_task[data_name] = data_ds
             if data_name == 'train':
-                da_task['epoch_num'] = int(3e3 / np.ceil(data_selected.shape[0] / self.config.batch_size_linear)) + 1
+                da_task['epoch_num'] = int(200 / np.ceil(data_selected.shape[0] / self.config.batch_size_linear)) + 1
 
         # plt.figure()
         # col_loc = self.columns.index('knee_angle_r')
@@ -415,12 +415,6 @@ class FrameworkSSL:
         return data_len
 
 
-DOWNSTREAM_TASK_0 = {'name': 'peak_v_grf', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'],
-                     'output': 'peak_v_grf', 'processes': []}
-DOWNSTREAM_TASK_1 = {'name': 'knee_angle_r', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': [],
-                     'output': 'knee_angle_r', 'processes': []}
-da_task = DOWNSTREAM_TASK_0
-
 MODALITIES = ['acc', 'gyr', 'emg']
 GROUPS_OF_DATA = {
     'acc': [segment + '_Accel_' + axis for segment in ['trunk', 'shank'] for axis in ['X', 'Y', 'Z']],
@@ -429,11 +423,17 @@ GROUPS_OF_DATA = {
 # EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
 #             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
 
+
+DOWNSTREAM_TASK_0 = {'name': 'peak_v_grf', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'],
+                     'output': 'peak_v_grf', 'processes': []}
+DOWNSTREAM_TASK_1 = {'name': 'knee_angle_r', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': [],
+                     'output': 'knee_angle_r', 'processes': []}
+da_task = DOWNSTREAM_TASK_0
 SSL_CONTRASTIVE_TASK = {'name': 'contrastive', 'ssl_loss_fn': nce_loss, 'mod_a': 'acc', 'mod_b': 'gyr'}
 
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
-config = {'epoch_ssl': 30, 'batch_size_ssl': 2048, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
+config = {'epoch_ssl': 20, 'batch_size_ssl': 2048, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
           'emb_output_dim': 16, 'common_space_dim': 64, 'device': 'cuda', 'use_step_num': None,
           'emb_net': CnnEmbedding, 'file_name': 'UnivariantWin'}
 wandb.init(project="IMU_EMG_SSL", config=config, name='new framework')
@@ -453,9 +453,9 @@ if __name__ == '__main__':
     ssl_framework.preprocess(train_set, test_set, test_set)
 
     model = ssl_framework.ssl_training(SSL_CONTRASTIVE_TASK)
-    y_pred, model = ssl_framework.regressibility(only_linear_layer=True)
-    ssl_framework.reset_emb_net_to_init_state()
-    y_pred, model = ssl_framework.regressibility(only_linear_layer=True)
+    y_pred, model = ssl_framework.regressibility(only_linear_layer=False)
+    # ssl_framework.reset_emb_net_to_init_state()
+    # y_pred, model = ssl_framework.regressibility(only_linear_layer=True)
     ssl_framework.reset_emb_net_to_init_state()
     y_pred, model = ssl_framework.regressibility(only_linear_layer=False)
 
