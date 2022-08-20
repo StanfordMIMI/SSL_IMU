@@ -3,12 +3,26 @@ import numpy as np
 from scipy.signal import filtfilt, butter
 import random
 import torch
+from scipy.signal import find_peaks
 
 
 def fix_seed():
     torch.manual_seed(0)
     random.seed(0)
     np.random.seed(0)
+
+
+def find_peak_max(data_clip, height, width=None, prominence=None):
+    """
+    find the maximum peak
+    :return:
+    """
+    peaks, properties = find_peaks(data_clip, width=width, height=height, prominence=prominence)
+    if len(peaks) == 0:
+        return None
+    peak_heights = properties['peak_heights']
+    max_index = np.argmax(peak_heights)
+    return peaks[max_index]
 
 
 def data_filter(data, cut_off_fre, sampling_fre, filter_order=4):

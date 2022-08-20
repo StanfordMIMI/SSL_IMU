@@ -3,8 +3,13 @@ import os
 
 CODE_PATH = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(CODE_PATH, 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/camargo/data_processed/')
-AMBULATIONS = ['LevelGround', 'Treadmill', 'Stair', 'Ramp']
+TRIAL_TYPES = ['LevelGround', 'Treadmill', 'Stair', 'Ramp']
 IMU_SEGMENT_LIST = ['foot', 'shank', 'thigh', 'trunk']
+
+DICT_TRIAL_TYPE_ID = {type: i for i, type in enumerate(TRIAL_TYPES)}
+DICT_LABEL = {'treadmill_walking': -1, 'walk': 0, 'idle': 1, 'stand-walk': 2, 'turn': 3, 'rampascent': 4, 'rampdescent': 5,
+              'walk-ramp': 6, 'stairascent': 7, 'stairdescent': 8, 'walk-stair': 9}
+DICT_AXIS_DIRECTION = {'x': 'medio-lateral', 'y': 'vertical', 'z': 'anterior-posterior'}
 
 GRAVITY = 9.81
 STEP_TYPES = STANCE, STANCE_SWING = range(2)
@@ -59,12 +64,6 @@ SUB_LIST_ALL = [
     'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30'
 ]
 
-DICT_TRIAL_TYPE_ID = {ambulation: i for i, ambulation in enumerate(AMBULATIONS)}
 DICT_SUBJECT_ID = {subject: i for i, subject in enumerate(SUB_LIST_ALL)}
 DICT_TRIAL_ID = {trial: i for i, trial in enumerate(TRIAL_LIST)}
-DICT_LABEL = {0: 'walk', 1: 'idle', 2: 'stand-walk', 3: 'turn', 4: 'rampascent', 5: 'rampdescent',
-              6: 'walk-ramp', 7: 'stairascent', 8: 'stairdescent', 9: 'walk-stair'}
-
-
-
 

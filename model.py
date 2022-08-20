@@ -83,19 +83,20 @@ class SslContrastiveNetOld(nn.Module):
 
 
 class SslContrastiveNet(nn.Module):
-    def __init__(self, embnet_a, embnet_b, common_space_dim):
+    def __init__(self, embnet_a, embnet_b, common_space_dim, mod_channel_num):
         super(SslContrastiveNet, self).__init__()
         self.embnet_a = embnet_a
         self.embnet_b = embnet_b
-        emb_output_dim = embnet_a.output_dim * 6
-        self.linear_proj_imu_1 = nn.Linear(emb_output_dim, emb_output_dim)
-        self.linear_proj_emg_1 = nn.Linear(emb_output_dim, emb_output_dim)
-        self.linear_proj_imu_2 = nn.Linear(emb_output_dim, common_space_dim)
-        self.linear_proj_emg_2 = nn.Linear(emb_output_dim, common_space_dim)
-        self.bn_proj_imu_1 = nn.BatchNorm1d(emb_output_dim)
-        self.bn_proj_emg_1 = nn.BatchNorm1d(emb_output_dim)
-        self.bn_proj_imu_2 = nn.BatchNorm1d(common_space_dim)
-        self.bn_proj_emg_2 = nn.BatchNorm1d(common_space_dim)
+        emb_output_dim_a = embnet_a.output_dim * mod_channel_num[0]
+        emb_output_dim_b = embnet_b.output_dim * mod_channel_num[1]
+        self.linear_proj_imu_1 = nn.Linear(emb_output_dim_a, common_space_dim)
+        self.linear_proj_emg_1 = nn.Linear(emb_output_dim_b, common_space_dim)
+        self.linear_proj_imu_2 = nn.Linear(common_space_dim, common_space_dim)
+        self.linear_proj_emg_2 = nn.Linear(common_space_dim, common_space_dim)
+        self.bn_proj_emb_a_1 = nn.BatchNorm1d(common_space_dim)
+        self.bn_proj_emb_b_1 = nn.BatchNorm1d(common_space_dim)
+        self.bn_proj_emb_a_2 = nn.BatchNorm1d(common_space_dim)
+        self.bn_proj_emb_b_2 = nn.BatchNorm1d(common_space_dim)
         self.net_name = 'Combined Net'
 
     def __str__(self):
@@ -117,10 +118,10 @@ class SslContrastiveNet(nn.Module):
         mod_b_output, _ = self.embnet_b(mod_b, lens)
         mod_b_output = mod_b_output.reshape(batch_size, -1)
 
-        seq_imu = F.relu(self.bn_proj_imu_1(self.linear_proj_imu_1(mod_a_output)))
-        seq_emg = F.relu(self.bn_proj_emg_1(self.linear_proj_emg_1(mod_b_output)))
-        seq_imu = self.bn_proj_imu_2(self.linear_proj_imu_2(seq_imu))
-        seq_emg = self.bn_proj_emg_2(self.linear_proj_emg_2(seq_emg))
+        seq_imu = F.relu(self.bn_proj_emb_a_1(self.linear_proj_imu_1(mod_a_output)))
+        seq_emg = F.relu(self.bn_proj_emb_b_1(self.linear_proj_emg_1(mod_b_output)))
+        seq_imu = self.bn_proj_emb_a_2(self.linear_proj_imu_2(seq_imu))
+        seq_emg = self.bn_proj_emb_b_2(self.linear_proj_emg_2(seq_emg))
         return seq_imu, seq_emg
 
 

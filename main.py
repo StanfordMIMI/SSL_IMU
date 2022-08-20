@@ -22,7 +22,7 @@ import time
 from types import SimpleNamespace
 import prettytable as pt
 from utils import get_data_by_merging_data_struct, fix_seed, DataStruct, data_filter
-from const import IMU_SEGMENT_LIST, DATA_PATH, AMBULATIONS, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE
+from const import IMU_SEGMENT_LIST, DATA_PATH, TRIAL_TYPES, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE
 from scipy.signal import find_peaks
 
 
@@ -468,8 +468,8 @@ class DatasetLoader:
 
     @staticmethod
     def load_columns():
-        columns = {ambulation: {} for ambulation in AMBULATIONS}
-        for ambulation in AMBULATIONS:
+        columns = {ambulation: {} for ambulation in TRIAL_TYPES}
+        for ambulation in TRIAL_TYPES:
             for frequency in ['200', '1000']:
                 columns[ambulation][frequency] = list(np.array(ast.literal_eval(open(
                     DATA_PATH + ambulation + '_' + frequency + '_columns.txt').read()), dtype=object))

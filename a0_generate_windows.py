@@ -4,23 +4,59 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import ast
-
-from utils import get_data_by_merging_data_struct, fix_seed, data_filter
-from const import SUB_LIST, DATA_PATH, AMBULATIONS, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE, GRF_SAMPLE_RATE, \
-    IMU_SEGMENT_LIST
+from scipy.signal import medfilt
+from utils import get_data_by_merging_data_struct, find_peak_max, data_filter
+from const import DATA_PATH, TRIAL_TYPES, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE, GRF_SAMPLE_RATE, \
+    IMU_SEGMENT_LIST, DICT_LABEL
 from const import DICT_SUBJECT_ID, DICT_TRIAL_TYPE_ID
 from scipy.signal import find_peaks
+
+
+def add_clinical_metrics(data, trial, columns):
+    # TODO: Add peak knee adduction moment impulse
+
+    # add peak vertical GRF during walking
+    gc_strike, gc_off, label = [data[:, columns.index(col)] for col in ['heel_strike', 'toe_off', 'label']]
+    strike_end_loc = np.where(gc_strike == 100.)[0]
+    strike_loc = np.where((gc_strike == 0)[:-1] & (gc_strike > 0)[1:])[0]
+    if len(strike_loc) > 0:
+        if len(strike_end_loc) == 0 or strike_loc[-1] > strike_end_loc[-1]:
+            strike_loc = strike_loc[:-1]
+
+    v_grf, knee_moment = [data[:, columns.index(col)] for col in ['fy', 'knee_angle_r_moment']]
+    strike_and_walking_and_has_grf_loc = [loc for loc in strike_loc if label[loc] in [-1, 0, 3, 4, 5, 7, 8] and v_grf[loc+10] > 20]
+    peak_v_grf = np.zeros(v_grf.shape)
+    for step_start in strike_and_walking_and_has_grf_loc:
+        step_end = strike_end_loc[strike_end_loc > step_start][0]
+        v_grf_clip = v_grf[step_start:step_end]
+        if np.sum(np.int(np.abs(v_grf_clip) > 0)) > (v_grf_clip.shape[0] / 2):  # at least half of the clip has value
+            peak_v_grf[np.argmax(v_grf_clip)+step_start] = max(v_grf_clip)
+
+    # if len(strike_and_walking_and_has_grf_loc):
+    #     plt.figure()
+    #     plt.title(trial)
+    #     plt.plot(v_grf)
+    #     plt.plot(-label * 500)
+    #     plt.plot(gc_strike)
+    #     plt.plot(strike_and_walking_and_has_grf_loc, [0 for i in strike_and_walking_and_has_grf_loc], '*')
+    #     plt.plot(peak_v_grf)
+    #     plt.show()
+
+    data = np.column_stack([data, peak_v_grf])
+    if 'peak_v_grf' not in columns: columns.append('peak_v_grf')
+    return data, columns
 
 
 class ContinuousDatasetLoader:
     def __init__(self, subject_list):
         self.sample_rate = IMU_SAMPLE_RATE
         self.columns_raw = self.load_columns()
-        self.col_200 = KIN_LIST + IMU_LIST
+        self.col_200 = INFO_LIST + IMU_LIST
         self.col_1000 = EMG_LIST + FORCE_LIST
         self.subject_list = subject_list
         self.data_contin_merged = {}
         for subject in subject_list:
+            print("Loading subject " + subject)
             with h5py.File(DATA_PATH + subject + '.h5', 'r') as hf:
                 data_trials = {}
                 [data_trials.update({trial: [trial_data['data_200'][:], trial_data['data_1000'][:]]})
@@ -82,14 +118,6 @@ class ContinuousDatasetLoader:
             for i in range(0, grf_data.shape[1], 3):
                 grf_combined += grf_data[:, i:i+3]
 
-            # # FOR DEBUG
-            # if condition_force == 'Ramp_R':
-            #     plt.figure()
-            #     imu_index = [self.columns[condition]['200'].index('foot_Gyro_Y')]
-            #     plt.plot(trial_data[0][:, imu_index]*100)
-            #     plt.plot(grf_combined[::5])
-            #     plt.show()
-
             grf_combined = data_filter(grf_combined, 15, GRF_SAMPLE_RATE)
             trial_data[1] = np.column_stack([trial_data[1], grf_combined])
             data_trials[trial] = trial_data
@@ -106,23 +134,25 @@ class ContinuousDatasetLoader:
             trial_data[1][:, emg_col_loc] = emg_data
         return data_trials
 
-    def generate_additional_col(self, win_len, win_step):
-        pass
-
     @staticmethod
-    def interpo_extreme_large_data(data, columns, thd):
-        # col_and_thd = {'shank_Accel_': 8}
-        # for col, thd in col_and_thd.items():
-        data_loc = [columns.index(col) for col in IMU_LIST]
-        for axis in data_loc:
-            data_axis = data[:, axis]
-            ok = np.abs(data_axis) < thd
-            if (~ok).any():
-                xp = ok.ravel().nonzero()[0]
-                fp = data_axis[ok]
-                x = (~ok).ravel().nonzero()[0]
-                data_axis[~ok] = np.interp(x, xp, fp)
-                data[:, axis] = data_axis
+    def clean_imu_data(data, columns):
+        imu_locs = [columns.index(col) for col in IMU_LIST]
+        for loc in imu_locs:
+            data[:, loc] = medfilt(data[:, loc], 3)
+
+        sensor_and_thd = {'trunk_Accel_': 7.8, 'trunk_Gyro_': 15.,
+                          'thigh_Accel_': 2, 'thigh_Gyro_': 15.,
+                          'shank_Accel_': 7.8, 'shank_Gyro_': 15.,
+                          'foot_Accel_': 7.8, 'foot_Gyro_': 15.}
+        # for sensor, thd in sensor_and_thd.items():
+        #     col_locs = [columns.index(sensor + axis) for axis in ['X', 'Y', 'Z']]
+        #     for loc in col_locs:
+        #         data_axis = data[:, loc]
+        #         data_axis[data_axis > thd] = thd
+        #         data_axis[data_axis < -thd] = -thd
+        #         data[:, loc] = data_axis
+
+        return data
 
     @staticmethod
     def are_kinematics_correct(data_200, columns, kinematic_range):
@@ -134,18 +164,25 @@ class ContinuousDatasetLoader:
 
     @staticmethod
     def load_columns():
-        columns = {ambulation: {} for ambulation in AMBULATIONS}
-        for ambulation in AMBULATIONS:
+        columns = {ambulation: {} for ambulation in TRIAL_TYPES}
+        for ambulation in TRIAL_TYPES:
             for frequency in ['200', '1000']:
                 columns[ambulation][frequency] = list(np.array(ast.literal_eval(open(
                     DATA_PATH + ambulation + '_' + frequency + '_columns.txt').read()), dtype=object))
         return columns
 
-    def loop_all_the_trials(self, segment_methods):
-        # data_structs = {method.name: DataStruct(len(self.columns), method.step_len_max)
-        #                 for method in segment_methods}
-        [method.set_data_struct(DataStruct(len(self.columns), method.step_len_max)) for method in segment_methods]
+    def add_additional_columns(self):
         for subject in self.subject_list:
+            for trial in self.trials:
+                if trial not in self.data_contin_merged[subject].keys():
+                    continue
+                for method in [add_clinical_metrics]:
+                    self.data_contin_merged[subject][trial], self.columns = method(self.data_contin_merged[subject][trial], trial, self.columns)
+
+    def loop_all_the_trials(self, segment_methods):
+        for subject in self.subject_list:
+            [method.set_data_struct(DataStruct(len(self.columns), method.data_len)) for method in segment_methods]
+            print('processing ' + subject)
             for trial in self.trials:
                 if trial not in self.data_contin_merged[subject].keys():
                     continue
@@ -153,11 +190,10 @@ class ContinuousDatasetLoader:
                 trial_data = self.data_contin_merged[subject][trial]
                 if not self.are_kinematics_correct(trial_data, self.columns, (-180, 180)):
                     continue
-                self.interpo_extreme_large_data(trial_data, self.columns, 15)
+                trial_data = self.clean_imu_data(trial_data, self.columns)
                 for method in segment_methods:
                     method.start_segment(trial_data, self.columns)
-
-        [method.export(self.columns) for method in segment_methods]
+            [method.export(self.columns, subject) for method in segment_methods]
 
 
 class DataStruct:
@@ -183,35 +219,41 @@ class BaseSegment:
     def set_data_struct(self, data_struct):
         self.data_struct = data_struct
 
-    def export(self, columns):
+    def export(self, columns, subject):
         all_data = self.data_struct.get_all_data()
-        with h5py.File(DATA_PATH + self.name + '.h5', 'w') as hf:
-            dset = hf.create_dataset('data', all_data.shape, data=all_data)
+        with h5py.File(DATA_PATH + self.name + '.h5', 'a') as hf:
+            try: del hf[subject]
+            except KeyError: pass
+            dset = hf.create_dataset(subject, all_data.shape, data=all_data)
             hf.attrs['columns'] = json.dumps(columns)
 
 
 class WindowSegment(BaseSegment):
     def __init__(self):
-        self.data_len = 256
+        self.data_len = 200
         self.name = 'UnivariantWin'
-        self.win_len, self.win_step = self.data_len, int(self.data_len/2)
+        self.win_len, self.win_step = self.data_len, int(self.data_len/5)
 
-    def start_segment(self):
-
-        acc_data, gyr_data = trial_data_200[:, acc_loc], trial_data_200[:, gyr_loc]
-        strike_list, off_list, gyr_y = self.get_walking_strike_off(acc_data, gyr_data, 10)
-        steps_200, steps_1000 = self.strike_off_to_step_and_remove_incorrect_step(
-            gyr_y, strike_list, off_list, self.step_len_max, self.step_len_min)
-        for step_200, step_1000 in zip(steps_200, steps_1000):
-            data_200 = trial_data_200[step_200[0]:step_200[1], input_col_loc_imu]       # 遇到 out of xxx，写exception 跳过该步
-            data_1000 = trial_data_1000[step_1000[0]:step_1000[1], input_col_loc_emg]
-            data_struct.add_new_step(data_x_200, data_x_1000, data_y_200)
+    def start_segment(self, trial_data, columns):
+        trial_len = trial_data.shape[0]
+        label,  = [trial_data[:, columns.index(col)] for col in ['label']]
+        walking_turning_stair_ramp_treadmill = np.sum(np.array([label == i for i in [-1, 0, 3, 4, 5, 7, 8]]), axis=0).astype(dtype=bool)
+        if walking_turning_stair_ramp_treadmill.all():
+            start_loc = [0]
+        else:
+            start_loc = np.where(walking_turning_stair_ramp_treadmill[1:] & ~walking_turning_stair_ramp_treadmill[:-1])[0] + 1
+        for i_start in start_loc:
+            i_current = i_start
+            while(i_current+self.data_len < trial_len and walking_turning_stair_ramp_treadmill[i_current:i_current+self.data_len].all()):
+                data_ = trial_data[i_current:i_current+self.data_len]
+                self.data_struct.add_new_step(data_)
+                i_current += self.win_step
 
 
 class StepSegment(BaseSegment):
     def __init__(self):
         self.data_len = 256
-        self.name = 'StepWin'
+        self.name = 'StepWinClean'
         self.win_len, self.win_step = self.data_len, int(self.data_len/2)
         self.step_len_max, self.step_len_min = int(256*IMU_SAMPLE_RATE/200), int(40*IMU_SAMPLE_RATE/200)
 
@@ -309,8 +351,8 @@ class StepSegment(BaseSegment):
                     i_sample = back_crossing
                     continue
 
-                the_strike = self.find_peak_max(gyr_y[front_crossing:i_sample], height=0)
-                the_off = self.find_peak_max(gyr_y[i_sample:back_crossing], height=0)
+                the_strike = find_peak_max(gyr_y[front_crossing:i_sample], height=0)
+                the_off = find_peak_max(gyr_y[i_sample:back_crossing], height=0)
 
                 if the_strike is not None and i_sample - (the_strike + front_crossing) < max_distance:
                     strike_list.append(the_strike + front_crossing)
@@ -355,19 +397,6 @@ class StepSegment(BaseSegment):
                 break
         return front_crossing, back_crossing
 
-    @staticmethod
-    def find_peak_max(data_clip, height, width=None, prominence=None):
-        """
-        find the maximum peak
-        :return:
-        """
-        peaks, properties = find_peaks(data_clip, width=width, height=height, prominence=prominence)
-        if len(peaks) == 0:
-            return None
-        peak_heights = properties['peak_heights']
-        max_index = np.argmax(peak_heights)
-        return peaks[max_index]
-
     def start_segment(self, trial_data, columns):
         acc_loc = [columns.index('foot_Accel_' + axis) for axis in ['X', 'Y', 'Z']]
         gyr_loc = [columns.index('foot_Gyro_' + axis) for axis in ['X', 'Y', 'Z']]
@@ -381,14 +410,14 @@ class StepSegment(BaseSegment):
 
 
 IMU_LIST = [segment + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for segment in IMU_SEGMENT_LIST for axis in ['X', 'Y', 'Z']]
-KIN_LIST = ['sub_id', 'trial_type_id', 'label', 'speed', 'ramp',
-            'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r',
-            'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment',
-            'knee_angle_r_moment', 'ankle_angle_r_moment']
+INFO_LIST = ['sub_id', 'trial_type_id', 'label', 'speed', 'ramp', 'heel_strike', 'toe_off',
+             'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r',
+             'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment',
+             'knee_angle_r_moment', 'ankle_angle_r_moment']
+
 EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
 FORCE_LIST = ['fx', 'fy', 'fz']
-INFO = ['subject_id', 'trial_type', 'trial_id', 'kinetics_completeness', 'plate_id']
 RIGHT_FOOT_FORCE_COL = {
     'Treadmill': ['Treadmill_R_vx', 'Treadmill_R_vy', 'Treadmill_R_vz'],
 
@@ -412,11 +441,12 @@ RIGHT_FOOT_FORCE_COL = {
 
 if __name__ == '__main__':
     sub_list = [
-        'AB06', 'AB07', 'AB08', 'AB09',
-        'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
+        'AB06',
+        'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
         'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28',
         'AB30'
     ]
     data_reader = ContinuousDatasetLoader(sub_list)
-    data_reader.loop_all_the_trials([StepSegment()])
+    data_reader.add_additional_columns()
+    data_reader.loop_all_the_trials([WindowSegment(), StepSegment()])
 
