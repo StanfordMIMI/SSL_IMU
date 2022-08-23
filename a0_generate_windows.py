@@ -7,9 +7,8 @@ import ast
 from scipy.signal import medfilt
 from utils import get_data_by_merging_data_struct, find_peak_max, data_filter
 from const import DATA_PATH, TRIAL_TYPES, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE, GRF_SAMPLE_RATE, \
-    IMU_SEGMENT_LIST, DICT_LABEL
+    IMU_SEGMENT_LIST, DICT_LABEL, STANCE_V_GRF_THD
 from const import DICT_SUBJECT_ID, DICT_TRIAL_TYPE_ID
-from scipy.signal import find_peaks
 
 
 def add_clinical_metrics(data, trial, columns):
@@ -23,28 +22,41 @@ def add_clinical_metrics(data, trial, columns):
         if len(strike_end_loc) == 0 or strike_loc[-1] > strike_end_loc[-1]:
             strike_loc = strike_loc[:-1]
 
-    v_grf, knee_moment = [data[:, columns.index(col)] for col in ['fy', 'knee_angle_r_moment']]
-    strike_and_walking_and_has_grf_loc = [loc for loc in strike_loc if label[loc] in [-1, 0, 3, 4, 5, 7, 8] and v_grf[loc+10] > 20]
-    peak_v_grf = np.zeros(v_grf.shape)
-    for step_start in strike_and_walking_and_has_grf_loc:
-        step_end = strike_end_loc[strike_end_loc > step_start][0]
-        v_grf_clip = v_grf[step_start:step_end]
-        if np.sum(np.int(np.abs(v_grf_clip) > 0)) > (v_grf_clip.shape[0] / 2):  # at least half of the clip has value
-            peak_v_grf[np.argmax(v_grf_clip)+step_start] = max(v_grf_clip)
+    # add kinetics
+    v_grf = data[:, columns.index('fy')]
+    kin_to_process = {'fy': 1, 'knee_angle_r_moment': -1}
+    peak_kin = np.zeros([v_grf.shape[0], len(kin_to_process)])
+    for i_kin, kinetic_metric_name in enumerate(kin_to_process.keys()):
+        kin_data = data[:, columns.index(kinetic_metric_name)]
+        strike_and_walking_and_has_grf_loc = [loc for loc in strike_loc if label[loc] in [-1, 0] and v_grf[loc+10] > STANCE_V_GRF_THD]  # , 4, 5, 7, 8
+        for step_start in strike_and_walking_and_has_grf_loc:
+            step_end = strike_end_loc[strike_end_loc > step_start][0]
+            clip_start = step_start + 10
+            try:
+                clip_end = np.where(v_grf[clip_start:step_end] < STANCE_V_GRF_THD)[0][0] + clip_start - 10
+            except IndexError:
+                continue
+            kin_clip, grf_clip = kin_data[clip_start:clip_end], v_grf[clip_start:clip_end]
+            peak_loc, peak_val = find_peak_max(kin_to_process[kinetic_metric_name] * kin_clip, -1e5)
+            if peak_loc:
+                peak_kin[peak_loc+clip_start, i_kin] = kin_to_process[kinetic_metric_name] * peak_val
+
+    # add kinematics
 
     # if len(strike_and_walking_and_has_grf_loc):
     #     plt.figure()
     #     plt.title(trial)
-    #     plt.plot(v_grf)
-    #     plt.plot(-label * 500)
     #     plt.plot(gc_strike)
+    #     plt.plot(data[:, columns.index('fy')])
+    #     plt.plot(data[:, columns.index('knee_angle_r_moment')] * 10)
     #     plt.plot(strike_and_walking_and_has_grf_loc, [0 for i in strike_and_walking_and_has_grf_loc], '*')
-    #     plt.plot(peak_v_grf)
+    #     plt.plot(peak_kin[:, 0])
+    #     plt.plot(peak_kin[:, 1] * 10)
     #     plt.show()
 
-    data = np.column_stack([data, peak_v_grf])
-    if 'peak_v_grf' not in columns: columns.append('peak_v_grf')
-    return data, columns
+    data = np.column_stack([data, peak_kin])
+    peak_kin_names = ['peak_' + item for item in list(kin_to_process.keys())]
+    return data, peak_kin_names
 
 
 class ContinuousDatasetLoader:
@@ -111,18 +123,29 @@ class ContinuousDatasetLoader:
             else:
                 condition_force = condition
             grf_cols = RIGHT_FOOT_FORCE_COL[condition_force]
-
             grf_col_loc = [self.columns_raw[condition]['1000'].index(x) for x in grf_cols]
-            grf_data = trial_data[1][:, grf_col_loc]
-            grf_combined = np.zeros([grf_data.shape[0], 3])
-            for i in range(0, grf_data.shape[1], 3):
-                grf_combined += grf_data[:, i:i+3]
 
-            grf_combined = data_filter(grf_combined, 15, GRF_SAMPLE_RATE)
-            trial_data[1] = np.column_stack([trial_data[1], grf_combined])
-            data_trials[trial] = trial_data
-            if len(self.columns_raw[condition]['1000']) != data_trials[trial][1].shape[1]:
-                self.columns_raw[condition]['1000'].extend(['fx', 'fy', 'fz'])
+            cop_cols = RIGHT_FOOT_COP_COL[condition_force]
+            cop_col_loc = [self.columns_raw[condition]['1000'].index(x) for x in cop_cols]
+            cop_data = trial_data[1][:, cop_col_loc]
+            grf_data = trial_data[1][:, grf_col_loc]
+
+            for i_plate, v_grf_plate_col in enumerate(grf_col_loc[1::3]):
+                v_grf_plate = trial_data[1][:, v_grf_plate_col]
+                for i_axis in range(3):
+                    cop_data[:, 3*i_plate + i_axis][v_grf_plate < STANCE_V_GRF_THD] = 0
+
+            for data_, data_name in zip([cop_data, grf_data], [['cx', 'cy', 'cz'], ['fx', 'fy', 'fz']]):
+
+                data_combined = np.zeros([data_.shape[0], 3])
+                for i in range(0, data_.shape[1], 3):
+                    data_combined += data_[:, i:i+3]
+                data_combined = data_filter(data_combined, 15, GRF_SAMPLE_RATE)
+
+                trial_data[1] = np.column_stack([trial_data[1], data_combined])
+                data_trials[trial] = trial_data
+                if len(self.columns_raw[condition]['1000']) != data_trials[trial][1].shape[1]:
+                    self.columns_raw[condition]['1000'].extend(data_name)
         return data_trials
 
     def process_emg(self, data_trials):
@@ -176,8 +199,9 @@ class ContinuousDatasetLoader:
             for trial in self.trials:
                 if trial not in self.data_contin_merged[subject].keys():
                     continue
-                for method in [add_clinical_metrics]:
-                    self.data_contin_merged[subject][trial], self.columns = method(self.data_contin_merged[subject][trial], trial, self.columns)
+                self.data_contin_merged[subject][trial], new_cols = add_clinical_metrics(
+                    self.data_contin_merged[subject][trial], trial, self.columns)
+        if new_cols[0] not in self.columns: self.columns.extend(new_cols)
 
     def loop_all_the_trials(self, segment_methods):
         for subject in self.subject_list:
@@ -231,7 +255,7 @@ class BaseSegment:
 class WindowSegment(BaseSegment):
     def __init__(self):
         self.data_len = 200
-        self.name = 'UnivariantWin'
+        self.name = 'UnivariantWinTest'
         self.win_len, self.win_step = self.data_len, int(self.data_len/5)
 
     def start_segment(self, trial_data, columns):
@@ -253,7 +277,7 @@ class WindowSegment(BaseSegment):
 class StepSegment(BaseSegment):
     def __init__(self):
         self.data_len = 256
-        self.name = 'StepWinClean'
+        self.name = 'StepWinTest'
         self.win_len, self.win_step = self.data_len, int(self.data_len/2)
         self.step_len_max, self.step_len_min = int(256*IMU_SAMPLE_RATE/200), int(40*IMU_SAMPLE_RATE/200)
 
@@ -351,8 +375,8 @@ class StepSegment(BaseSegment):
                     i_sample = back_crossing
                     continue
 
-                the_strike = find_peak_max(gyr_y[front_crossing:i_sample], height=0)
-                the_off = find_peak_max(gyr_y[i_sample:back_crossing], height=0)
+                the_strike, _ = find_peak_max(gyr_y[front_crossing:i_sample], height=0)
+                the_off, _ = find_peak_max(gyr_y[i_sample:back_crossing], height=0)
 
                 if the_strike is not None and i_sample - (the_strike + front_crossing) < max_distance:
                     strike_list.append(the_strike + front_crossing)
@@ -410,41 +434,29 @@ class StepSegment(BaseSegment):
 
 
 IMU_LIST = [segment + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for segment in IMU_SEGMENT_LIST for axis in ['X', 'Y', 'Z']]
-INFO_LIST = ['sub_id', 'trial_type_id', 'label', 'speed', 'ramp', 'heel_strike', 'toe_off',
-             'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r',
-             'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment',
-             'knee_angle_r_moment', 'ankle_angle_r_moment']
+INFO_LIST = ['sub_id', 'trial_type_id', 'label', 'treadmill_speed', 'ramp', 'heel_strike', 'toe_off',
+             'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r', 'knee_angle_r_moment']
+# 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment',
+# , 'ankle_angle_r_moment', 'knee_angle_r_moment'
 
 EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
-FORCE_LIST = ['fx', 'fy', 'fz']
-RIGHT_FOOT_FORCE_COL = {
-    'Treadmill': ['Treadmill_R_vx', 'Treadmill_R_vy', 'Treadmill_R_vz'],
+FORCE_LIST = ['fx', 'fy', 'fz']     # 'cx', 'cy', 'cz'
 
-    'LevelGround_cw': ['Combined_vx', 'Combined_vy', 'Combined_vz',
-                       'FP2_vx', 'FP2_vy', 'FP2_vz',
-                       'FP5_vx', 'FP5_vy', 'FP5_vz'],
-    'LevelGround_ccw': ['FP1_vx', 'FP1_vy', 'FP1_vz'],
+FORCE_AXIS, COP_AXIS = ['vx', 'vy', 'vz'], ['px', 'py', 'pz']
+RIGHT_FOOT_PLATES = {'Treadmill': ['Treadmill_R'], 'LevelGround_cw': ['Combined', 'FP2', 'FP5'],
+                     'LevelGround_ccw': ['FP1'], 'Stair_R': ['FP2', 'FP3', 'FP4'], 'Stair_L': ['FP1', 'FP5'],
+                     'Ramp_R': ['FP2', 'FP4'], 'Ramp_L': ['FP1', 'FP3', 'FP5']}
+RIGHT_FOOT_FORCE_COL = {type: [plate + '_' + axis for plate in plates for axis in FORCE_AXIS] for type, plates in RIGHT_FOOT_PLATES.items()}
+RIGHT_FOOT_COP_COL = {type: [plate + '_' + axis for plate in plates for axis in COP_AXIS] for type, plates in RIGHT_FOOT_PLATES.items()}
 
-    'Stair_R': ['FP2_vx', 'FP2_vy', 'FP2_vz',
-                'FP3_vx', 'FP3_vy', 'FP3_vz',
-                'FP4_vx', 'FP4_vy', 'FP4_vz'],
-    'Stair_L': ['FP1_vx', 'FP1_vy', 'FP1_vz',
-                'FP5_vx', 'FP5_vy', 'FP5_vz'],
-
-    'Ramp_R': ['FP2_vx', 'FP2_vy', 'FP2_vz',
-               'FP4_vx', 'FP4_vy', 'FP4_vz'],
-    'Ramp_L': ['FP1_vx', 'FP1_vy', 'FP1_vz',
-               'FP3_vx', 'FP3_vy', 'FP3_vz',
-               'FP5_vx', 'FP5_vy', 'FP5_vz']}
-
+PARAM_TO_STORE = []
 
 if __name__ == '__main__':
     sub_list = [
-        'AB06',
-        'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
-        'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28',
-        'AB30'
+        'AB06', 'AB07', 'AB08', 'AB09', 'AB10',
+        'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
+        'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30'
     ]
     data_reader = ContinuousDatasetLoader(sub_list)
     data_reader.add_additional_columns()

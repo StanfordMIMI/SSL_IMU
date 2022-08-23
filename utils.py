@@ -19,10 +19,10 @@ def find_peak_max(data_clip, height, width=None, prominence=None):
     """
     peaks, properties = find_peaks(data_clip, width=width, height=height, prominence=prominence)
     if len(peaks) == 0:
-        return None
+        return None, None
     peak_heights = properties['peak_heights']
-    max_index = np.argmax(peak_heights)
-    return peaks[max_index]
+    max_index = np.nanargmax(peak_heights)
+    return peaks[max_index], np.nanmax(peak_heights)
 
 
 def data_filter(data, cut_off_fre, sampling_fre, filter_order=4):

@@ -12,6 +12,7 @@ DICT_LABEL = {'treadmill_walking': -1, 'walk': 0, 'idle': 1, 'stand-walk': 2, 't
 DICT_AXIS_DIRECTION = {'x': 'medio-lateral', 'y': 'vertical', 'z': 'anterior-posterior'}
 
 GRAVITY = 9.81
+STANCE_V_GRF_THD = 10.
 STEP_TYPES = STANCE, STANCE_SWING = range(2)
 IMU_SAMPLE_RATE = 200
 GRF_SAMPLE_RATE = EMG_SAMPLE_RATE = 1000

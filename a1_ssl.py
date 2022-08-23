@@ -1,3 +1,4 @@
+import copy
 import os
 import h5py
 import matplotlib.pyplot as plt
@@ -11,7 +12,6 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.metrics import r2_score, mean_squared_error as mse
 import torch
 import wandb
-from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, ImuRnnEmbedding, SslContrastiveNet, \
     CnnEmbedding, LinearRegressNet, SslReconstructNet, ImuResnetEmbedding
@@ -19,7 +19,8 @@ import time
 from types import SimpleNamespace
 import prettytable as pt
 from utils import find_peak_max, fix_seed, DataStruct, data_filter
-from const import DICT_SUBJECT_ID, DATA_PATH, TRIAL_TYPES, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE, DICT_TRIAL_TYPE_ID
+from const import DICT_SUBJECT_ID, DATA_PATH, TRIAL_TYPES, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE, \
+    DICT_TRIAL_TYPE_ID, IMU_SEGMENT_LIST
 import json
 
 
@@ -63,22 +64,23 @@ class FrameworkSSL:
         os.makedirs(os.path.join(self.result_dir), exist_ok=True)
         add_file_handler(logging, os.path.join(self.result_dir, 'training_log.txt'))
 
-        emb_net = self.config.emb_net
-        self.emb_nets = {mod: emb_net(1, self.config.emb_output_dim, mod+' embedding') for mod in MODALITIES}
+        self.mod_channel_num = [len(GROUPS_OF_DATA[mod]) for mod in da_task['input_mods']]
+        self.emb_nets = torch.nn.ModuleList([self.config.emb_net(1, self.config.emb_output_dim, mod + ' embedding') for mod in da_task['input_mods']])
+        self.regress_net = LinearRegressNet(self.emb_nets, self.mod_channel_num, 1)
+        self.regress_net_init_state = self.regress_net.state_dict()
+
         # num_params = sum(param.numel() for param in model.embnet_imu.rnn_layer.parameters())
         # print(num_params)
-        # self.linear_regress_net = LinearRegressNet(self.emb_net_acc, self.emb_net_gyr, len(OUTPUT_LIST))
-        self.init_states = {mod: self.emb_nets[mod].state_dict() for mod in MODALITIES}
 
         self._base_scalar = StandardScaler
         self._data_scalar = {}
         fix_seed()
 
-    def reset_emb_net_to_init_state(self):
-        [self.emb_nets[mod].load_state_dict(self.init_states[mod]) for mod in MODALITIES]
+    def reset_regress_net_to_init_state(self):
+        self.regress_net.load_state_dict(self.regress_net_init_state)
 
-    def reset_emb_net_to_post_ssl_state(self):
-        [self.emb_nets[mod].load_state_dict(self.ssl_states[mod]) for mod in MODALITIES]
+    def reset_regress_net_to_post_ssl_state(self):
+        self.regress_net.load_state_dict(self.regress_net_post_ssl_state)
 
     @staticmethod
     def result_folder():
@@ -133,21 +135,11 @@ class FrameworkSSL:
             data_selected = self.select_data_by_has_nonzero_element(data_selected, self.columns.index(da_task['output']), 0.4, 0.6)
             logging.info('Downstream {}. Number of steps: {}'.format(data_name, data_selected.shape[0]))
             data_ds = self.preprocess_modality(data_selected, 'transform')
-            output_ = np.sum(data_selected[:, self.columns.index(da_task['output']):self.columns.index(da_task['output'])+1], axis=2)
+            output_selected = data_selected[:, self.columns.index(da_task['output'])]
+            output_loc = np.argmax(np.abs(output_selected), axis=1)
+            output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
             data_ds[da_task['name']] = self.normalize_data(output_, da_task['name'], norm_method, 'by_all_columns')
             da_task[data_name] = data_ds
-            if data_name == 'train':
-                da_task['epoch_num'] = int(200 / np.ceil(data_selected.shape[0] / self.config.batch_size_linear)) + 1
-
-        # plt.figure()
-        # col_loc = self.columns.index('knee_angle_r')
-        # plt.plot(train_data[:, col_loc, :].ravel())
-        # # plt.figure()
-        # # for i in range(3):
-        # #     plt.plot(test_data_ssl['acc'][:, i, :].ravel())
-        # #     # plt.plot(test_data_ssl[DOWNSTREAM_TASKS[0]['name']].ravel())
-        # #     plt.grid()
-        # plt.show()
 
     def preprocess_modality(self, data_, norm_method):
         processed_data = {}
@@ -226,33 +218,28 @@ class FrameworkSSL:
         test_step_lens = self._get_step_len(test_input_data[0])
         test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens], int(self.config.batch_size_linear), shuffle=False)
 
-        emb_nets = torch.nn.ModuleList([self.emb_nets[mod] for mod in da_task['input_mods']])
-        mod_channel_num = [mod_data.shape[1] for mod_data in train_input_data]
-        model = LinearRegressNet(emb_nets, mod_channel_num, 1)
-        wandb.watch(model, torch.nn.MSELoss(), log='all', log_freq=20)
-
-        # model = self.linear_regress_net
+        model = self.regress_net
         dtype, model = set_dtype_and_model(self.config.device, model)
         if only_linear_layer:
             logging.info('Regressing, only linear')
             param_to_train = model.linear.parameters()
+            lr = 1e-3
         else:
             logging.info('Regressing, all params')
             param_to_train = model.parameters()
+            lr = 1e-4
 
-        optimizer = torch.optim.Adam(param_to_train, lr=self.config.lr_linear, weight_decay=1e-5)
-        # scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_linear/4))
+        optimizer = torch.optim.Adam(param_to_train, lr, weight_decay=1e-5)
         epoch_end_time = time.time()
-        epoch_num = da_task['epoch_num']
-        for i_epoch in range(epoch_num):
+
+        for i_epoch in range(self.config.epoch_regress):
             train_loss = eval_during_training(model, train_dl, torch.nn.MSELoss())
             test_loss = eval_during_training(model, test_dl, torch.nn.MSELoss())
             wandb.log({'linear train loss': train_loss, 'linear test loss': test_loss})     # , 'linear lr': scheduler.get_last_lr()[0]
-            logging.info(f'| Linear Regressibility | epoch{i_epoch:3d}/{epoch_num:3d} | time: {time.time() - epoch_end_time:5.2f}s |'
+            logging.info(f'| Linear Regressibility | epoch{i_epoch:3d}/{self.config.epoch_regress:3d} | time: {time.time() - epoch_end_time:5.2f}s |'
                          f' train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
             epoch_end_time = time.time()
             train_batch(model, train_dl, optimizer, torch.nn.MSELoss())
-            # scheduler.step()
 
         y_pred, y_true = evaluate_after_training(test_dl)
 
@@ -302,7 +289,8 @@ class FrameworkSSL:
         train_data, vali_data = self.train_data_ssl, self.vali_data_ssl
         train_step_lens = self._get_step_len(train_data[mod_a])
         vali_step_lens = self._get_step_len(vali_data[mod_a])
-        model = SslContrastiveNet(self.emb_nets[mod_a], self.emb_nets[mod_b], self.config.common_space_dim, [train_data[mod_a].shape[1], train_data[mod_b].shape[1]])
+        # emb_nets = torch.nn.ModuleList([self.config.emb_net(1, self.config.emb_output_dim, mod + ' embedding') for mod in da_task['input_mods']])
+        model = SslContrastiveNet(self.emb_nets[0], self.emb_nets[1], self.config.common_space_dim, [train_data[mod_a].shape[1], train_data[mod_b].shape[1]])
         wandb.watch(model, ssl_task_config['ssl_loss_fn'], log='all', log_freq=20)
 
         train_dl = prepare_dl([train_data[mod_a], train_data[mod_b], train_step_lens], int(self.config.batch_size_ssl), shuffle=True)
@@ -322,7 +310,7 @@ class FrameworkSSL:
             train_batch(model, train_dl, optimizer, ssl_task_config['ssl_loss_fn'])
             wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
             # scheduler.step()
-        self.ssl_states = {mod: self.emb_nets[mod].state_dict() for mod in MODALITIES}
+        self.regress_net_post_ssl_state = copy.deepcopy(self.regress_net.state_dict())
         return {'model': model}
 
     def save_model_and_results(self, ):
@@ -415,6 +403,8 @@ class FrameworkSSL:
         return data_len
 
 
+PARAMS_TRIED = ['ramp', 'treadmill_speed']
+
 MODALITIES = ['acc', 'gyr', 'emg']
 GROUPS_OF_DATA = {
     'acc': [segment + '_Accel_' + axis for segment in ['trunk', 'shank'] for axis in ['X', 'Y', 'Z']],
@@ -424,19 +414,19 @@ GROUPS_OF_DATA = {
 #             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
 
 
-DOWNSTREAM_TASK_0 = {'name': 'peak_v_grf', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'],
-                     'output': 'peak_v_grf', 'processes': []}
-DOWNSTREAM_TASK_1 = {'name': 'knee_angle_r', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': [],
-                     'output': 'knee_angle_r', 'processes': []}
+DOWNSTREAM_TASK_0 = {'name': 'peak_fy', 'input_mods': ['acc', 'acc'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'],
+                     'output': 'peak_fy', 'processes': []}
+DOWNSTREAM_TASK_1 = {'name': 'peak_knee_angle_r_moment', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill'],
+                     'output': 'peak_knee_angle_r_moment', 'processes': []}
 da_task = DOWNSTREAM_TASK_0
-SSL_CONTRASTIVE_TASK = {'name': 'contrastive', 'ssl_loss_fn': nce_loss, 'mod_a': 'acc', 'mod_b': 'gyr'}
+SSL_CONTRASTIVE_TASK = {'name': 'contrastive', 'ssl_loss_fn': nce_loss, 'mod_a': 'acc', 'mod_b': 'acc'}
 
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
-config = {'epoch_ssl': 20, 'batch_size_ssl': 2048, 'batch_size_linear': 128, 'lr_ssl': 1e-4, 'lr_linear': 1e-4,
+config = {'epoch_ssl': 30, 'epoch_regress': 100, 'batch_size_ssl': 2048, 'batch_size_linear': 128, 'lr_ssl': 1e-4,
           'emb_output_dim': 16, 'common_space_dim': 64, 'device': 'cuda', 'use_step_num': None,
-          'emb_net': CnnEmbedding, 'file_name': 'UnivariantWin'}
-wandb.init(project="IMU_EMG_SSL", config=config, name='new framework')
+          'emb_net': CnnEmbedding, 'file_name': 'UnivariantWinTest'}
+wandb.init(project="IMU_EMG_SSL", config=config, name='linear prompt, ramp angle')
 
 
 if __name__ == '__main__':
@@ -454,9 +444,11 @@ if __name__ == '__main__':
 
     model = ssl_framework.ssl_training(SSL_CONTRASTIVE_TASK)
     y_pred, model = ssl_framework.regressibility(only_linear_layer=False)
-    # ssl_framework.reset_emb_net_to_init_state()
-    # y_pred, model = ssl_framework.regressibility(only_linear_layer=True)
-    ssl_framework.reset_emb_net_to_init_state()
+    ssl_framework.reset_regress_net_to_post_ssl_state()
+    y_pred, model = ssl_framework.regressibility(only_linear_layer=True)
+    ssl_framework.reset_regress_net_to_init_state()
+    y_pred, model = ssl_framework.regressibility(only_linear_layer=True)
+    ssl_framework.reset_regress_net_to_init_state()
     y_pred, model = ssl_framework.regressibility(only_linear_layer=False)
 
     plt.show()
