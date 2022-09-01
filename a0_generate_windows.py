@@ -24,11 +24,11 @@ def add_clinical_metrics(data, trial, columns):
 
     # add kinetics
     v_grf = data[:, columns.index('fy')]
-    kin_to_process = {'fy': 1, 'knee_angle_r_moment': -1}
-    peak_kin = np.zeros([v_grf.shape[0], len(kin_to_process)])
-    for i_kin, kinetic_metric_name in enumerate(kin_to_process.keys()):
+    kinetic_to_process = {'fy': 1, 'knee_angle_r_moment': -1}
+    peak_kinetic = np.zeros([v_grf.shape[0], len(kinetic_to_process)])
+    strike_and_walking_and_has_grf_loc = [loc for loc in strike_loc if label[loc] in [-1, 0] and v_grf[loc+10] > STANCE_V_GRF_THD]  # , 4, 5, 7, 8
+    for i_kin, kinetic_metric_name in enumerate(kinetic_to_process.keys()):
         kin_data = data[:, columns.index(kinetic_metric_name)]
-        strike_and_walking_and_has_grf_loc = [loc for loc in strike_loc if label[loc] in [-1, 0] and v_grf[loc+10] > STANCE_V_GRF_THD]  # , 4, 5, 7, 8
         for step_start in strike_and_walking_and_has_grf_loc:
             step_end = strike_end_loc[strike_end_loc > step_start][0]
             clip_start = step_start + 10
@@ -36,26 +36,37 @@ def add_clinical_metrics(data, trial, columns):
                 clip_end = np.where(v_grf[clip_start:step_end] < STANCE_V_GRF_THD)[0][0] + clip_start - 10
             except IndexError:
                 continue
-            kin_clip, grf_clip = kin_data[clip_start:clip_end], v_grf[clip_start:clip_end]
-            peak_loc, peak_val = find_peak_max(kin_to_process[kinetic_metric_name] * kin_clip, -1e5)
+            kin_clip = kin_data[clip_start:clip_end]
+            peak_loc, peak_val = find_peak_max(kinetic_to_process[kinetic_metric_name] * kin_clip, -1e5)
             if peak_loc:
-                peak_kin[peak_loc+clip_start, i_kin] = kin_to_process[kinetic_metric_name] * peak_val
+                peak_kinetic[peak_loc+clip_start, i_kin] = kinetic_to_process[kinetic_metric_name] * peak_val
 
     # add kinematics
+    kinematic_to_process = {'hip_flexion_r': 1}
+    peak_kinematic = np.zeros([v_grf.shape[0], len(kinematic_to_process)])
+    strike_and_walking = [loc for loc in strike_loc if label[loc] in [-1, 0]]
+    for i_kin, kinematic_metric_name in enumerate(kinematic_to_process.keys()):
+        kin_data = data[:, columns.index(kinematic_metric_name)]
+        for step_start in strike_and_walking:
+            step_end = strike_end_loc[strike_end_loc > step_start][0]
+            clip_start = step_start + int(0.1 * (step_end - step_start))
+            clip_end = step_start + int(0.7 * (step_end - step_start))
+            kin_clip = kin_data[clip_start:clip_end]
+            peak_loc, peak_val = find_peak_max(kinematic_to_process[kinematic_metric_name] * kin_clip, -1e5)
+            if peak_loc:
+                peak_kinematic[peak_loc+clip_start, i_kin] = kinematic_to_process[kinematic_metric_name] * peak_val
 
-    # if len(strike_and_walking_and_has_grf_loc):
+    # if len(strike_and_walking):
     #     plt.figure()
     #     plt.title(trial)
     #     plt.plot(gc_strike)
-    #     plt.plot(data[:, columns.index('fy')])
-    #     plt.plot(data[:, columns.index('knee_angle_r_moment')] * 10)
-    #     plt.plot(strike_and_walking_and_has_grf_loc, [0 for i in strike_and_walking_and_has_grf_loc], '*')
-    #     plt.plot(peak_kin[:, 0])
-    #     plt.plot(peak_kin[:, 1] * 10)
+    #     plt.plot(data[:, columns.index('hip_rotation_r')])
+    #     plt.plot(strike_and_walking, [0 for i in strike_and_walking], '*')
+    #     plt.plot(peak_kinematic[:, 0])
     #     plt.show()
 
-    data = np.column_stack([data, peak_kin])
-    peak_kin_names = ['peak_' + item for item in list(kin_to_process.keys())]
+    data = np.column_stack([data, peak_kinetic, peak_kinematic])
+    peak_kin_names = ['peak_' + item for item in list(kinetic_to_process.keys()) + list(kinematic_to_process.keys())]
     return data, peak_kin_names
 
 
@@ -261,7 +272,7 @@ class WindowSegment(BaseSegment):
     def start_segment(self, trial_data, columns):
         trial_len = trial_data.shape[0]
         label,  = [trial_data[:, columns.index(col)] for col in ['label']]
-        walking_turning_stair_ramp_treadmill = np.sum(np.array([label == i for i in [-1, 0, 3, 4, 5, 7, 8]]), axis=0).astype(dtype=bool)
+        walking_turning_stair_ramp_treadmill = np.sum(np.array([label == i for i in [-1, 0, 3, 4, 5, 6, 7, 8, 9]]), axis=0).astype(dtype=bool)
         if walking_turning_stair_ramp_treadmill.all():
             start_loc = [0]
         else:
@@ -454,9 +465,11 @@ PARAM_TO_STORE = []
 
 if __name__ == '__main__':
     sub_list = [
-        'AB06', 'AB07', 'AB08', 'AB09', 'AB10',
+        'AB06', 'AB07',
+        'AB08', 'AB09', 'AB10',
         'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
-        'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30'
+        'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28',
+        'AB30'
     ]
     data_reader = ContinuousDatasetLoader(sub_list)
     data_reader.add_additional_columns()

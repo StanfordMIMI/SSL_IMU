@@ -403,7 +403,7 @@ class FrameworkSSL:
         return data_len
 
 
-PARAMS_TRIED = ['ramp', 'treadmill_speed']
+PARAMS_TRIED = ['ramp', 'treadmill_speed', 'peak_knee_extension_angle']
 
 MODALITIES = ['acc', 'gyr', 'emg']
 GROUPS_OF_DATA = {
@@ -415,16 +415,18 @@ GROUPS_OF_DATA = {
 
 
 DOWNSTREAM_TASK_0 = {'name': 'peak_fy', 'input_mods': ['acc', 'acc'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'],
-                     'output': 'peak_fy', 'processes': []}
+                     'output': 'peak_fy', 'processes': [], 'sensors': ['trunk IMU', 'shank IMU']}
 DOWNSTREAM_TASK_1 = {'name': 'peak_knee_angle_r_moment', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill'],
-                     'output': 'peak_knee_angle_r_moment', 'processes': []}
+                     'output': 'peak_knee_angle_r_moment', 'processes': [], 'sensors': ['trunk IMU', 'shank IMU']}
+DOWNSTREAM_TASK_2 = {'name': 'peak_knee_angle_r', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': [],
+                     'output': 'peak_knee_angle_r', 'processes': []}
 da_task = DOWNSTREAM_TASK_0
 SSL_CONTRASTIVE_TASK = {'name': 'contrastive', 'ssl_loss_fn': nce_loss, 'mod_a': 'acc', 'mod_b': 'acc'}
 
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
-config = {'epoch_ssl': 30, 'epoch_regress': 100, 'batch_size_ssl': 2048, 'batch_size_linear': 128, 'lr_ssl': 1e-4,
-          'emb_output_dim': 16, 'common_space_dim': 64, 'device': 'cuda', 'use_step_num': None,
+config = {'epoch_ssl': 30, 'epoch_regress': 30, 'batch_size_ssl': 2048, 'batch_size_linear': 128, 'lr_ssl': 1e-4,
+          'emb_output_dim': 32, 'common_space_dim': 128, 'device': 'cuda', 'use_step_num': None,
           'emb_net': CnnEmbedding, 'file_name': 'UnivariantWinTest'}
 wandb.init(project="IMU_EMG_SSL", config=config, name='linear prompt, ramp angle')
 

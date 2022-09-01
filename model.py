@@ -394,9 +394,7 @@ class ImuResnetEmbedding(nn.Module):
         self.layer1 = nn.Sequential(RestNetBasicBlock(64, 64), RestNetBasicBlock(64, 64))
         self.layer2 = nn.Sequential(RestNetDownBlock(64, 128, [2, 1]), RestNetBasicBlock(128, 128))
         self.layer3 = nn.Sequential(RestNetDownBlock(128, 256, [2, 1]), RestNetBasicBlock(256, 256))
-        # self.layer4 = nn.Sequential(RestNetDownBlock(256, output_dim, [2, 1]), RestNetBasicBlock(output_dim, output_dim))
-        self.layer4_1 = RestNetDownBlock(256, output_dim, [2, 1])
-        self.layer4_2 = RestNetBasicBlock(output_dim, output_dim)
+        self.layer4 = nn.Sequential(RestNetDownBlock(256, output_dim, [2, 1]), RestNetBasicBlock(output_dim, output_dim))
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         # self.fc = nn.Linear(512, output_dim)
 
@@ -407,7 +405,7 @@ class ImuResnetEmbedding(nn.Module):
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
-        out = self.layer4_2(self.layer4_1(out))
+        out = self.layer4((out))
         out = self.avgpool(out)
         return out.squeeze(dim=-1), None
 
@@ -430,19 +428,12 @@ class CnnEmbedding(nn.Module):
 
     def forward(self, sequence, lens):
         out = sequence.transpose(-1, -2)
-        # print(out.shape)
         out = self.conv1(out)
-        # print(out.shape)
         out = self.bn1(out)
-        # print(out.shape)
         out = self.layer1(out)
-        # print(out.shape)
         out = self.layer2(out)
-        # print(out.shape)
         out = self.layer3(out)
-        # print(out.shape)
         out = self.layer4(out)
-        # print(out.shape)
         out = self.avgpool(out)
         return out.squeeze(dim=-1), None
 
