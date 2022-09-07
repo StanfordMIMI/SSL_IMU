@@ -8,6 +8,7 @@ import math
 import numpy as np
 from utils import fix_seed
 import matplotlib.pyplot as plt
+from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 
 # TODO: for RNN, Transformer, FCNN, check if the input follows (batch, channel, time_step)
 
@@ -118,48 +119,68 @@ class SslContrastiveNet(nn.Module):
         mod_b_output, _ = self.embnet_b(mod_b, lens)
         mod_b_output = mod_b_output.reshape(batch_size, -1)
 
-        seq_imu = F.relu(self.bn_proj_emb_a_1(self.linear_proj_imu_1(mod_a_output)))
-        seq_emg = F.relu(self.bn_proj_emb_b_1(self.linear_proj_emg_1(mod_b_output)))
-        seq_imu = self.bn_proj_emb_a_2(self.linear_proj_imu_2(seq_imu))
-        seq_emg = self.bn_proj_emb_b_2(self.linear_proj_emg_2(seq_emg))
-        return seq_imu, seq_emg
+        seq_a = F.relu(self.bn_proj_emb_a_1(self.linear_proj_imu_1(mod_a_output)))
+        seq_b = F.relu(self.bn_proj_emb_b_1(self.linear_proj_emg_1(mod_b_output)))
+        seq_a = self.bn_proj_emb_a_2(self.linear_proj_imu_2(seq_a))
+        seq_b = self.bn_proj_emb_b_2(self.linear_proj_emg_2(seq_b))
+        return seq_a, seq_b
 
 
-class SslReconstructNet(nn.Module):
-    def __init__(self, embnet_acc, embnet_gyr, emg_dim):
-        super(SslReconstructNet, self).__init__()
-        self.embnet_acc = embnet_acc
-        self.embnet_gyr = embnet_gyr
-        emb_output_dim = embnet_acc.output_dim + embnet_gyr.output_dim
-        self.linear_proj_1 = nn.Linear(emb_output_dim * 6, emg_dim)
-        # self.bn_proj_1 = nn.BatchNorm1d(emg_dim)
-        self.net_name = 'Combined Net'
+class SslMaskReconstructNet(nn.Module):     # TODO: Combine MaskingReconstruct and Contrastive
+    def __init__(self, embnets, common_space_dim, mod_channel_nums):
+        super(SslMaskReconstructNet, self).__init__()
+        self.embnets = embnets
+        output_channel_nums = [embnet.output_dim * mod_channel_num for embnet, mod_channel_num in zip(embnets, mod_channel_nums)]
+        self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for output_channel_num in output_channel_nums])
+        self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in output_channel_nums])
+        self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])
+        self.bn_proj_2 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])
+
+        self.net_name = 'Mask Reconstruct Net'
+        self.mask_time_prob = 0.5
+        self.mask_span_len_ratio = 0.5
+        self.mask_same_loc_channels = False     # TODO: IMPLEMENT THIS
+        self.instance_norm = nn.InstanceNorm1d(1)
 
     def __str__(self):
         return self.net_name
 
-    def set_scalars(self, scalars):
-        self.scalars = scalars
+    def forward(self, mods, lens):
+        """
+        mods: (batch, time, channel)
+        """
+        def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1, bn_proj_2):
+            mod_ = mod_.unsqueeze(dim=-1)
+            mod_ = mod_.view(-1, *mod_.shape[2:])
+            mod_, _ = embnet(mod_, lens)
+            mod_ = mod_.reshape(B, -1)
+            mod_ = F.relu(bn_proj_1(linear_proj_1(mod_)))
+            mod_ = F.relu(bn_proj_2(linear_proj_2(mod_)))
 
-    def forward(self, x_imu, lens):
-        batch_size = x_imu.shape[0]
-        half_loc = int(x_imu.shape[2] / 2)
-        x_acc = x_imu[:, :, :half_loc]
-        x_gyr = x_imu[:, :, half_loc:]
+            output = mod_.detach().clone()
+            for i in range(B):
+                output[i] = (mod_[i] - mod_[i].mean()) / mod_[i].var()
+            return output
 
-        x_acc = x_acc.transpose(1, 2).unsqueeze(dim=-1)
-        x_acc = x_acc.reshape(-1, *x_acc.shape[2:])
-        acc_output, _ = self.embnet_acc(x_acc, lens)
-        acc_output = acc_output.reshape(batch_size, -1)
+        B, C, T = mods[0].shape
+        mask_time_indices_array = _compute_mask_indices(
+            (B, T),
+            self.mask_time_prob,
+            int(self.mask_span_len_ratio * T),
+        )
+        mask_time_indices_array = np.repeat(mask_time_indices_array[:, np.newaxis, :], C, axis=1)
+        mask_time_indices = torch.tensor(mask_time_indices_array).cuda()
 
-        x_gyr = x_gyr.transpose(1, 2).unsqueeze(dim=-1)
-        x_gyr = x_gyr.reshape(-1, *x_gyr.shape[2:])
-        gyr_output, _ = self.embnet_gyr(x_gyr, lens)
-        gyr_output = gyr_output.reshape(batch_size, -1)
+        mod_unmasked_outputs, mod_masked_outputs = [], []
+        for i_mod, mod in enumerate(mods):
+            mod_unmasked_outputs.append(reshape_and_emb(mod, self.embnets[i_mod], self.linear_proj_1[i_mod],
+                                                        self.linear_proj_2[i_mod], self.bn_proj_1[i_mod], self.bn_proj_2[i_mod]))
+            mod_to_be_masked = mod.detach().clone()
+            mod_to_be_masked.masked_fill_(mask_time_indices, 0)
+            mod_masked_outputs.append(reshape_and_emb(mod_to_be_masked, self.embnets[i_mod], self.linear_proj_1[i_mod],
+                                                      self.linear_proj_2[i_mod], self.bn_proj_1[i_mod], self.bn_proj_2[i_mod]))
 
-        imu_output = torch.concat([acc_output, gyr_output], dim=1)
-        output = self.linear_proj_1(imu_output)
-        return output
+        return torch.concat(mod_unmasked_outputs, dim=1), torch.concat(mod_masked_outputs, dim=1)
 
 
 class LinearRegressNet(nn.Module):

@@ -14,7 +14,7 @@ import torch
 import wandb
 from torch.utils.data import DataLoader, TensorDataset
 from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, ImuRnnEmbedding, SslContrastiveNet, \
-    CnnEmbedding, LinearRegressNet, SslReconstructNet, ImuResnetEmbedding
+    CnnEmbedding, LinearRegressNet, ImuResnetEmbedding, SslMaskReconstructNet
 import time
 from types import SimpleNamespace
 import prettytable as pt
@@ -55,11 +55,11 @@ class FrameworkSSL:
         logging.info('Loading ' + DATA_PATH + self.config.file_name + '.h5')
         with h5py.File(DATA_PATH + self.config.file_name + '.h5', 'r') as hf:
             if self.config.use_step_num is not None:
-                self.data = {sub_: sub_data[:self.config.use_step_num] for sub_, sub_data in hf.items()}
+                self.camargo_data = {sub_: sub_data[:self.config.use_step_num] for sub_, sub_data in hf.items()}
             else:
-                self.data = {sub_: sub_data[:] for sub_, sub_data in hf.items()}
+                self.camargo_data = {sub_: sub_data[:] for sub_, sub_data in hf.items()}
             # self.data = np.concatenate(self.data, axis=0)
-            self.columns = json.loads(hf.attrs['columns'])
+            self.carmargo_columns = json.loads(hf.attrs['columns'])
         self.result_dir = os.path.join('D://SSL_training_results', self.result_folder())
         os.makedirs(os.path.join(self.result_dir), exist_ok=True)
         add_file_handler(logging, os.path.join(self.result_dir, 'training_log.txt'))
@@ -114,9 +114,9 @@ class FrameworkSSL:
         validate_sub_ids: a list of subject id for model validation
         test_sub_ids: a list of subject id for model testing
         """
-        train_data = np.concatenate([self.data[sub] for sub in train_sub_ids], axis=0)
-        vali_data = np.concatenate([self.data[sub] for sub in validate_sub_ids], axis=0)
-        test_data = np.concatenate([self.data[sub] for sub in test_sub_ids], axis=0)
+        train_data = np.concatenate([self.camargo_data[sub] for sub in train_sub_ids], axis=0)
+        vali_data = np.concatenate([self.camargo_data[sub] for sub in validate_sub_ids], axis=0)
+        test_data = np.concatenate([self.camargo_data[sub] for sub in test_sub_ids], axis=0)
 
         # SSL preprocess
         train_data_ssl = self.preprocess_modality(train_data, 'fit_transform')
@@ -131,11 +131,11 @@ class FrameworkSSL:
         for data, data_name, norm_method in zip([train_data, vali_data, test_data], ['train', 'vali', 'test'],
                                                 ['fit_transform', 'transform', 'transform']):
             type_to_exclude = [DICT_TRIAL_TYPE_ID[type] for type in da_task['remove_trial_type']]
-            data_selected = self.select_data_by_list_of_values(data, self.columns.index('trial_type_id'), [i for i in range(4) if i not in type_to_exclude])
-            data_selected = self.select_data_by_has_nonzero_element(data_selected, self.columns.index(da_task['output']), 0.4, 0.6)
+            data_selected = self.select_data_by_list_of_values(data, self.carmargo_columns.index('trial_type_id'), [i for i in range(4) if i not in type_to_exclude])
+            data_selected = self.select_data_by_has_nonzero_element(data_selected, self.carmargo_columns.index(da_task['output']), 0.4, 0.6)
             logging.info('Downstream {}. Number of steps: {}'.format(data_name, data_selected.shape[0]))
             data_ds = self.preprocess_modality(data_selected, 'transform')
-            output_selected = data_selected[:, self.columns.index(da_task['output'])]
+            output_selected = data_selected[:, self.carmargo_columns.index(da_task['output'])]
             output_loc = np.argmax(np.abs(output_selected), axis=1)
             output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
             data_ds[da_task['name']] = self.normalize_data(output_, da_task['name'], norm_method, 'by_all_columns')
@@ -144,7 +144,7 @@ class FrameworkSSL:
     def preprocess_modality(self, data_, norm_method):
         processed_data = {}
         for group_name, cols in GROUPS_OF_DATA.items():
-            col_loc = [self.columns.index(col) for col in cols]
+            col_loc = [self.carmargo_columns.index(col) for col in cols]
             group_data = data_[:, col_loc, :]
             group_data = self.normalize_data(group_data, group_name, norm_method, 'by_all_columns')
             processed_data[group_name] = group_data
@@ -180,7 +180,8 @@ class FrameworkSSL:
                 xb, yb, lens = convert_batch_data(batch_data)
                 y_pred = model(xb, lens)
                 loss = loss_fn(yb, y_pred)
-                wandb.log({'linear batch loss': loss.item()})
+                if self.config.log_with_wandb:
+                    wandb.log({'linear batch loss': loss.item()})
                 loss.backward()
                 optimizer.step()
 
@@ -223,7 +224,7 @@ class FrameworkSSL:
         if only_linear_layer:
             logging.info('Regressing, only linear')
             param_to_train = model.linear.parameters()
-            lr = 1e-3
+            lr = 3e-3
         else:
             logging.info('Regressing, all params')
             param_to_train = model.parameters()
@@ -235,7 +236,8 @@ class FrameworkSSL:
         for i_epoch in range(self.config.epoch_regress):
             train_loss = eval_during_training(model, train_dl, torch.nn.MSELoss())
             test_loss = eval_during_training(model, test_dl, torch.nn.MSELoss())
-            wandb.log({'linear train loss': train_loss, 'linear test loss': test_loss})     # , 'linear lr': scheduler.get_last_lr()[0]
+            if self.config.log_with_wandb:
+                wandb.log({'linear train loss': train_loss, 'linear test loss': test_loss})     # , 'linear lr': scheduler.get_last_lr()[0]
             logging.info(f'| Linear Regressibility | epoch{i_epoch:3d}/{self.config.epoch_regress:3d} | time: {time.time() - epoch_end_time:5.2f}s |'
                          f' train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
             epoch_end_time = time.time()
@@ -260,19 +262,19 @@ class FrameworkSSL:
         def train_batch(model, train_dl, optimizer, loss_fn):
             model.train()
             for i_batch, x in enumerate(train_dl):
-                n = random.randint(1, 100)
                 optimizer.zero_grad()
                 xb_mod_a = x[0].float().type(dtype)
                 xb_mod_b = x[1].float().type(dtype)
                 lens = x[2].float()
-                emb_a, emb_b = model(xb_mod_a, xb_mod_b, lens)
-                loss = loss_fn(emb_a, emb_b)
-                wandb.log({'ssl batch loss': loss.item()})
+                mod_unmasked, mod_masked = model((xb_mod_a, xb_mod_b), lens)
+                loss = loss_fn(mod_unmasked, mod_masked)
+                if self.config.log_with_wandb:
+                    wandb.log({'ssl batch loss': loss.item()})
                 loss.backward()
                 optimizer.step()
 
         def eval_during_training(model, dl, loss_fn, use_batch_num=5):
-            model.eval()
+            # model.eval()
             with torch.no_grad():
                 validation_loss = []
                 for i_batch, x in enumerate(dl):
@@ -281,17 +283,17 @@ class FrameworkSSL:
                     xb_mod_a = x[0].float().type(dtype)
                     xb_mod_b = x[1].float().type(dtype)
                     lens = x[2].float()
-                    emb_a, emb_b = model(xb_mod_a, xb_mod_b, lens)
-                    validation_loss.append(loss_fn(emb_a, emb_b).item())
-            return np.mean(validation_loss)
+                    mod_unmasked, mod_masked = model((xb_mod_a, xb_mod_b), lens)
+                    validation_loss.append(loss_fn(mod_unmasked, mod_masked).item())
+            return np.mean(validation_loss), mod_unmasked, mod_masked
 
         mod_a, mod_b = ssl_task_config['mod_a'], ssl_task_config['mod_b']
         train_data, vali_data = self.train_data_ssl, self.vali_data_ssl
         train_step_lens = self._get_step_len(train_data[mod_a])
         vali_step_lens = self._get_step_len(vali_data[mod_a])
-        # emb_nets = torch.nn.ModuleList([self.config.emb_net(1, self.config.emb_output_dim, mod + ' embedding') for mod in da_task['input_mods']])
-        model = SslContrastiveNet(self.emb_nets[0], self.emb_nets[1], self.config.common_space_dim, [train_data[mod_a].shape[1], train_data[mod_b].shape[1]])
-        wandb.watch(model, ssl_task_config['ssl_loss_fn'], log='all', log_freq=20)
+        model = SslMaskReconstructNet(self.emb_nets, self.config.common_space_dim, [train_data[mod_a].shape[1], train_data[mod_b].shape[1]])
+        if self.config.log_with_wandb:
+            wandb.watch(model, ssl_task_config['ssl_loss_fn'], log='all', log_freq=20)
 
         train_dl = prepare_dl([train_data[mod_a], train_data[mod_b], train_step_lens], int(self.config.batch_size_ssl), shuffle=True)
         vali_dl = prepare_dl([vali_data[mod_a], vali_data[mod_b], vali_step_lens], int(self.config.batch_size_ssl), shuffle=False)
@@ -302,14 +304,23 @@ class FrameworkSSL:
         # current_best_loss = eval_during_training(model, vali_dl, training_task['ssl_loss_fn'])
         epoch_end_time = time.time()
         for i_epoch in range(self.config.epoch_ssl):
-            train_loss = eval_during_training(model, train_dl, ssl_task_config['ssl_loss_fn'])
-            test_loss = eval_during_training(model, vali_dl, ssl_task_config['ssl_loss_fn'])
+            train_loss, mod_unmasked, mod_masked = eval_during_training(model, train_dl, ssl_task_config['ssl_loss_fn'])
+            test_loss, _, _ = eval_during_training(model, vali_dl, ssl_task_config['ssl_loss_fn'])
+
+            # # DEBUG
+            # if i_epoch % 30 == 0:
+            #     plt.figure()
+            #     plt.plot(mod_unmasked.cpu().detach().numpy().ravel())
+            #     plt.plot(mod_masked.cpu().detach().numpy().ravel())
+
             logging.info(f'| SSL | epoch{i_epoch:3d}/{self.config.epoch_ssl:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
                          f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
             epoch_end_time = time.time()
             train_batch(model, train_dl, optimizer, ssl_task_config['ssl_loss_fn'])
-            wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
+            if self.config.log_with_wandb:
+                wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
             # scheduler.step()
+        plt.show()
         self.regress_net_post_ssl_state = copy.deepcopy(self.regress_net.state_dict())
         return {'model': model}
 
@@ -421,14 +432,16 @@ DOWNSTREAM_TASK_1 = {'name': 'peak_knee_angle_r_moment', 'input_mods': ['acc', '
 DOWNSTREAM_TASK_2 = {'name': 'peak_knee_angle_r', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': [],
                      'output': 'peak_knee_angle_r', 'processes': []}
 da_task = DOWNSTREAM_TASK_0
-SSL_CONTRASTIVE_TASK = {'name': 'contrastive', 'ssl_loss_fn': nce_loss, 'mod_a': 'acc', 'mod_b': 'acc'}
+SSL_CONTRASTIVE_TASK = {'name': 'mask_reconstruct', 'ssl_loss_fn': torch.nn.SmoothL1Loss(beta=2), 'mod_a': 'acc', 'mod_b': 'acc'}
+# torch.nn.MSELoss()    torch.nn.SmoothL1Loss(beta=2)
 
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
-config = {'epoch_ssl': 30, 'epoch_regress': 30, 'batch_size_ssl': 2048, 'batch_size_linear': 128, 'lr_ssl': 1e-4,
-          'emb_output_dim': 32, 'common_space_dim': 128, 'device': 'cuda', 'use_step_num': None,
+config = {'epoch_ssl': 1, 'epoch_regress': 30, 'batch_size_ssl': 256, 'batch_size_linear': 128, 'lr_ssl': 1e-4,
+          'emb_output_dim': 32, 'common_space_dim': 128, 'device': 'cuda', 'log_with_wandb': True, 'use_step_num': None,
           'emb_net': CnnEmbedding, 'file_name': 'UnivariantWinTest'}
-wandb.init(project="IMU_EMG_SSL", config=config, name='linear prompt, ramp angle')
+if config['log_with_wandb']:
+    wandb.init(project="IMU_EMG_SSL", config=config, name='linear prompt, ramp angle')
 
 
 if __name__ == '__main__':
