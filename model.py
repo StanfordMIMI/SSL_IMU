@@ -6,8 +6,9 @@ from torch.nn import functional as F
 from torch.nn import TransformerEncoder
 import math
 import numpy as np
-from utils import fix_seed
+from utils import fix_seed, off_diagonal
 import matplotlib.pyplot as plt
+import wandb
 from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 
 # TODO: for RNN, Transformer, FCNN, check if the input follows (batch, channel, time_step)
@@ -16,7 +17,23 @@ fix_seed()
 temperature = 0.1
 
 
-def nce_loss(emb1, emb2):
+def vic_loss(mod_outputs):
+    repr_loss = sum([F.mse_loss(mod_outputs[i_mod], mod_outputs[i_mod+1]) for i_mod in range(len(mod_outputs) - 1)])
+
+    xs = [mod_output - mod_output.mean(dim=0) for mod_output in mod_outputs]
+    mod_stds = [torch.sqrt(x.var(dim=0) + 0.0001) for x in xs]
+    std_loss = sum([torch.mean(F.relu(1 - mod_std)) for mod_std in mod_stds]) / len(mod_outputs)
+
+    B, C = mod_outputs[0].shape
+    cov_xs = [(x.T @ x) / (B - 1) for x in xs]
+    cov_loss = sum([off_diagonal(cov_x).pow_(2).sum().div(C) for cov_x in cov_xs])
+    loss = (1 * repr_loss + 1 * std_loss
+            + 0.01 * cov_loss
+            )
+    return loss
+
+
+def nce_loss(mod_outputs):
     def _calculate_similarity(emb1, emb2):
         # make each vector unit length
         emb1 = F.normalize(emb1, p=2, dim=-1)
@@ -25,6 +42,7 @@ def nce_loss(emb1, emb2):
         similarity = torch.matmul(emb1, emb2.transpose(1, 2))
         return similarity / temperature
 
+    emb1, emb2 = mod_outputs
     emb1_pos, emb2_pos = torch.unsqueeze(emb1, 1), torch.unsqueeze(emb2, 1)
     sim_pos = _calculate_similarity(emb1_pos, emb2_pos)
     emb1_all, emb2_all = torch.unsqueeze(emb1, 0), torch.unsqueeze(emb2, 0)
@@ -83,21 +101,15 @@ class SslContrastiveNetOld(nn.Module):
         return seq_imu, seq_emg
 
 
-class SslContrastiveNet(nn.Module):
-    def __init__(self, embnet_a, embnet_b, common_space_dim, mod_channel_num):
-        super(SslContrastiveNet, self).__init__()
-        self.embnet_a = embnet_a
-        self.embnet_b = embnet_b
-        emb_output_dim_a = embnet_a.output_dim * mod_channel_num[0]
-        emb_output_dim_b = embnet_b.output_dim * mod_channel_num[1]
-        self.linear_proj_imu_1 = nn.Linear(emb_output_dim_a, common_space_dim)
-        self.linear_proj_emg_1 = nn.Linear(emb_output_dim_b, common_space_dim)
-        self.linear_proj_imu_2 = nn.Linear(common_space_dim, common_space_dim)
-        self.linear_proj_emg_2 = nn.Linear(common_space_dim, common_space_dim)
-        self.bn_proj_emb_a_1 = nn.BatchNorm1d(common_space_dim)
-        self.bn_proj_emb_b_1 = nn.BatchNorm1d(common_space_dim)
-        self.bn_proj_emb_a_2 = nn.BatchNorm1d(common_space_dim)
-        self.bn_proj_emb_b_2 = nn.BatchNorm1d(common_space_dim)
+class SslGeneralNet(nn.Module):
+    def __init__(self, emb_nets, common_space_dim, mod_channel_nums):
+        super(SslGeneralNet, self).__init__()
+        self.emb_nets = emb_nets
+        output_channel_nums = [embnet.output_dim * mod_channel_num for embnet, mod_channel_num in zip(emb_nets, mod_channel_nums)]
+        self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for output_channel_num in output_channel_nums])
+        self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in output_channel_nums])
+        self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])
+        self.bn_proj_2 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])
         self.net_name = 'Combined Net'
 
     def __str__(self):
@@ -106,24 +118,22 @@ class SslContrastiveNet(nn.Module):
     def set_scalars(self, scalars):
         self.scalars = scalars
 
-    def forward(self, mod_a, mod_b, lens):
-        batch_size = mod_a.shape[0]
-        mod_a = mod_a.unsqueeze(dim=-1)
-        mod_a = mod_a.view(-1, *mod_a.shape[2:])
-        mod_a_output, _ = self.embnet_a(mod_a, lens)
-        mod_a_output = mod_a_output.reshape(batch_size, -1)
+    def forward(self, mods, lens):
+        def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1, bn_proj_2):
+            mod_ = mod_.unsqueeze(dim=-1)
+            mod_ = mod_.view(-1, *mod_.shape[2:])
+            mod_, _ = embnet(mod_, lens)
+            mod_ = mod_.reshape(B, -1)
+            mod_ = F.relu(bn_proj_1(linear_proj_1(mod_)))
+            mod_ = bn_proj_2(linear_proj_2(mod_))
+            return mod_
 
-        batch_size = mod_b.shape[0]
-        mod_b = mod_b.unsqueeze(dim=-1)
-        mod_b = mod_b.reshape(-1, *mod_b.shape[2:])
-        mod_b_output, _ = self.embnet_b(mod_b, lens)
-        mod_b_output = mod_b_output.reshape(batch_size, -1)
-
-        seq_a = F.relu(self.bn_proj_emb_a_1(self.linear_proj_imu_1(mod_a_output)))
-        seq_b = F.relu(self.bn_proj_emb_b_1(self.linear_proj_emg_1(mod_b_output)))
-        seq_a = self.bn_proj_emb_a_2(self.linear_proj_imu_2(seq_a))
-        seq_b = self.bn_proj_emb_b_2(self.linear_proj_emg_2(seq_b))
-        return seq_a, seq_b
+        B, C, T = mods[0].shape
+        mod_outputs = []
+        for i_mod, mod in enumerate(mods):
+            mod_outputs.append(reshape_and_emb(
+                mod, self.emb_nets[i_mod], self.linear_proj_1[i_mod], self.linear_proj_2[i_mod], self.bn_proj_1[i_mod], self.bn_proj_2[i_mod]))
+        return mod_outputs
 
 
 class SslMaskReconstructNet(nn.Module):     # TODO: Combine MaskingReconstruct and Contrastive
@@ -140,7 +150,6 @@ class SslMaskReconstructNet(nn.Module):     # TODO: Combine MaskingReconstruct a
         self.mask_time_prob = 0.5
         self.mask_span_len_ratio = 0.5
         self.mask_same_loc_channels = False     # TODO: IMPLEMENT THIS
-        self.instance_norm = nn.InstanceNorm1d(1)
 
     def __str__(self):
         return self.net_name
@@ -339,30 +348,6 @@ class ImuTransformerEmbedding(nn.Module):
         return torch.from_numpy(msk).to(self.device)
 
 
-class ImuFcnnEmbedding(nn.Module):
-    def __init__(self, x_dim, output_dim, net_name):
-        super(ImuFcnnEmbedding, self).__init__()
-        self.net_name = net_name
-        self.seq_len = 256
-        hid_dim = 256
-        self.linear1 = nn.Linear(x_dim * self.seq_len, hid_dim)
-        self.bn1 = nn.BatchNorm1d(hid_dim)
-        self.linear2 = nn.Linear(hid_dim, output_dim * self.seq_len)
-        self.bn2 = nn.BatchNorm1d(output_dim * self.seq_len)
-        self.output_dim = output_dim
-        self.ratio_to_base_fre = 1
-
-    def __str__(self):
-        return self.net_name
-
-    def forward(self, sequence, lens):
-        original_shape = sequence.shape
-        sequence = self.bn1(torch.sigmoid(self.linear1(sequence.view(sequence.shape[0], -1))))
-        sequence = self.bn2(torch.sigmoid(self.linear2(sequence)))
-        sequence = sequence.view(original_shape[0], original_shape[1], -1)
-        return sequence, None
-
-
 class RestNetBasicBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(RestNetBasicBlock, self).__init__()
@@ -401,34 +386,6 @@ class RestNetDownBlock(nn.Module):
         out = self.conv2(out)
         out = self.bn2(out)
         return self.relu(extra_x + out)
-
-
-class ImuResnetEmbedding(nn.Module):
-    def __init__(self, x_dim, output_dim, net_name):
-        super(ImuResnetEmbedding, self).__init__()
-        self.conv1 = nn.Conv1d(x_dim, 64, kernel_size=7, stride=2, padding=3)
-        self.bn1 = nn.BatchNorm1d(64)
-        # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
-
-        self.output_dim = output_dim
-        self.net_name = net_name
-        self.layer1 = nn.Sequential(RestNetBasicBlock(64, 64), RestNetBasicBlock(64, 64))
-        self.layer2 = nn.Sequential(RestNetDownBlock(64, 128, [2, 1]), RestNetBasicBlock(128, 128))
-        self.layer3 = nn.Sequential(RestNetDownBlock(128, 256, [2, 1]), RestNetBasicBlock(256, 256))
-        self.layer4 = nn.Sequential(RestNetDownBlock(256, output_dim, [2, 1]), RestNetBasicBlock(output_dim, output_dim))
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
-        # self.fc = nn.Linear(512, output_dim)
-
-    def forward(self, sequence, lens):
-        out = sequence.transpose(1, 2)
-        out = self.conv1(out)
-        out = self.bn1(out)
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4((out))
-        out = self.avgpool(out)
-        return out.squeeze(dim=-1), None
 
 
 class CnnEmbedding(nn.Module):

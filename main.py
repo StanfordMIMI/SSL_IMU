@@ -16,8 +16,8 @@ from torch.nn import functional as F
 import wandb
 from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
-from model import nce_loss, ImuTransformerEmbedding, ImuFcnnEmbedding, ImuRnnEmbedding, SslContrastiveNet, \
-    CnnEmbedding, LinearRegressNetOld, SslReconstructNet, ImuResnetEmbedding, SslContrastiveNetOld
+from model import nce_loss, ImuTransformerEmbedding, ImuRnnEmbedding, SslGeneralNet, \
+    CnnEmbedding, LinearRegressNetOld, SslContrastiveNetOld
 import time
 from types import SimpleNamespace
 import prettytable as pt

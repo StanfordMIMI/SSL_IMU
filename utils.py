@@ -12,6 +12,12 @@ def fix_seed():
     np.random.seed(0)
 
 
+def off_diagonal(x):
+    n, m = x.shape
+    assert n == m
+    return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
+
+
 def find_peak_max(data_clip, height, width=None, prominence=None):
     """
     find the maximum peak

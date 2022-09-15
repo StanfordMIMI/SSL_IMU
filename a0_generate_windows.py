@@ -42,7 +42,7 @@ def add_clinical_metrics(data, trial, columns):
                 peak_kinetic[peak_loc+clip_start, i_kin] = kinetic_to_process[kinetic_metric_name] * peak_val
 
     # add kinematics
-    kinematic_to_process = {'hip_flexion_r': 1}
+    kinematic_to_process = {'hip_flexion_r': -1}
     peak_kinematic = np.zeros([v_grf.shape[0], len(kinematic_to_process)])
     strike_and_walking = [loc for loc in strike_loc if label[loc] in [-1, 0]]
     for i_kin, kinematic_metric_name in enumerate(kinematic_to_process.keys()):
@@ -60,7 +60,7 @@ def add_clinical_metrics(data, trial, columns):
     #     plt.figure()
     #     plt.title(trial)
     #     plt.plot(gc_strike)
-    #     plt.plot(data[:, columns.index('hip_rotation_r')])
+    #     plt.plot(data[:, columns.index('hip_flexion_r')])       # knee_angle_r
     #     plt.plot(strike_and_walking, [0 for i in strike_and_walking], '*')
     #     plt.plot(peak_kinematic[:, 0])
     #     plt.show()
