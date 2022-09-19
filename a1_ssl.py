@@ -64,10 +64,11 @@ class FrameworkSSL:
         os.makedirs(os.path.join(self.result_dir), exist_ok=True)
         add_file_handler(logging, os.path.join(self.result_dir, 'training_log.txt'))
 
-        self.mod_channel_num = [len(GROUPS_OF_DATA[mod]) for mod in da_task['input_mods']]
-        self.emb_nets = torch.nn.ModuleList([self.config.emb_net(1, self.config.emb_output_dim, mod + ' embedding') for mod in da_task['input_mods']])
-        self.regress_net = LinearRegressNet(self.emb_nets, self.mod_channel_num, 1)
-        self.regress_net_init_state = self.regress_net.state_dict()
+        self.emb_nets = {mod: self.config.emb_net(1, self.config.emb_output_dim, mod + ' embedding') for mod in ssl_task['_mods']}
+        self.regress_net = LinearRegressNet(torch.nn.ModuleList([self.emb_nets[mod] for mod in da_task['_mods']]),
+                                            [len(self.define_channel_names(da_task)[mod]) for mod in da_task['_mods']], 1)
+        _, self.regress_net = set_dtype_and_model(self.config.device, self.regress_net)
+        self.regress_net_init_state = copy.deepcopy(self.regress_net.state_dict())
 
         # num_params = sum(param.numel() for param in model.embnet_imu.rnn_layer.parameters())
         # print(num_params)
@@ -81,8 +82,7 @@ class FrameworkSSL:
 
     def reset_regress_net_to_post_ssl_state(self):
         self.regress_net.load_state_dict(self.regress_net_init_state)       # aims to reset the linear layer
-        self.regress_net.emb_nets.load_state_dict(self.emb_nets_post_ssl_state)
-        # self.regress_net.load_state_dict(self.regress_net_post_ssl_state)
+        [self.regress_net.emb_nets[i_mod].load_state_dict(self.emb_nets_post_ssl_state[mod]) for i_mod, mod in enumerate(da_task['_mods'])]
 
     @staticmethod
     def result_folder():
@@ -121,11 +121,11 @@ class FrameworkSSL:
         test_data = np.concatenate([self.camargo_data[sub] for sub in test_sub_ids], axis=0)
 
         # SSL preprocess
-        train_data_ssl = self.preprocess_modality(train_data, 'fit_transform')
+        train_data_ssl = self.preprocess_modality(train_data, self.define_channel_names(ssl_task), 'fit_transform')
         logging.info('SSL training with subject ids: {}. Number of steps: {}'.format(train_sub_ids, list(train_data_ssl.values())[0].shape[0]))
-        vali_data_ssl = self.preprocess_modality(vali_data, 'transform')
+        vali_data_ssl = self.preprocess_modality(vali_data, self.define_channel_names(ssl_task), 'transform')
         logging.info('SSL validation with subject ids: {}. Number of steps: {}'.format(validate_sub_ids, list(vali_data_ssl.values())[0].shape[0]))
-        test_data_ssl = self.preprocess_modality(test_data, 'transform')
+        test_data_ssl = self.preprocess_modality(test_data, self.define_channel_names(ssl_task), 'transform')
         logging.info('SSL testing with subject ids: {}. Number of steps: {}'.format(test_sub_ids, list(test_data_ssl.values())[0].shape[0]))
         self.train_data_ssl, self.vali_data_ssl, self.test_data_ssl = train_data_ssl, vali_data_ssl, test_data_ssl
 
@@ -136,16 +136,26 @@ class FrameworkSSL:
             data_selected = self.select_data_by_list_of_values(data, self.carmargo_columns.index('trial_type_id'), [i for i in range(4) if i not in type_to_exclude])
             data_selected = self.select_data_by_has_nonzero_element(data_selected, self.carmargo_columns.index(da_task['output']), 0.4, 0.6)
             logging.info('Downstream {}. Number of steps: {}'.format(data_name, data_selected.shape[0]))
-            data_ds = self.preprocess_modality(data_selected, 'transform')
+            data_ds = self.preprocess_modality(data_selected, self.define_channel_names(da_task), 'transform')
             output_selected = data_selected[:, self.carmargo_columns.index(da_task['output'])]
             output_loc = np.argmax(np.abs(output_selected), axis=1)
             output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
-            data_ds[da_task['name']] = self.normalize_data(output_, da_task['name'], norm_method, 'by_all_columns')
+            data_ds[da_task['output']] = self.normalize_data(output_, da_task['output'], norm_method, 'by_all_columns')
             da_task[data_name] = data_ds
 
-    def preprocess_modality(self, data_, norm_method):
+    @staticmethod
+    def define_channel_names(the_task):
+        imu_segments = the_task['imu_segments']
+        channel_names = {
+            'acc': [segment + '_Accel_' + axis for segment in imu_segments for axis in ['X', 'Y', 'Z']],
+            'gyr': [segment + '_Gyro_' + axis for segment in imu_segments for axis in ['X', 'Y', 'Z']]}
+        if 'emg' in the_task['_mods']:
+            channel_names.update({'emg': the_task['emg_channels']})
+        return channel_names
+
+    def preprocess_modality(self, data_, channel_names, norm_method):
         processed_data = {}
-        for group_name, cols in GROUPS_OF_DATA.items():
+        for group_name, cols in channel_names.items():
             col_loc = [self.carmargo_columns.index(col) for col in cols]
             group_data = data_[:, col_loc, :]
             group_data = self.normalize_data(group_data, group_name, norm_method, 'by_all_columns')
@@ -177,7 +187,6 @@ class FrameworkSSL:
         def train_batch(model, train_dl, optimizer, loss_fn):
             model.train()
             for i_batch, batch_data in enumerate(train_dl):
-                n = random.randint(1, 100)
                 optimizer.zero_grad()
                 xb, yb, lens = convert_batch_data(batch_data)
                 y_pred = model(xb, lens)
@@ -188,7 +197,7 @@ class FrameworkSSL:
                 optimizer.step()
 
         def eval_during_training(model, dl, loss_fn, use_batch_num=5):
-            # model.eval()
+            model.eval()
             loss = []
             with torch.no_grad():
                 for i_batch, batch_data in enumerate(dl):
@@ -212,12 +221,12 @@ class FrameworkSSL:
             return y_pred, y_true
 
         train_data, test_data = da_task['train'], da_task['test']
-        train_input_data = [train_data[mod] for mod in da_task['input_mods']]
-        train_output_data = train_data[da_task['name']]
+        train_input_data = [train_data[mod] for mod in da_task['_mods']]
+        train_output_data = train_data[da_task['output']]
         train_step_lens = self._get_step_len(train_input_data[0])
         train_dl = prepare_dl([*train_input_data, train_output_data, train_step_lens], int(self.config.batch_size_linear), shuffle=True)
-        test_input_data = [test_data[mod] for mod in da_task['input_mods']]
-        test_output_data = test_data[da_task['name']]
+        test_input_data = [test_data[mod] for mod in da_task['_mods']]
+        test_output_data = test_data[da_task['output']]
         test_step_lens = self._get_step_len(test_input_data[0])
         test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens], int(self.config.batch_size_linear), shuffle=False)
 
@@ -265,10 +274,9 @@ class FrameworkSSL:
             model.train()
             for i_batch, x in enumerate(train_dl):
                 optimizer.zero_grad()
-                xb_mod_a = x[0].float().type(dtype)
-                xb_mod_b = x[1].float().type(dtype)
+                xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[:-1]]
                 lens = x[2].float()
-                mod_outputs = model((xb_mod_a, xb_mod_b), lens)
+                mod_outputs = model(xb_mods, lens)
                 loss = loss_fn(mod_outputs)
                 if self.config.log_with_wandb:
                     wandb.log({'ssl batch loss': loss.item()})
@@ -282,23 +290,22 @@ class FrameworkSSL:
                 for i_batch, x in enumerate(dl):
                     if i_batch > use_batch_num:
                         continue
-                    xb_mod_a = x[0].float().type(dtype)
-                    xb_mod_b = x[1].float().type(dtype)
+                    xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[:-1]]
                     lens = x[2].float()
-                    mod_outputs = model((xb_mod_a, xb_mod_b), lens)
+                    mod_outputs = model(xb_mods, lens)
                     validation_loss.append(loss_fn(mod_outputs).item())
             return np.mean(validation_loss), mod_outputs
 
-        mod_a, mod_b = ssl_task_config['mod_a'], ssl_task_config['mod_b']
         train_data, vali_data = self.train_data_ssl, self.vali_data_ssl
-        train_step_lens = self._get_step_len(train_data[mod_a])
-        vali_step_lens = self._get_step_len(vali_data[mod_a])
-        model = SslGeneralNet(self.emb_nets, self.config.common_space_dim, [train_data[mod_a].shape[1], train_data[mod_b].shape[1]])
+        train_step_lens = self._get_step_len(train_data[ssl_task['_mods'][0]])
+        vali_step_lens = self._get_step_len(vali_data[ssl_task['_mods'][0]])
+        model = SslGeneralNet(torch.nn.ModuleList([self.emb_nets[mod] for mod in ssl_task['_mods']]),
+                              self.config.common_space_dim, [train_data[mod].shape[1] for mod in ssl_task['_mods']])
         if self.config.log_with_wandb:
             wandb.watch(model, ssl_task_config['ssl_loss_fn'], log='all', log_freq=20)
 
-        train_dl = prepare_dl([train_data[mod_a], train_data[mod_b], train_step_lens], int(self.config.batch_size_ssl), shuffle=True)
-        vali_dl = prepare_dl([vali_data[mod_a], vali_data[mod_b], vali_step_lens], int(self.config.batch_size_ssl), shuffle=False)
+        train_dl = prepare_dl([train_data[mod] for mod in ssl_task['_mods']] + [train_step_lens], int(self.config.batch_size_ssl), shuffle=True)
+        vali_dl = prepare_dl([vali_data[mod] for mod in ssl_task['_mods']] + [vali_step_lens], int(self.config.batch_size_ssl), shuffle=False)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.lr_ssl, weight_decay=1e-5)
 
         # scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_ssl/4))
@@ -322,9 +329,7 @@ class FrameworkSSL:
             if self.config.log_with_wandb:
                 wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
             # scheduler.step()
-        # plt.show()
-        self.emb_nets_post_ssl_state = copy.deepcopy(model.emb_nets.state_dict())
-        # self.regress_net_post_ssl_state = copy.deepcopy(self.regress_net.state_dict())
+        self.emb_nets_post_ssl_state = copy.deepcopy({mod: model.emb_nets[i_mod].state_dict() for i_mod, mod in enumerate(ssl_task['_mods'])})
         return {'model': model}
 
     def save_model_and_results(self, ):
@@ -419,27 +424,25 @@ class FrameworkSSL:
 
 PARAMS_TRIED = ['ramp', 'treadmill_speed', 'peak_knee_extension_angle']
 
-DOWNSTREAM_TASK_0 = {'name': 'peak_fy', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'],
-                     'output': 'peak_fy', 'imu_segments': ['trunk', 'shank'], 'processes': []}
-DOWNSTREAM_TASK_1 = {'name': 'peak_knee_angle_r_moment', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill'],
-                     'output': 'peak_knee_angle_r_moment', 'imu_segments': ['shank', 'foot'], 'processes': []}
-DOWNSTREAM_TASK_2 = {'name': 'peak_hip_flexion_r', 'input_mods': ['acc', 'gyr'], 'remove_trial_type': [],
-                     'output': 'peak_hip_flexion_r', 'imu_segments': ['trunk', 'shank'], 'processes': []}
-da_task = DOWNSTREAM_TASK_0
-
-GROUPS_OF_DATA = {
-    'acc': [segment + '_Accel_' + axis for segment in da_task['imu_segments'] for axis in ['X', 'Y', 'Z']],
-    'gyr': [segment + '_Gyro_' + axis for segment in da_task['imu_segments'] for axis in ['X', 'Y', 'Z']],
-    'emg': ['gastrocmed', 'tibialisanterior', 'soleus']}
+DOWNSTREAM_TASK_0 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'],
+                     'output': 'peak_fy', 'imu_segments': ['trunk', 'shank']}
+DOWNSTREAM_TASK_1 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill'],
+                     'output': 'peak_knee_angle_r_moment', 'imu_segments': ['shank', 'foot']}
+DOWNSTREAM_TASK_2 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [],
+                     'output': 'peak_hip_flexion_r', 'imu_segments': ['trunk', 'shank']}
 # EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
 #             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
 
+da_task = DOWNSTREAM_TASK_0
+ssl_task = {'_mods': ['acc', 'gyr', 'emg'], 'imu_segments': IMU_SEGMENT_LIST,
+            'emg_channels': ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis',
+                             'rectusfemoris', 'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']}
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
-config = {'epoch_ssl': 20, 'epoch_regress': 30, 'batch_size_ssl': 512, 'batch_size_linear': 256, 'lr_ssl': 1e-4,
+
+config = {'epoch_ssl': 20, 'epoch_regress': 50, 'batch_size_ssl': 512, 'batch_size_linear': 256, 'lr_ssl': 1e-4,
           'emb_net': CnnEmbedding, 'file_name': 'UnivariantWinTest', 'emb_output_dim': 32, 'common_space_dim': 128,
-          'device': 'cuda', 'log_with_wandb': True, 'use_step_num': None,
-          'ssl_loss_fn': nce_loss, 'mod_a': 'acc', 'mod_b': 'gyr'}
+          'device': 'cuda', 'log_with_wandb': True, 'ssl_loss_fn': nce_loss, 'use_step_num': None}
 # torch.nn.MSELoss()    torch.nn.SmoothL1Loss(beta=2)     vic_loss   nce_loss
 if config['log_with_wandb']:
     wandb.init(project="IMU_EMG_SSL", config=config, name='')
@@ -457,6 +460,7 @@ if __name__ == '__main__':
     ssl_framework.preprocess(train_set, test_set, test_set)
 
     model = ssl_framework.ssl_training(config)
+    ssl_framework.reset_regress_net_to_post_ssl_state()
     y_pred, model = ssl_framework.regressibility(only_linear_layer=False)
     ssl_framework.reset_regress_net_to_post_ssl_state()
     y_pred, model = ssl_framework.regressibility(only_linear_layer=True)

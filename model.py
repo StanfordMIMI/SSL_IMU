@@ -8,7 +8,6 @@ import math
 import numpy as np
 from utils import fix_seed, off_diagonal
 import matplotlib.pyplot as plt
-import wandb
 from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 
 # TODO: for RNN, Transformer, FCNN, check if the input follows (batch, channel, time_step)
@@ -18,7 +17,13 @@ temperature = 0.1
 
 
 def vic_loss(mod_outputs):
-    repr_loss = sum([F.mse_loss(mod_outputs[i_mod], mod_outputs[i_mod+1]) for i_mod in range(len(mod_outputs) - 1)])
+    if len(mod_outputs) == 2:
+        combos = [[0, 1]]
+    elif len(mod_outputs) == 3:
+        combos = [[0, 1], [1, 2], [0, 2]]
+    else:
+        raise ValueError('Only 2 or 3 embs are allowed.')
+    repr_loss = sum([F.mse_loss(mod_outputs[mod_a], mod_outputs[mod_b]) for mod_a, mod_b in combos])
 
     xs = [mod_output - mod_output.mean(dim=0) for mod_output in mod_outputs]
     mod_stds = [torch.sqrt(x.var(dim=0) + 0.0001) for x in xs]
@@ -38,19 +43,23 @@ def nce_loss(mod_outputs):
         # make each vector unit length
         emb1 = F.normalize(emb1, p=2, dim=-1)
         emb2 = F.normalize(emb2, p=2, dim=-1)
-
         similarity = torch.matmul(emb1, emb2.transpose(1, 2))
         return similarity / temperature
 
-    emb1, emb2 = mod_outputs
-    emb1_pos, emb2_pos = torch.unsqueeze(emb1, 1), torch.unsqueeze(emb2, 1)
-    sim_pos = _calculate_similarity(emb1_pos, emb2_pos)
-    emb1_all, emb2_all = torch.unsqueeze(emb1, 0), torch.unsqueeze(emb2, 0)
-    sim_all = _calculate_similarity(emb1_all, emb2_all)
+    if len(mod_outputs) == 2:
+        combos = [[0, 1]]
+    elif len(mod_outputs) == 3:
+        combos = [[0, 1], [1, 2], [0, 2]]
+    else:
+        raise ValueError('Only 2 or 3 embs are allowed.')
+    emb_pos = [torch.unsqueeze(emb, 1) for emb in mod_outputs]
+    sim_pos = [_calculate_similarity(emb_pos[combo[0]], emb_pos[combo[1]]) for combo in combos]
+    emb_all = [torch.unsqueeze(emb, 0) for emb in mod_outputs]
+    sim_all = [_calculate_similarity(emb_all[combo[0]], emb_all[combo[1]]) for combo in combos]
 
-    logsumexp_pos = torch.flatten(sim_pos)
-    logsumexp_all = torch.logsumexp(sim_all, dim=2)
-    logsumexp_all = torch.flatten(logsumexp_all)
+    logsumexp_pos = torch.flatten(torch.mean(torch.stack(sim_pos), dim=0))
+    logsumexp_all = [torch.logsumexp(sim_, dim=2) for sim_ in sim_all]
+    logsumexp_all = torch.flatten(torch.mean(torch.stack(logsumexp_all), dim=0))
     loss = (logsumexp_all - logsumexp_pos).mean()
     return loss
 
