@@ -3,6 +3,7 @@ import os
 
 CODE_PATH = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(CODE_PATH, 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/camargo/data_processed/')
+RESULTS_PATH = 'D://SSL_training_results'
 TRIAL_TYPES = ['LevelGround', 'Treadmill', 'Stair', 'Ramp']
 IMU_SEGMENT_LIST = ['foot', 'shank', 'thigh', 'trunk']
 

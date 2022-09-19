@@ -1,15 +1,203 @@
+import copy
 
+from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import filtfilt, butter
 import random
 import torch
 from scipy.signal import find_peaks
+import datetime
+import prettytable as pt
+from customized_logger import logger as logging, add_file_handler
+from sklearn.metrics import r2_score, mean_squared_error as mse
+from scipy.stats import pearsonr
 
 
 def fix_seed():
     torch.manual_seed(0)
     random.seed(0)
     np.random.seed(0)
+
+
+def get_step_len(data, feature_col=[0, 1, 2]):
+    """
+    :param data: Numpy array, 3d (step, sample, feature)
+    :param feature_col: int, feature column id for step length detection. Different id would probably return
+           the same results
+    :return:
+    """
+    data_the_feature = data[:, feature_col, :]
+    zero_loc = data_the_feature == 0.
+    data_len = np.sum(~zero_loc, axis=2)
+    data_len = np.max(data_len, axis=1)
+    return data_len
+
+
+def preprocess_modality(data_columns, data_scalar, data_, channel_names, norm_method):
+    processed_data = {}
+    for group_name, cols in channel_names.items():
+        col_loc = [data_columns.index(col) for col in cols]
+        group_data = data_[:, col_loc, :]
+        group_data = normalize_data(data_scalar, group_data, group_name, norm_method, 'by_all_columns')
+        processed_data[group_name] = group_data
+    return processed_data
+
+
+def get_profile_scores(y_true, y_pred, y_fields, weight=None):
+    def get_column_score(arr_true, arr_pred, w):
+        r2, rmse, cor_value = [np.zeros(arr_true.shape[0]) for _ in range(3)]
+        for i in range(arr_true.shape[0]):
+            arr_true_i = arr_true[i, w[i, :]]
+            arr_pred_i = arr_pred[i, w[i, :]]
+            r2[i] = r2_score(arr_true_i, arr_pred_i)
+            rmse[i] = np.sqrt(mse(arr_true_i, arr_pred_i))
+            cor_value[i] = pearsonr(arr_true_i, arr_pred_i)[0]
+        return {'r2': np.mean(r2), 'rmse': np.mean(rmse), 'cor_value': np.mean(cor_value)}
+
+    scores = []
+    for col, field in enumerate(y_fields):
+        y_true_one_field = y_true[:, :, col]
+        y_pred_one_field = y_pred[:, :, col]
+        if weight is None:
+            weight_one_field = np.full(y_true_one_field.shape, True)
+        score_one_field = {'field': field}
+        score_one_field.update(get_column_score(y_true_one_field, y_pred_one_field, weight_one_field))
+        scores.append(score_one_field)
+    return scores
+
+
+def get_scores(y_true, y_pred, y_fields, lens):
+    scores = []
+    for col, field in enumerate(y_fields):
+        if len(y_true.shape) == 2:
+            r2 = r2_score(y_true[:, col], y_pred[:, col])
+            rmse = np.sqrt(mse(y_true[:, col], y_pred[:, col]))
+            cor_value = pearsonr(y_true[:, col], y_pred[:, col])[0]
+        else:
+            r2, rmse, cor_value = [np.zeros(y_true.shape[0]) for _ in range(3)]
+            for i_step in range(y_true.shape[0]):
+                y_true_one_step = y_true[i_step, :lens[i_step], col]
+                y_pred_one_step = y_pred[i_step, :lens[i_step], col]
+                r2[i_step] = r2_score(y_true_one_step, y_pred_one_step)
+                rmse[i_step] = np.sqrt(mse(y_true_one_step, y_pred_one_step))
+                cor_value[i_step] = pearsonr(y_true_one_step, y_pred_one_step)[0]
+        score_one_field = {'field': field, 'r2': r2, 'rmse': rmse, 'cor_value': cor_value}
+        scores.append(score_one_field)
+    return scores
+
+
+def prepare_dl(data_list, batch_size, shuffle):
+    data_list_torch = [torch.from_numpy(data).float() for data in data_list]
+    ds = TensorDataset(*data_list_torch)
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+    return dl
+
+
+def set_dtype_and_model(device, model):
+    if device == 'cuda':
+        dtype = torch.cuda.FloatTensor
+        model.cuda()
+    else:
+        dtype = torch.FloatTensor
+    return dtype, model
+
+
+def get_non_zero_max(data_):
+    zero_loc = (data_ == 0.).all(axis=1).reshape([data_.shape[0], 1, -1])
+    zeros_to_exclude = np.concatenate([zero_loc for i in range(data_.shape[1])], axis=1)
+    data_[zeros_to_exclude] = np.nan
+    max_vals = np.nanmax(data_[:, :, 40:], axis=2)      # !!!
+    max_vals[np.isnan(max_vals)] = 0.
+    return max_vals
+
+
+def result_folder():
+    folder_name = str(datetime.datetime.now())[:-7]
+    for item in ['.', ':']:
+        folder_name = folder_name.replace(item, '_')
+    return folder_name
+
+
+def normalize_data(data_scalar, data, name, method, scalar_mode):
+    if method == 'fit_transform':
+        data_scalar[name] = copy.deepcopy(data_scalar['base_scalar'])
+    assert (scalar_mode in ['by_all_columns'])
+    input_data = data.copy()
+    original_shape = input_data.shape
+    if len(input_data.shape) == 3:
+        zero_loc = (input_data == 0.).all(axis=1)
+        for i in range(input_data.shape[1]):
+            input_data[:, i][zero_loc] = np.nan
+        input_data = input_data.reshape([-1, 1])
+    else:
+        input_data[(input_data == 0.).all(axis=1), :] = np.nan
+    scaled_data = getattr(data_scalar[name], method)(input_data)
+    scaled_data = scaled_data.reshape(original_shape)
+    scaled_data[np.isnan(scaled_data)] = 0.
+    return scaled_data
+
+
+def define_channel_names(the_task):
+    imu_segments = the_task['imu_segments']
+    channel_names = {
+        'acc': [segment + '_Accel_' + axis for segment in imu_segments for axis in ['X', 'Y', 'Z']],
+        'gyr': [segment + '_Gyro_' + axis for segment in imu_segments for axis in ['X', 'Y', 'Z']]}
+    if 'emg' in the_task['_mods']:
+        channel_names.update({'emg': the_task['emg_channels']})
+    return channel_names
+
+
+def print_table(results):
+    tb = pt.PrettyTable()
+    for test_result in results:
+        tb.field_names = test_result.keys()
+        tb.add_row([np.round(np.mean(value), 3) if isinstance(value, (np.ndarray, float)) else value
+                    for value in test_result.values()])
+    logging.info(tb)
+
+
+def get_profile_scores(y_true, y_pred, y_fields, weight=None):
+    def get_column_score(arr_true, arr_pred, w):
+        r2, rmse, cor_value = [np.zeros(arr_true.shape[0]) for _ in range(3)]
+        for i in range(arr_true.shape[0]):
+            arr_true_i = arr_true[i, w[i, :]]
+            arr_pred_i = arr_pred[i, w[i, :]]
+            r2[i] = r2_score(arr_true_i, arr_pred_i)
+            rmse[i] = np.sqrt(mse(arr_true_i, arr_pred_i))
+            cor_value[i] = pearsonr(arr_true_i, arr_pred_i)[0]
+        return {'r2': np.mean(r2), 'rmse': np.mean(rmse), 'cor_value': np.mean(cor_value)}
+
+    scores = []
+    for col, field in enumerate(y_fields):
+        y_true_one_field = y_true[:, :, col]
+        y_pred_one_field = y_pred[:, :, col]
+        if weight is None:
+            weight_one_field = np.full(y_true_one_field.shape, True)
+        score_one_field = {'field': field}
+        score_one_field.update(get_column_score(y_true_one_field, y_pred_one_field, weight_one_field))
+        scores.append(score_one_field)
+    return scores
+
+
+def get_scores(y_true, y_pred, y_fields, lens):
+    scores = []
+    for col, field in enumerate(y_fields):
+        if len(y_true.shape) == 2:
+            r2 = r2_score(y_true[:, col], y_pred[:, col])
+            rmse = np.sqrt(mse(y_true[:, col], y_pred[:, col]))
+            cor_value = pearsonr(y_true[:, col], y_pred[:, col])[0]
+        else:
+            r2, rmse, cor_value = [np.zeros(y_true.shape[0]) for _ in range(3)]
+            for i_step in range(y_true.shape[0]):
+                y_true_one_step = y_true[i_step, :lens[i_step], col]
+                y_pred_one_step = y_pred[i_step, :lens[i_step], col]
+                r2[i_step] = r2_score(y_true_one_step, y_pred_one_step)
+                rmse[i_step] = np.sqrt(mse(y_true_one_step, y_pred_one_step))
+                cor_value[i_step] = pearsonr(y_true_one_step, y_pred_one_step)[0]
+        score_one_field = {'field': field, 'r2': r2, 'rmse': rmse, 'cor_value': cor_value}
+        scores.append(score_one_field)
+    return scores
 
 
 def off_diagonal(x):

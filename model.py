@@ -412,6 +412,10 @@ class CnnEmbedding(nn.Module):
         self.layer4 = nn.Sequential(RestNetDownBlock(32, output_dim, [2, 1]), RestNetBasicBlock(output_dim, output_dim))
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         # self.fc = nn.Linear(512, output_dim)
+        self.net_name = 'CnnEmbedding'
+
+    def __str__(self):
+        return self.net_name
 
     def forward(self, sequence, lens):
         out = sequence.transpose(-1, -2)
