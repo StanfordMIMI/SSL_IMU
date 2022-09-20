@@ -20,10 +20,11 @@ import json
 
 
 class FrameworkDownstream:
-    def __init__(self, config):
+    def __init__(self, config, da_task):
         self.config = SimpleNamespace(**config)
-        self._data_scalar = {'base_scalar': StandardScaler()}
         add_file_handler(logging, os.path.join(self.config.result_dir, 'training_log.txt'))
+        self._data_scalar = {'base_scalar': StandardScaler()}
+        self.da_task = da_task
         fix_seed()
 
         self.emb_nets = {mod: self.config.emb_net(1, self.config.emb_output_dim, mod + ' embedding') for mod in ssl_task['_mods']}
@@ -43,8 +44,8 @@ class FrameworkDownstream:
         emb_path = os.path.join(RESULTS_PATH, self.config.ssl_note + '.pth')
         return torch.load(emb_path)
 
-    def preprocess(self, dataset, train_sub_ids: List[str], validate_sub_ids: List[str],
-                   test_sub_ids: List[str]):
+    def load_and_process_carmargo(self, dataset, train_sub_ids: List[str], validate_sub_ids: List[str],
+                                  test_sub_ids: List[str]):
         """
         dataset: an h5 file
         train_sub_ids: a list of subject id for model training
@@ -53,7 +54,7 @@ class FrameworkDownstream:
         """
 
         # select data
-        type_to_exclude = [DICT_TRIAL_TYPE_ID[type] for type in da_task['remove_trial_type']]
+        type_to_exclude = [DICT_TRIAL_TYPE_ID[type] for type in self.da_task['remove_trial_type']]
         set_data = {}
         with h5py.File(DATA_PATH + dataset + '.h5', 'r') as hf:
             data_columns = json.loads(hf.attrs['columns'])
@@ -65,7 +66,7 @@ class FrameworkDownstream:
                     else:
                         sub_data = hf[sub_id]
                     data_selected = self.select_data_by_list_of_values(sub_data, data_columns.index('trial_type_id'), [i for i in range(4) if i not in type_to_exclude])
-                    data_selected = self.select_data_by_has_nonzero_element(data_selected, data_columns.index(da_task['output']), 0.4, 0.6)
+                    data_selected = self.select_data_by_has_nonzero_element(data_selected, data_columns.index(self.da_task['output']), 0.4, 0.6)
                     current_set_data_list.append(data_selected)
                 set_data[data_name] = np.concatenate(current_set_data_list, axis=0)
 
@@ -73,12 +74,48 @@ class FrameworkDownstream:
         for data_name, norm_method in zip(['train', 'vali', 'test'], ['fit_transform', 'transform', 'transform']):
             current_set_data = set_data[data_name]
             logging.info('Downstream {}. Number of steps: {}'.format(data_name, current_set_data.shape[0]))
-            data_ds = preprocess_modality(data_columns, self._data_scalar, current_set_data, define_channel_names(da_task), norm_method)
-            output_selected = current_set_data[:, data_columns.index(da_task['output'])]
+            data_ds = preprocess_modality(data_columns, self._data_scalar, current_set_data, define_channel_names(self.da_task), norm_method)
+            output_selected = current_set_data[:, data_columns.index(self.da_task['output'])]
             output_loc = np.argmax(np.abs(output_selected), axis=1)
             output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
-            data_ds[da_task['output']] = normalize_data(self._data_scalar, output_, da_task['output'], norm_method, 'by_all_columns')
-            da_task[data_name] = data_ds
+            data_ds[self.da_task['output']] = normalize_data(self._data_scalar, output_, self.da_task['output'], norm_method, 'by_all_columns')
+            self.da_task[data_name] = data_ds
+        plt.show()
+
+    def load_and_process_kam(self, dataset, train_sub_ids: List[str], validate_sub_ids: List[str],
+                             test_sub_ids: List[str]):
+        set_data = {}
+        with h5py.File(DATA_PATH + dataset + '.h5', 'r') as hf:
+            data_columns = json.loads(hf.attrs['columns'])
+            for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
+                if self.config.use_step_num is not None:
+                    current_set_data_list = [hf[sub_][:self.config.use_step_num] for sub_ in set_sub_ids]
+                else:
+                    current_set_data_list = [hf[sub_][:] for sub_ in set_sub_ids]
+                # current_set_data_list =
+                set_data[data_name] = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
+
+        # normalize data
+        for data_name, norm_method in zip(['train', 'vali', 'test'], ['fit_transform', 'transform', 'transform']):
+            current_set_data = set_data[data_name]
+            logging.info('Downstream {}. Number of steps: {}'.format(data_name, current_set_data.shape[0]))
+            data_ds = preprocess_modality(data_columns, self._data_scalar, current_set_data, define_channel_names(self.da_task), norm_method)
+            step_lens = get_step_len(current_set_data)
+            output_selected = current_set_data[:, data_columns.index(self.da_task['output'])]
+            output_loc = np.zeros([output_selected.shape[0]])
+            for i_step, step_len in enumerate(step_lens):
+                output_loc[i_step] = np.argmax(output_selected[i_step, :int(.5 * step_len)])
+            output_loc = output_loc.astype(int)
+
+            # plt.figure()
+            # for i in range(output_selected.shape[0]):
+            #     plt.plot(output_selected[i], color='C0')
+            #     plt.plot(output_loc[i], output_selected[i, output_loc[i]], 'r*')
+            # plt.show()
+
+            output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
+            data_ds[self.da_task['output']] = normalize_data(self._data_scalar, output_, self.da_task['output'], norm_method, 'by_all_columns')
+            self.da_task[data_name] = data_ds
         plt.show()
 
     @staticmethod
@@ -148,13 +185,13 @@ class FrameworkDownstream:
                 y_true = torch.cat(y_true_list).numpy()
             return y_pred, y_true
 
-        train_data, test_data = da_task['train'], da_task['test']
-        train_input_data = [train_data[mod] for mod in da_task['_mods']]
-        train_output_data = train_data[da_task['output']]
+        train_data, test_data = self.da_task['train'], self.da_task['test']
+        train_input_data = [train_data[mod] for mod in self.da_task['_mods']]
+        train_output_data = train_data[self.da_task['output']]
         train_step_lens = get_step_len(train_input_data[0])
         train_dl = prepare_dl([*train_input_data, train_output_data, train_step_lens], int(self.config.batch_size_linear), shuffle=True)
-        test_input_data = [test_data[mod] for mod in da_task['_mods']]
-        test_output_data = test_data[da_task['output']]
+        test_input_data = [test_data[mod] for mod in self.da_task['_mods']]
+        test_output_data = test_data[self.da_task['output']]
         test_step_lens = get_step_len(test_input_data[0])
         test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens], int(self.config.batch_size_linear), shuffle=False)
 
@@ -191,7 +228,7 @@ class FrameworkDownstream:
         plt.xlabel('True')
         plt.ylabel('Predicted')
 
-        all_scores = get_scores(y_true, y_pred, [da_task['output']], test_step_lens)
+        all_scores = get_scores(y_true, y_pred, [self.da_task['output']], test_step_lens)
         all_scores = [{'subject': 'all', **scores} for scores in all_scores]
         print_table(all_scores)
 
@@ -201,11 +238,12 @@ class FrameworkDownstream:
 class FrameworkSSL:
     def __init__(self, config):
         self.config = SimpleNamespace(**config)
+        jump_len = 2 if self.config.down_to_100hz else 1
         with h5py.File(DATA_PATH + self.config.file_name + '.h5', 'r') as hf:
             if self.config.use_step_num is not None:
-                self.camargo_data = {sub_: sub_data[:self.config.use_step_num] for sub_, sub_data in hf.items()}
+                self.camargo_data = {sub_: sub_data[:self.config.use_step_num, :, ::jump_len] for sub_, sub_data in hf.items()}
             else:
-                self.camargo_data = {sub_: sub_data[:] for sub_, sub_data in hf.items()}
+                self.camargo_data = {sub_: sub_data[:, :, ::jump_len] for sub_, sub_data in hf.items()}
             self.carmargo_columns = json.loads(hf.attrs['columns'])
         os.makedirs(os.path.join(self.config.result_dir), exist_ok=True)
         add_file_handler(logging, os.path.join(self.config.result_dir, 'training_log.txt'))
@@ -321,39 +359,44 @@ DOWNSTREAM_TASK_1 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill']
                      'output': 'peak_knee_angle_r_moment', 'imu_segments': ['shank', 'foot']}
 DOWNSTREAM_TASK_2 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [],
                      'output': 'peak_hip_flexion_r', 'imu_segments': ['trunk', 'shank']}
+DOWNSTREAM_TASK_3 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [],
+                     'output': 'kam', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
 # EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
 #             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
 
-da_task = DOWNSTREAM_TASK_0
 ssl_task = {'_mods': ['acc', 'gyr', 'emg'], 'imu_segments': IMU_SEGMENT_LIST,
             'emg_channels': ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis',
                              'rectusfemoris', 'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']}
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 
-config = {'epoch_ssl': 2, 'epoch_regress': 100, 'batch_size_ssl': 512, 'batch_size_linear': 256, 'lr_ssl': 1e-4,
+config = {'epoch_ssl': 20, 'epoch_regress': 15, 'batch_size_ssl': 512, 'batch_size_linear': 256, 'lr_ssl': 1e-4,
           'emb_net': CnnEmbedding, 'file_name': 'UnivariantWinTest', 'emb_output_dim': 32, 'common_space_dim': 128,
-          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'ssl_note': 'cnn_all_4_imus',
-          'log_with_wandb': False, 'ssl_loss_fn': nce_loss, 'use_step_num': None}
+          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'ssl_note': 'cnn_100hz',
+          'down_to_100hz': True, 'log_with_wandb': False, 'ssl_loss_fn': nce_loss, 'use_step_num': None}
 # torch.nn.MSELoss()    torch.nn.SmoothL1Loss(beta=2)     vic_loss   nce_loss
 if config['log_with_wandb']:
     wandb.init(project="IMU_EMG_SSL", config=config, name='')
 os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
+train_sub_carmargo = [
+    'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
+    'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30']
+test_sub_carmargo = ['AB06', 'AB07', 'AB08', 'AB09']
+train_sub_kam = ['subject_0' + str(i) for i in range(5, 10)] + ['subject_' + str(i) for i in range(10, 18)]
+test_sub_kam = ['subject_0' + str(i) for i in range(1, 5)]
 
 
 if __name__ == '__main__':
     # logging.info("Current commit is {}".format(execute_cmd("git rev-parse HEAD")))
-    train_set = [
-        'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
-        'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30']
-    test_set = ['AB06', 'AB07', 'AB08', 'AB09']
 
-    # ssl_framework = FrameworkSSL(config)
-    # ssl_framework.preprocess(train_set, test_set, test_set)
-    # model = ssl_framework.ssl_training(config)
+    # Phase I, ssl
+    ssl_framework = FrameworkSSL(config)
+    ssl_framework.preprocess(train_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
+    model = ssl_framework.ssl_training(config)
 
-    da_framework = FrameworkDownstream(config)
-    da_framework.preprocess('UnivariantWinTest', train_set, test_set, test_set)
+    # Phase II, downstream application, KAM dataset
+    da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
+    da_framework.load_and_process_kam('all_17_subjects', train_sub_kam, test_sub_kam, test_sub_kam)
     da_framework.set_regress_net_to_post_ssl_state()
     y_pred, model = da_framework.regressibility(only_linear_layer=False)
     da_framework.set_regress_net_to_post_ssl_state()
@@ -362,6 +405,17 @@ if __name__ == '__main__':
     y_pred, model = da_framework.regressibility(only_linear_layer=True)
     da_framework.set_regress_net_to_init_state()
     y_pred, model = da_framework.regressibility(only_linear_layer=False)
+
+    # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_0)
+    # da_framework.load_and_process_carmargo('UnivariantWinTest', train_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
+    # da_framework.set_regress_net_to_post_ssl_state()
+    # y_pred, model = da_framework.regressibility(only_linear_layer=False)
+    # da_framework.set_regress_net_to_post_ssl_state()
+    # y_pred, model = da_framework.regressibility(only_linear_layer=True)
+    # da_framework.set_regress_net_to_init_state()
+    # y_pred, model = da_framework.regressibility(only_linear_layer=True)
+    # da_framework.set_regress_net_to_init_state()
+    # y_pred, model = da_framework.regressibility(only_linear_layer=False)
 
     plt.show()
 

@@ -157,49 +157,6 @@ def print_table(results):
     logging.info(tb)
 
 
-def get_profile_scores(y_true, y_pred, y_fields, weight=None):
-    def get_column_score(arr_true, arr_pred, w):
-        r2, rmse, cor_value = [np.zeros(arr_true.shape[0]) for _ in range(3)]
-        for i in range(arr_true.shape[0]):
-            arr_true_i = arr_true[i, w[i, :]]
-            arr_pred_i = arr_pred[i, w[i, :]]
-            r2[i] = r2_score(arr_true_i, arr_pred_i)
-            rmse[i] = np.sqrt(mse(arr_true_i, arr_pred_i))
-            cor_value[i] = pearsonr(arr_true_i, arr_pred_i)[0]
-        return {'r2': np.mean(r2), 'rmse': np.mean(rmse), 'cor_value': np.mean(cor_value)}
-
-    scores = []
-    for col, field in enumerate(y_fields):
-        y_true_one_field = y_true[:, :, col]
-        y_pred_one_field = y_pred[:, :, col]
-        if weight is None:
-            weight_one_field = np.full(y_true_one_field.shape, True)
-        score_one_field = {'field': field}
-        score_one_field.update(get_column_score(y_true_one_field, y_pred_one_field, weight_one_field))
-        scores.append(score_one_field)
-    return scores
-
-
-def get_scores(y_true, y_pred, y_fields, lens):
-    scores = []
-    for col, field in enumerate(y_fields):
-        if len(y_true.shape) == 2:
-            r2 = r2_score(y_true[:, col], y_pred[:, col])
-            rmse = np.sqrt(mse(y_true[:, col], y_pred[:, col]))
-            cor_value = pearsonr(y_true[:, col], y_pred[:, col])[0]
-        else:
-            r2, rmse, cor_value = [np.zeros(y_true.shape[0]) for _ in range(3)]
-            for i_step in range(y_true.shape[0]):
-                y_true_one_step = y_true[i_step, :lens[i_step], col]
-                y_pred_one_step = y_pred[i_step, :lens[i_step], col]
-                r2[i_step] = r2_score(y_true_one_step, y_pred_one_step)
-                rmse[i_step] = np.sqrt(mse(y_true_one_step, y_pred_one_step))
-                cor_value[i_step] = pearsonr(y_true_one_step, y_pred_one_step)[0]
-        score_one_field = {'field': field, 'r2': r2, 'rmse': rmse, 'cor_value': cor_value}
-        scores.append(score_one_field)
-    return scores
-
-
 def off_diagonal(x):
     n, m = x.shape
     assert n == m
