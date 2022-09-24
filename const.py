@@ -18,6 +18,16 @@ STEP_TYPES = STANCE, STANCE_SWING = range(2)
 IMU_SAMPLE_RATE = 200
 GRF_SAMPLE_RATE = EMG_SAMPLE_RATE = 1000
 
+FONT_SIZE_LARGE = 12
+FONT_SIZE = 10
+FONT_SIZE_SMALL = 8
+FONT_DICT = {'fontsize': FONT_SIZE, 'fontname': 'Arial'}
+FONT_DICT_LARGE = {'fontsize': FONT_SIZE_LARGE, 'fontname': 'Arial'}
+FONT_DICT_SMALL = {'fontsize': FONT_SIZE_SMALL, 'fontname': 'Arial'}
+FONT_DICT_X_SMALL = {'fontsize': 15, 'fontname': 'Arial'}
+LINE_WIDTH = 2
+LINE_WIDTH_THICK = 3
+
 MISSING_TRIALS = {
     'AB07': ['levelground_ccw_fast_01_05'],
     'AB08': ['stair_1_r_01_01', 'stair_1_r_01_02', 'stair_1_r_01_03', 'stair_1_r_01_04', 'stair_1_r_01_05'],
