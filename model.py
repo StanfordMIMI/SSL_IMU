@@ -26,7 +26,7 @@ def vic_loss(mod_outputs):
     repr_loss = sum([F.mse_loss(mod_outputs[mod_a], mod_outputs[mod_b]) for mod_a, mod_b in combos])
 
     xs = [mod_output - mod_output.mean(dim=0) for mod_output in mod_outputs]
-    mod_stds = [torch.sqrt(x.var(dim=0) + 0.0001) for x in xs]
+    mod_stds = [torch.sqrt(x.var(dim=0) + 1e-15) for x in xs]
     std_loss = sum([torch.mean(F.relu(1 - mod_std)) for mod_std in mod_stds]) / len(mod_outputs)
 
     B, C = mod_outputs[0].shape

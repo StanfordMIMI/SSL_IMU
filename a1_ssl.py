@@ -366,7 +366,6 @@ class FrameworkSSL:
 
     def save_emb_net_post_ssl(self, model):
         emb_nets_post_ssl_state = copy.deepcopy({mod: model.emb_nets[i_mod].state_dict() for i_mod, mod in enumerate(ssl_task['_mods'])})
-        model_name = model.net_name
         save_path = os.path.join(RESULTS_PATH, self.config.ssl_note + '.pth')
         torch.save(emb_nets_post_ssl_state, save_path)
 
@@ -402,14 +401,12 @@ DOWNSTREAM_TASK_3 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset'
 # EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
 #             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
 
-ssl_task = {'_mods': ['acc', 'gyr', 'emg'], 'imu_segments': IMU_SEGMENT_LIST,
-            'emg_channels': ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis',
-                             'rectusfemoris', 'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']}
+ssl_task = {'_mods': ['acc', 'gyr'], 'imu_segments': IMU_SEGMENT_LIST}
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 
 config = {'epoch_ssl': 20, 'num_gradient_de_da': 500, 'batch_size_ssl': 512, 'batch_size_linear': 256, 'lr_ssl': 1e-4,
-          'emb_net': CnnEmbedding, 'ssl_file_name': 'UnivariantWinTest', 'emb_output_dim': 32, 'common_space_dim': 128,
+          'emb_net': CnnEmbedding, 'ssl_file_name': 'UnivariantWinTest', 'emb_output_dim': 32, 'common_space_dim': 512,
           'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'ssl_note': 'cnn_100hz',
           'down_to_100hz': True, 'log_with_wandb': False, 'ssl_loss_fn': nce_loss, 'ssl_use_ratio': 1.}
 # torch.nn.MSELoss()    torch.nn.SmoothL1Loss(beta=2)     vic_loss   nce_loss
