@@ -16,10 +16,10 @@ with h5py.File(DATA_PATH + 'all_17_subjects.h5', 'r+') as hf:
             column_new = segment + '_Gyro_' + axis
             data_columns[i] = column_new
         if 'EXT_KM_X' == column:
-            column_new = 'kam'
+            column_new = 'KFM'
             data_columns[i] = column_new
         if 'EXT_KM_Y' == column:
-            column_new = 'kfm'
+            column_new = 'KAM'
             data_columns[i] = column_new
     if 'sub_id' not in data_columns:
         for sub_name, data in hf.items():

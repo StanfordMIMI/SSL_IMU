@@ -44,30 +44,25 @@ def preprocess_modality(data_columns, data_scalar, data_, channel_names, norm_me
     return processed_data
 
 
-def get_profile_scores(y_true, y_pred, y_fields, weight=None):
-    def get_column_score(arr_true, arr_pred, w):
+def get_profile_scores(y_true, y_pred, field, test_step_lens):
+    def get_column_score(arr_true, arr_pred):
         r2, rmse, cor_value = [np.zeros(arr_true.shape[0]) for _ in range(3)]
         for i in range(arr_true.shape[0]):
-            arr_true_i = arr_true[i, w[i, :]]
-            arr_pred_i = arr_pred[i, w[i, :]]
+            arr_true_i = arr_true[i, :test_step_lens[i]]
+            arr_pred_i = arr_pred[i, :test_step_lens[i]]
             r2[i] = r2_score(arr_true_i, arr_pred_i)
             rmse[i] = np.sqrt(mse(arr_true_i, arr_pred_i))
             cor_value[i] = pearsonr(arr_true_i, arr_pred_i)[0]
         return {'r2': np.mean(r2), 'rmse': np.mean(rmse), 'cor_value': np.mean(cor_value)}
 
     scores = []
-    for col, field in enumerate(y_fields):
-        y_true_one_field = y_true[:, :, col]
-        y_pred_one_field = y_pred[:, :, col]
-        if weight is None:
-            weight_one_field = np.full(y_true_one_field.shape, True)
-        score_one_field = {'field': field}
-        score_one_field.update(get_column_score(y_true_one_field, y_pred_one_field, weight_one_field))
-        scores.append(score_one_field)
+    score_one_field = {'field': field}
+    score_one_field.update(get_column_score(y_true, y_pred))
+    scores.append(score_one_field)
     return scores
 
 
-def get_scores(y_true, y_pred, y_fields, lens):
+def get_scores(y_true, y_pred, y_fields, lens):         # TODO: !!! update
     scores = []
     for col, field in enumerate(y_fields):
         if len(y_true.shape) == 2:
