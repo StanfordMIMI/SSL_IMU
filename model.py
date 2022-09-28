@@ -9,7 +9,6 @@ import numpy as np
 from utils import fix_seed, off_diagonal
 import matplotlib.pyplot as plt
 from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
-import wandb
 
 # TODO: for RNN, Transformer, FCNN, check if the input follows (batch, channel, time_step)
 
@@ -63,47 +62,6 @@ def nce_loss(mod_outputs):
     logsumexp_all = torch.flatten(torch.mean(torch.stack(logsumexp_all), dim=0))
     loss = (logsumexp_all - logsumexp_pos).mean()
     return loss
-
-
-class SslChannelIndependentNet(nn.Module):
-    def __init__(self, emb_nets, common_space_dim, mod_channel_nums):
-        super(SslChannelIndependentNet, self).__init__()
-        self.emb_nets = emb_nets
-        self.linear_proj_1 = nn.ModuleList()
-        self.linear_proj_2 = nn.ModuleList()
-        self.bn_proj_1 = nn.ModuleList()
-        self.bn_proj_2 = nn.ModuleList()
-        self.mod_channel_nums = mod_channel_nums
-        for i_embnet, embnet in enumerate(emb_nets):
-            for _ in range(mod_channel_nums[i_embnet]):
-                self.linear_proj_1.append(nn.Linear(embnet.output_dim, common_space_dim))
-                self.bn_proj_1.append(nn.BatchNorm1d(common_space_dim))
-                self.linear_proj_2.append(nn.Linear(common_space_dim, common_space_dim))
-                self.bn_proj_2.append(nn.BatchNorm1d(common_space_dim))
-        self.net_name = 'Combined Net'
-
-    def __str__(self):
-        return self.net_name
-
-    def forward(self, mods, lens):
-        def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1, bn_proj_2):
-            mod_ = mod_.unsqueeze(dim=-1)
-            mod_ = mod_.view(-1, *mod_.shape[2:])
-            mod_, _ = embnet(mod_, lens)
-            mod_ = mod_.reshape(B, -1)
-            mod_ = F.relu(bn_proj_1(linear_proj_1(mod_)))
-            mod_ = bn_proj_2(linear_proj_2(mod_)).reshape(B, 1, -1)
-            return mod_
-
-        B, C, T = mods[0].shape
-        mod_outputs = []
-        i_c = 0
-        for i_mod, mod in enumerate(mods):
-            for i_c_mod in range(self.mod_channel_nums[i_mod]):
-                mod_outputs.append(reshape_and_emb(mod[:, i_c_mod:i_c_mod+1], self.emb_nets[i_mod], self.linear_proj_1[i_c],
-                                                   self.linear_proj_2[i_c], self.bn_proj_1[i_c], self.bn_proj_2[i_c]))
-                i_c += 1
-        return torch.concat(mod_outputs, dim=1)
 
 
 class SslGeneralNet(nn.Module):

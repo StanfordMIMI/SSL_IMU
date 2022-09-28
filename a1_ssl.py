@@ -10,7 +10,7 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
 from model import nce_loss, ImuTransformerEmbedding, ImuRnnEmbedding, SslGeneralNet, \
-    CnnEmbedding, LinearRegressNet, vic_loss, SslChannelIndependentNet
+    CnnEmbedding, LinearRegressNet, SslMaskReconstructNet, vic_loss
 import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
@@ -406,12 +406,12 @@ ssl_task = {'_mods': ['acc', 'gyr'], 'imu_segments': IMU_CARMARGO_SEGMENT_LIST}
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 
 config = {'epoch_ssl': 20, 'num_gradient_de_da': 500, 'batch_size_ssl': 512, 'batch_size_linear': 256, 'lr_ssl': 1e-4,
-          'emb_net': CnnEmbedding, 'ssl_file_name': 'UnivariantWinTest', 'emb_output_dim': 32, 'common_space_dim': 64,
-          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'ssl_note': 'test_new_loss',
-          'down_to_100hz': True, 'log_with_wandb': True, 'ssl_loss_fn': nce_loss, 'ssl_use_ratio': 1}
+          'emb_net': CnnEmbedding, 'ssl_file_name': 'UnivariantWinTest', 'emb_output_dim': 32, 'common_space_dim': 512,
+          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'ssl_note': 'cnn_100hz',
+          'down_to_100hz': True, 'log_with_wandb': False, 'ssl_loss_fn': nce_loss, 'ssl_use_ratio': 1.}
 # torch.nn.MSELoss()    torch.nn.SmoothL1Loss(beta=2)     vic_loss   nce_loss
 if config['log_with_wandb']:
-    wandb.init(project="ACC_GYR_SSL", config=config, name='')
+    wandb.init(project="IMU_EMG_SSL", config=config, name='')
 os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
 train_sub_carmargo = [
     'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
@@ -422,7 +422,7 @@ test_sub_kam = ['subject_0' + str(i) for i in range(1, 5)]
 
 
 if __name__ == '__main__':
-    run_ssl()
+    # run_ssl()
 
     da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
     da_kam_framework.load_and_process_kam('all_17_subjects', train_sub_kam, test_sub_kam, test_sub_kam)
@@ -431,10 +431,6 @@ if __name__ == '__main__':
     # da_carmargo_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_0)
     # da_carmargo_framework.load_and_process_carmargo('UnivariantWinTest', train_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
     # run_da(da_carmargo_framework, da_use_ratios=[.2, .4, .6, .8, 1.])
-
-    # da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
-    # da_kam_framework.load_and_process_kam('all_17_subjects', train_sub_kam, test_sub_kam, test_sub_kam)
-    # run_da(da_kam_framework, da_use_ratios=[1.])
 
     plt.show()
 
