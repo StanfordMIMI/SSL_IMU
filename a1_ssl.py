@@ -10,13 +10,13 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
 from model import nce_loss, ImuTransformerEmbedding, ImuRnnEmbedding, SslGeneralNet, \
-    CnnEmbedding, LinearRegressNet, SslMaskReconstructNet, vic_loss, SslChannelIndependentNet, new_nce_loss
+    CnnEmbedding, LinearRegressNet, vic_loss, SslChannelIndependentNet
 import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
     preprocess_modality, get_scores, print_table, get_step_len
-from const import DICT_SUBJECT_ID, DATA_PATH, TRIAL_TYPES, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE, \
-    DICT_TRIAL_TYPE_ID, IMU_SEGMENT_LIST, RESULTS_PATH
+from const import DICT_SUBJECT_ID, DATA_PATH_CARMARGO, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, \
+    DICT_TRIAL_TYPE_ID, IMU_CARMARGO_SEGMENT_LIST, RESULTS_PATH
 import json
 
 
@@ -58,7 +58,7 @@ class FrameworkDownstream:
         # self.set_input_data, self.set_output_data = {}, {}
         self.set_data = {}
         time_frame_jump = 2 if self.config.down_to_100hz else 1
-        with h5py.File(DATA_PATH + dataset + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH_CARMARGO + dataset + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
@@ -80,7 +80,7 @@ class FrameworkDownstream:
     def load_and_process_kam(self, dataset, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
         self.set_data = {}
-        with h5py.File(DATA_PATH + dataset + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH_CARMARGO + dataset + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
@@ -264,7 +264,7 @@ class FrameworkSSL:
     def __init__(self, config):
         self.config = SimpleNamespace(**config)
         time_frame_jump = 2 if self.config.down_to_100hz else 1
-        with h5py.File(DATA_PATH + self.config.ssl_file_name + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH_CARMARGO + self.config.ssl_file_name + '.h5', 'r') as hf:
             self.camargo_data = {sub_: sub_data[:int(self.config.ssl_use_ratio*hf[sub_].shape[0]), :, ::time_frame_jump]
                                  for sub_, sub_data in hf.items()}
             self.carmargo_columns = json.loads(hf.attrs['columns'])
@@ -331,7 +331,7 @@ class FrameworkSSL:
         train_data, vali_data = self.train_data_ssl, self.vali_data_ssl
         train_step_lens = get_step_len(train_data[ssl_task['_mods'][0]])
         vali_step_lens = get_step_len(vali_data[ssl_task['_mods'][0]])
-        model = SslChannelIndependentNet(torch.nn.ModuleList([self.emb_nets[mod] for mod in ssl_task['_mods']]),
+        model = SslGeneralNet(torch.nn.ModuleList([self.emb_nets[mod] for mod in ssl_task['_mods']]),
                               self.config.common_space_dim, [train_data[mod].shape[1] for mod in ssl_task['_mods']])
         if self.config.log_with_wandb:
             wandb.watch(model, ssl_task_config['ssl_loss_fn'], log='all', log_freq=20)
@@ -401,14 +401,14 @@ DOWNSTREAM_TASK_3 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset'
 # EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
 #             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
 
-ssl_task = {'_mods': ['acc', 'gyr'], 'imu_segments': IMU_SEGMENT_LIST}
+ssl_task = {'_mods': ['acc', 'gyr'], 'imu_segments': IMU_CARMARGO_SEGMENT_LIST}
 # 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
 
 config = {'epoch_ssl': 20, 'num_gradient_de_da': 500, 'batch_size_ssl': 512, 'batch_size_linear': 256, 'lr_ssl': 1e-4,
           'emb_net': CnnEmbedding, 'ssl_file_name': 'UnivariantWinTest', 'emb_output_dim': 32, 'common_space_dim': 64,
           'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'ssl_note': 'test_new_loss',
-          'down_to_100hz': True, 'log_with_wandb': True, 'ssl_loss_fn': new_nce_loss, 'ssl_use_ratio': 1}
+          'down_to_100hz': True, 'log_with_wandb': True, 'ssl_loss_fn': nce_loss, 'ssl_use_ratio': 1}
 # torch.nn.MSELoss()    torch.nn.SmoothL1Loss(beta=2)     vic_loss   nce_loss
 if config['log_with_wandb']:
     wandb.init(project="ACC_GYR_SSL", config=config, name='')
