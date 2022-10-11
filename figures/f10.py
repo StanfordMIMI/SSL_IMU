@@ -51,7 +51,7 @@ def finalize_f10():
 
 
 if __name__ == "__main__":
-    data_path = 'D:\ssl_training_results\\2022-09-21 22_17_23'      # 2022-09-21 19_47_41_kam    2022-09-21 22_17_23
+    data_path = 'D:\ssl_training_results\\2022-10-01 08_57_39'      # 2022-10-02 22_43_13
     with h5py.File(data_path + '/results.h5', 'r') as hf:
         data_all_tests = {subject: subject_data[:] for subject, subject_data in hf.items()}
         data_fields = json.loads(hf.attrs['columns'])

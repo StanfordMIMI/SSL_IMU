@@ -1,11 +1,15 @@
 import os
 
+IMU_MOVI_SEGMENT_LIST = [
+    'Hip', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'RightShoulder',
+    'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand', 'Head', 'Neck']
+DICT_TRIAL_MOVI = {index: i for i, index in enumerate(['I1', 'I2', 'S1', 'S2'])}
 
 CODE_PATH = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(CODE_PATH, 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/camargo/data_processed/')
 RESULTS_PATH = 'D://SSL_training_results'
 TRIAL_TYPES = ['LevelGround', 'Treadmill', 'Stair', 'Ramp']
-IMU_SEGMENT_LIST = ['foot', 'shank', 'thigh', 'trunk']
+IMU_CARMARGO_SEGMENT_LIST = ['foot', 'shank', 'thigh', 'trunk']
 
 DICT_TRIAL_TYPE_ID = {type: i for i, type in enumerate(TRIAL_TYPES)}
 DICT_LABEL = {'treadmill_walking': -1, 'walk': 0, 'idle': 1, 'stand-walk': 2, 'turn': 3, 'rampascent': 4, 'rampdescent': 5,
@@ -15,8 +19,8 @@ DICT_AXIS_DIRECTION = {'x': 'medio-lateral', 'y': 'vertical', 'z': 'anterior-pos
 GRAVITY = 9.81
 STANCE_V_GRF_THD = 10.
 STEP_TYPES = STANCE, STANCE_SWING = range(2)
-IMU_SAMPLE_RATE = 200
-GRF_SAMPLE_RATE = EMG_SAMPLE_RATE = 1000
+IMU_CARMARGO_SAMPLE_RATE = 200
+GRF_CARMARGO_SAMPLE_RATE = EMG_CARMARGO_SAMPLE_RATE = 1000
 
 FONT_SIZE_LARGE = 12
 FONT_SIZE = 10

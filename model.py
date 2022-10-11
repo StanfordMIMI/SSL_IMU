@@ -1,3 +1,5 @@
+import copy
+
 from torch import nn, Tensor
 import torch
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
@@ -65,10 +67,10 @@ def nce_loss(mod_outputs):
 
 
 class SslGeneralNet(nn.Module):
-    def __init__(self, emb_nets, common_space_dim, mod_channel_nums):
+    def __init__(self, emb_nets, common_space_dim):
         super(SslGeneralNet, self).__init__()
         self.emb_nets = emb_nets
-        output_channel_nums = [embnet.output_dim * mod_channel_num for embnet, mod_channel_num in zip(emb_nets, mod_channel_nums)]
+        output_channel_nums = [embnet.output_dim for embnet in emb_nets]
         self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for output_channel_num in output_channel_nums])
         self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in output_channel_nums])
         self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])
@@ -83,15 +85,13 @@ class SslGeneralNet(nn.Module):
 
     def forward(self, mods, lens):
         def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1, bn_proj_2):
-            mod_ = mod_.unsqueeze(dim=-1)
-            mod_ = mod_.view(-1, *mod_.shape[2:])
+            mod_ = mod_.view(-1, 3, *mod_.shape[2:])
+            mod_ = mod_.transpose(1, 2)
             mod_, _ = embnet(mod_, lens)
-            mod_ = mod_.reshape(B, -1)
             mod_ = F.relu(bn_proj_1(linear_proj_1(mod_)))
             mod_ = bn_proj_2(linear_proj_2(mod_))
             return mod_
 
-        B, C, T = mods[0].shape
         mod_outputs = []
         for i_mod, mod in enumerate(mods):
             mod_outputs.append(reshape_and_emb(
@@ -104,8 +104,8 @@ class LinearRegressNet(nn.Module):
         super(LinearRegressNet, self).__init__()
         self.emb_nets = emb_nets
 
-        emb_output_dims = [net.output_dim * channel_num for net, channel_num in zip(self.emb_nets, mod_channel_num)]
-        self.emb_output_dim = sum(emb_output_dims)
+        emb_output_dims = [net.output_dim * channel_num / 3 for net, channel_num in zip(self.emb_nets, mod_channel_num)]
+        self.emb_output_dim = int(sum(emb_output_dims))
         self.output_dim = output_dim
         self.linear = nn.Linear(self.emb_output_dim, output_dim)
 
@@ -113,8 +113,8 @@ class LinearRegressNet(nn.Module):
         batch_size = x[0].shape[0]
         mod_outputs = []
         for i_mod, x_mod in enumerate(x):
-            x_mod = x_mod.unsqueeze(dim=-1)
-            x_mod = x_mod.reshape(-1, *x_mod.shape[2:])
+            x_mod = x_mod.view(-1, 3, *x_mod.shape[2:])
+            x_mod = x_mod.transpose(1, 2)
             mod_output, _ = self.emb_nets[i_mod](x_mod, lens)
             mod_outputs.append(mod_output.reshape(batch_size, -1))
 
@@ -284,13 +284,20 @@ class CnnEmbedding(nn.Module):
 
     def forward(self, sequence, lens):
         out = sequence.transpose(-1, -2)
+        print(out.shape[1:])
         out = self.conv1(out)
+        print(out.shape[1:])
         out = self.bn1(out)
         out = self.layer1(out)
+        print(out.shape[1:])
         out = self.layer2(out)
+        print(out.shape[1:])
         out = self.layer3(out)
+        print(out.shape[1:])
         out = self.layer4(out)
+        print(out.shape[1:])
         out = self.avgpool(out)
+        print(out.shape[1:])
         return out.squeeze(dim=-1), None
 
 

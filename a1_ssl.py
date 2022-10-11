@@ -9,15 +9,14 @@ from customized_logger import logger as logging, add_file_handler
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
-from model import nce_loss, ImuTransformerEmbedding, ImuRnnEmbedding, SslGeneralNet, \
-    CnnEmbedding, LinearRegressNet, SslMaskReconstructNet, vic_loss
+from model import nce_loss, CnnEmbedding, LinearRegressNet, SslGeneralNet
 import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
     preprocess_modality, get_scores, print_table, get_step_len
-from const import DICT_SUBJECT_ID, DATA_PATH_CARMARGO, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, \
-    DICT_TRIAL_TYPE_ID, IMU_CARMARGO_SEGMENT_LIST, RESULTS_PATH
+from const import DATA_PATH, DICT_TRIAL_TYPE_ID, IMU_CARMARGO_SEGMENT_LIST, RESULTS_PATH
 import json
+import pytorch_warmup as warmup
 
 
 class FrameworkDownstream:
@@ -28,7 +27,7 @@ class FrameworkDownstream:
         self.da_task = da_task
         fix_seed()
 
-        self.emb_nets = {mod: self.config.emb_net(1, self.config.emb_output_dim, mod + ' embedding') for mod in ssl_task['_mods']}
+        self.emb_nets = {mod: self.config.emb_net(3, self.config.emb_output_dim, mod + ' embedding') for mod in ssl_task['_mods']}
         self.regress_net = LinearRegressNet(torch.nn.ModuleList([self.emb_nets[mod] for mod in da_task['_mods']]),
                                             [len(define_channel_names(da_task)[mod]) for mod in da_task['_mods']], 1)
         _, self.regress_net = set_dtype_and_model(self.config.device, self.regress_net)
@@ -45,20 +44,18 @@ class FrameworkDownstream:
         emb_path = os.path.join(RESULTS_PATH, self.config.ssl_note + '.pth')
         return torch.load(emb_path)
 
-    def load_and_process_carmargo(self, dataset, train_sub_ids: List[str], validate_sub_ids: List[str],
+    def load_and_process_carmargo(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                                   test_sub_ids: List[str]):
         """
-        dataset: an h5 file
         train_sub_ids: a list of subject id for model training
         validate_sub_ids: a list of subject id for model validation
         test_sub_ids: a list of subject id for model testing
         """
 
         type_to_exclude = [DICT_TRIAL_TYPE_ID[type] for type in self.da_task['remove_trial_type']]
-        # self.set_input_data, self.set_output_data = {}, {}
         self.set_data = {}
         time_frame_jump = 2 if self.config.down_to_100hz else 1
-        with h5py.File(DATA_PATH_CARMARGO + dataset + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
@@ -75,19 +72,47 @@ class FrameworkDownstream:
                     data_selected = np.concatenate([data_selected, output_processed], axis=1)
                     current_set_data_list.append(data_selected)
                 self.set_data[data_name] = np.concatenate(current_set_data_list, axis=0)
-                # self.set_output_data[data_name] = np.concatenate(current_set_output_list, axis=0)
 
-    def load_and_process_kam(self, dataset, train_sub_ids: List[str], validate_sub_ids: List[str],
+    def load_and_process_kam(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
         self.set_data = {}
-        with h5py.File(DATA_PATH_CARMARGO + dataset + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
                 current_set_data_list = [hf[sub_] for sub_ in set_sub_ids]
                 current_set_data = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
+                """ [step, feature, time] """
 
+                step_lens = get_step_len(current_set_data, feature_col=[1, 2])
+                output_selected = current_set_data[:, self.data_columns.index(self.da_task['output'])]
+                output_loc = np.zeros([output_selected.shape[0]])
+                for i_step, step_len in enumerate(step_lens):
+                    output_loc[i_step] = np.argmax(output_selected[i_step, 20:int(.5 * step_len)])+20
+                output_loc = output_loc.astype(int)
+                output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
+                #
+                # plt.figure()
+                # for i_step, step_len in enumerate(step_lens):
+                #     plt.plot(output_selected[i_step])
+                #     plt.plot(output_loc[i_step], output_selected[i_step, output_loc[i_step]], '*')
+                # plt.show()
+
+                output_processed = np.repeat(output_[:, np.newaxis], current_set_data.shape[2], axis=1).reshape([-1, 1, current_set_data.shape[2]])
+                current_set_data = np.concatenate([current_set_data, output_processed], axis=1)
+                self.set_data[data_name] = current_set_data
+
+    def load_and_process_sun(self, train_sub_ids: List[str], validate_sub_ids: List[str],
+                             test_sub_ids: List[str]):
+        self.set_data = {}
+        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
+            self.data_columns = list(hf[train_sub_ids[0]].attrs['columns'])
+            if 'output_processed' not in self.data_columns:
+                self.data_columns.append('output_processed')
+            for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
+                current_set_data_list = [hf[sub_][('0' + str(trial+1))[-2:]] for sub_ in set_sub_ids for trial in range(30) if ('0' + str(trial+1))[-2:] in hf[sub_]]
+                current_set_data = np.stack(current_set_data_list, axis=0).transpose([0, 2, 1])
                 step_lens = get_step_len(current_set_data)
                 output_selected = current_set_data[:, self.data_columns.index(self.da_task['output'])]
                 output_loc = np.zeros([output_selected.shape[0]])
@@ -111,7 +136,6 @@ class FrameworkDownstream:
             data_ds = preprocess_modality(self.data_columns, self._data_scalar, sampled_data, define_channel_names(self.da_task), norm_method)
             data_ds[self.da_task['output']] = normalize_data(self._data_scalar, sampled_data[:, self.data_columns.index('output_processed'), 0:1],
                                                              self.da_task['output'], norm_method, 'by_all_columns')
-            data_ds['info'] = current_set_data[:, self.data_columns.index('sub_id')]
             self.da_task[data_name] = data_ds
 
     def inverse_normalize_output(self, y_true, y_pred):
@@ -138,16 +162,12 @@ class FrameworkDownstream:
         return data[selected_rows]
 
     def save_model_and_results(self, test_name, y_true, y_pred, model):
-        # save_path = os.path.join(self.config.result_dir, 'sub_models')
         os.makedirs(os.path.join(self.config.result_dir, 'test_models'), exist_ok=True)
-        # for model_name, model in models.items():
         copied_model = copy.deepcopy(model)
         torch.save(copied_model.cpu(), os.path.join(self.config.result_dir, 'test_models', test_name + '.pth'))
         results = np.concatenate([y_true, y_pred], axis=1)
         columns = ['y_true', 'y_pred']
         with h5py.File(os.path.join(self.config.result_dir, 'results.h5'), 'a') as hf:
-            # grp = hf.create_group(test_name)
-            # grp.require_dataset(test_sub_name, shape=results.shape, data=results, dtype='float32')
             hf.require_dataset(test_name, shape=results.shape, data=results, dtype='float32')
             hf.attrs['columns'] = json.dumps(columns)
 
@@ -172,9 +192,11 @@ class FrameworkDownstream:
                 y_pred = model(xb, lens)
                 loss = loss_fn(yb, y_pred)
                 if self.config.log_with_wandb:
-                    wandb.log({'linear batch loss': loss.item()})
+                    wandb.log({'linear batch loss': loss.item(), 'lr da': optimizer.param_groups[0]['lr']})
                 loss.backward()
                 optimizer.step()
+                with warmup_scheduler.dampening():
+                    scheduler.step()
 
         def eval_during_training(model, dl, loss_fn, use_batch_num=5):
             model.eval()
@@ -226,10 +248,12 @@ class FrameworkDownstream:
             lr = 3e-3
         else:
             param_to_train = model.parameters()
-            lr = 1e-4
+            lr = 1e-3
 
         optimizer = torch.optim.AdamW(param_to_train, lr, weight_decay=1e-5)
         epoch_end_time = time.time()
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.num_gradient_de_ssl)
+        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.num_gradient_de_da/5))
 
         epoch = int(self.config.num_gradient_de_da / len(train_dl))
         for i_epoch in range(epoch):
@@ -264,34 +288,33 @@ class FrameworkSSL:
     def __init__(self, config):
         self.config = SimpleNamespace(**config)
         time_frame_jump = 2 if self.config.down_to_100hz else 1
-        with h5py.File(DATA_PATH_CARMARGO + self.config.ssl_file_name + '.h5', 'r') as hf:
-            self.camargo_data = {sub_: sub_data[:int(self.config.ssl_use_ratio*hf[sub_].shape[0]), :, ::time_frame_jump]
-                                 for sub_, sub_data in hf.items()}
-            self.carmargo_columns = json.loads(hf.attrs['columns'])
+        with h5py.File(DATA_PATH + ssl_task['ssl_file_name'] + '.h5', 'r') as hf:
+            self.ssl_data = {sub_: sub_data[:int(self.config.ssl_use_ratio * hf[sub_].shape[0]), :, ::time_frame_jump]
+                             for sub_, sub_data in hf.items()}
+            self.ssl_columns = json.loads(hf.attrs['columns'])
         os.makedirs(os.path.join(self.config.result_dir), exist_ok=True)
         add_file_handler(logging, os.path.join(self.config.result_dir, 'training_log.txt'))
 
-        self.emb_nets = {mod: self.config.emb_net(1, self.config.emb_output_dim, mod + ' embedding') for mod in ssl_task['_mods']}
+        self.emb_nets = {mod: self.config.emb_net(3, self.config.emb_output_dim, mod + ' embedding') for mod in ssl_task['_mods']}
         self._data_scalar = {'base_scalar': StandardScaler()}
         fix_seed()
 
-    def preprocess(self, train_sub_ids: List[str], validate_sub_ids: List[str],
-                   test_sub_ids: List[str]):
+    def preprocess(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         """
         train_sub_ids: a list of subject id for model training
         validate_sub_ids: a list of subject id for model validation
         test_sub_ids: a list of subject id for model testing
         """
-        train_data = np.concatenate([self.camargo_data[sub] for sub in train_sub_ids], axis=0)
-        vali_data = np.concatenate([self.camargo_data[sub] for sub in validate_sub_ids], axis=0)
-        test_data = np.concatenate([self.camargo_data[sub] for sub in test_sub_ids], axis=0)
+        train_data = np.concatenate([self.ssl_data[sub] for sub in train_sub_ids], axis=0)
+        vali_data = np.concatenate([self.ssl_data[sub] for sub in validate_sub_ids], axis=0)
+        test_data = np.concatenate([self.ssl_data[sub] for sub in test_sub_ids], axis=0)
 
         # SSL preprocess
-        train_data_ssl = preprocess_modality(self.carmargo_columns, self._data_scalar, train_data, define_channel_names(ssl_task), 'fit_transform')
+        train_data_ssl = preprocess_modality(self.ssl_columns, self._data_scalar, train_data, define_channel_names(ssl_task), 'fit_transform')
         logging.info('SSL training with subject ids: {}. Number of steps: {}'.format(train_sub_ids, list(train_data_ssl.values())[0].shape[0]))
-        vali_data_ssl = preprocess_modality(self.carmargo_columns, self._data_scalar, vali_data, define_channel_names(ssl_task), 'transform')
+        vali_data_ssl = preprocess_modality(self.ssl_columns, self._data_scalar, vali_data, define_channel_names(ssl_task), 'transform')
         logging.info('SSL validation with subject ids: {}. Number of steps: {}'.format(validate_sub_ids, list(vali_data_ssl.values())[0].shape[0]))
-        test_data_ssl = preprocess_modality(self.carmargo_columns, self._data_scalar, test_data, define_channel_names(ssl_task), 'transform')
+        test_data_ssl = preprocess_modality(self.ssl_columns, self._data_scalar, test_data, define_channel_names(ssl_task), 'transform')
         logging.info('SSL testing with subject ids: {}. Number of steps: {}'.format(test_sub_ids, list(test_data_ssl.values())[0].shape[0]))
         self.train_data_ssl, self.vali_data_ssl, self.test_data_ssl = train_data_ssl, vali_data_ssl, test_data_ssl
 
@@ -301,7 +324,7 @@ class FrameworkSSL:
         for i, param in enumerate(params):
             plt.plot(param.cpu().detach().numpy(), [i for _ in param], '.', markersize=1)
 
-    def ssl_training(self, ssl_task_config):
+    def ssl_training(self, config):
         def train_batch(model, train_dl, optimizer, loss_fn):
             model.train()
             for i_batch, x in enumerate(train_dl):
@@ -311,9 +334,11 @@ class FrameworkSSL:
                 mod_outputs = model(xb_mods, lens)
                 loss = loss_fn(mod_outputs)
                 if self.config.log_with_wandb:
-                    wandb.log({'ssl batch loss': loss.item()})
+                    wandb.log({'ssl batch loss': loss.item(), 'lr ssl': optimizer.param_groups[0]['lr']})
                 loss.backward()
                 optimizer.step()
+                with warmup_scheduler.dampening():
+                    scheduler.step()
 
         def eval_during_training(model, dl, loss_fn, use_batch_num=5):
             model.eval()            # !!!
@@ -332,21 +357,22 @@ class FrameworkSSL:
         train_step_lens = get_step_len(train_data[ssl_task['_mods'][0]])
         vali_step_lens = get_step_len(vali_data[ssl_task['_mods'][0]])
         model = SslGeneralNet(torch.nn.ModuleList([self.emb_nets[mod] for mod in ssl_task['_mods']]),
-                              self.config.common_space_dim, [train_data[mod].shape[1] for mod in ssl_task['_mods']])
+                              self.config.common_space_dim)
         if self.config.log_with_wandb:
-            wandb.watch(model, ssl_task_config['ssl_loss_fn'], log='all', log_freq=20)
+            wandb.watch(model, config['ssl_loss_fn'], log='all', log_freq=20)
 
         train_dl = prepare_dl([train_data[mod] for mod in ssl_task['_mods']] + [train_step_lens], int(self.config.batch_size_ssl), shuffle=True)
         vali_dl = prepare_dl([vali_data[mod] for mod in ssl_task['_mods']] + [vali_step_lens], int(self.config.batch_size_ssl), shuffle=False)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.lr_ssl, weight_decay=1e-5)
 
-        # scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=int(self.config.epoch_ssl/4))
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.num_gradient_de_ssl)
+        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.num_gradient_de_ssl/5))
         dtype, model = set_dtype_and_model(self.config.device, model)
-        # current_best_loss = eval_during_training(model, vali_dl, training_task['ssl_loss_fn'])
         epoch_end_time = time.time()
-        for i_epoch in range(self.config.epoch_ssl):
-            train_loss, mod_outputs = eval_during_training(model, train_dl, ssl_task_config['ssl_loss_fn'])
-            test_loss, _ = eval_during_training(model, vali_dl, ssl_task_config['ssl_loss_fn'])
+        epoch = int(self.config.num_gradient_de_ssl / len(train_dl))
+        for i_epoch in range(epoch):
+            train_loss, mod_outputs = eval_during_training(model, train_dl, config['ssl_loss_fn'])
+            test_loss, _ = eval_during_training(model, vali_dl, config['ssl_loss_fn'])
 
             # # # DEBUG
             # if i_epoch % 2 == 0:
@@ -354,13 +380,12 @@ class FrameworkSSL:
             #     plt.plot(mod_outputs[0].cpu().detach().numpy().ravel()[:200])
             #     plt.plot(mod_outputs[1].cpu().detach().numpy().ravel()[:200])
 
-            logging.info(f'| SSL | epoch{i_epoch:3d}/{self.config.epoch_ssl:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
+            logging.info(f'| SSL | epoch{i_epoch:3d}/{epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
                          f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
             epoch_end_time = time.time()
-            train_batch(model, train_dl, optimizer, ssl_task_config['ssl_loss_fn'])
+            train_batch(model, train_dl, optimizer, config['ssl_loss_fn'])
             if self.config.log_with_wandb:
                 wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
-            # scheduler.step()
         self.save_emb_net_post_ssl(model)
         return {'model': model}
 
@@ -375,7 +400,10 @@ class FrameworkSSL:
 
 def run_ssl():
     ssl_framework = FrameworkSSL(config)
-    ssl_framework.preprocess(train_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
+    if 'MoVi' in ssl_task['ssl_file_name']:
+        ssl_framework.preprocess(train_sub_movi, test_sub_movi, test_sub_movi)
+    else:
+        ssl_framework.preprocess(train_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
     ssl_framework.ssl_training(config)
 
 
@@ -390,46 +418,63 @@ def run_da(da_framework, da_use_ratios=[1.]):
 
 PARAMS_TRIED = ['ramp', 'treadmill_speed', 'peak_knee_extension_angle']
 
-DOWNSTREAM_TASK_0 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'], 'dataset': 'UnivariantWinTest',
+DOWNSTREAM_TASK_0 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
                      'output': 'peak_fy', 'imu_segments': ['trunk', 'shank']}
-DOWNSTREAM_TASK_1 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill'], 'dataset': 'UnivariantWinTest',
+DOWNSTREAM_TASK_1 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo',
                      'output': 'peak_knee_angle_r_moment', 'imu_segments': ['shank', 'foot']}
-DOWNSTREAM_TASK_2 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'UnivariantWinTest',
-                     'output': 'peak_hip_flexion_r', 'imu_segments': ['trunk', 'shank']}
+DOWNSTREAM_TASK_2 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'all_17_subjects',
+                     'output': 'KAM', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
 DOWNSTREAM_TASK_3 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'all_17_subjects',
-                     'output': 'kam', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
-# EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
-#             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
+                     'output': 'KFM', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
+DOWNSTREAM_TASK_4 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
+                     'output': 'R_KNEE_MOMENT_X', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
+DOWNSTREAM_TASK_5 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
+                     'output': 'R_GRF_Z', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
 
-ssl_task = {'_mods': ['acc', 'gyr'], 'imu_segments': IMU_CARMARGO_SEGMENT_LIST}
-# 'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r'
-# 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment', 'knee_angle_r_moment', 'ankle_angle_r_moment'
+ssl_task_0 = {'ssl_file_name': 'Carmargo', '_mods': ['acc', 'gyr'], 'imu_segments': IMU_CARMARGO_SEGMENT_LIST}
+ssl_task_1 = {'ssl_file_name': 'MoVi', '_mods': ['acc', 'gyr'], 'imu_segments': [
+    'Hip', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'Neck']}
+# 'Hip', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'RightShoulder',
+# 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand', 'Head', 'Neck'
+ssl_task = ssl_task_1
 
-config = {'epoch_ssl': 20, 'num_gradient_de_da': 500, 'batch_size_ssl': 512, 'batch_size_linear': 256, 'lr_ssl': 1e-4,
-          'emb_net': CnnEmbedding, 'ssl_file_name': 'UnivariantWinTest', 'emb_output_dim': 32, 'common_space_dim': 512,
-          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'ssl_note': 'cnn_100hz',
-          'down_to_100hz': True, 'log_with_wandb': False, 'ssl_loss_fn': nce_loss, 'ssl_use_ratio': 1.}
+config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 2000, 'batch_size_ssl': 256, 'batch_size_linear': 64, 'lr_ssl': 2e-4,
+          'emb_net': CnnEmbedding, 'emb_output_dim': 512, 'common_space_dim': 512,
+          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'ssl_note': 'cnn'+ssl_task['ssl_file_name'],
+          'down_to_100hz': False, 'log_with_wandb': False, 'ssl_loss_fn': nce_loss, 'ssl_use_ratio': 0.0011}
 # torch.nn.MSELoss()    torch.nn.SmoothL1Loss(beta=2)     vic_loss   nce_loss
 if config['log_with_wandb']:
     wandb.init(project="IMU_EMG_SSL", config=config, name='')
 os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
-train_sub_carmargo = [
-    'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
-    'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30']
+train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
+test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
+train_sub_carmargo = ['AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
+                      'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30']
 test_sub_carmargo = ['AB06', 'AB07', 'AB08', 'AB09']
-train_sub_kam = ['subject_0' + str(i) for i in range(5, 10)] + ['subject_' + str(i) for i in range(10, 18)]
-test_sub_kam = ['subject_0' + str(i) for i in range(1, 5)]
+train_sub_kam = ['subject_' + ('0' + str(i))[-2:] for i in range(1, 12)]
+test_sub_kam = ['subject_' + ('0' + str(i))[-2:] for i in range(12, 18)]
+train_sub_sun = ['P_14_hunan', 'P_15_liuzhaoyu', 'P_16_zhangjinduo', 'P_17_congyuanqi', 'P_18_hezhonghai', 'P_19_xiongyihui',
+                 'P_20_xuanweicheng', 'P_21_wujianing', 'P_22_zhangning', 'P_23_wangjinhong', 'P_24_liziqing']
+test_sub_sun = ['P_08_zhangboyuan', 'P_09_libang', 'P_10_dongxuan', 'P_11_liuchunyu', 'P_12_fuzijun', 'P_13_xulibang']
 
 
 if __name__ == '__main__':
-    # run_ssl()
+    run_ssl()
+
+    # da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_4)
+    # da_kam_framework.load_and_process_sun(train_sub_sun, test_sub_sun, test_sub_sun)
+    # run_da(da_kam_framework, da_use_ratios=[1.])
+    #
+    # da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_5)
+    # da_kam_framework.load_and_process_sun(train_sub_sun, test_sub_sun, test_sub_sun)
+    # run_da(da_kam_framework, da_use_ratios=[1.])
 
     da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
-    da_kam_framework.load_and_process_kam('all_17_subjects', train_sub_kam, test_sub_kam, test_sub_kam)
-    run_da(da_kam_framework, da_use_ratios=[.01, 0.033, .1, 0.333, 1.])      # .2, .4, .6, .8, 1.       .01, .1, 1.  !!!
+    da_kam_framework.load_and_process_kam(train_sub_kam, test_sub_kam, test_sub_kam)
+    run_da(da_kam_framework, da_use_ratios=[1])      # .2, .4, .6, .8, 1.      .01, 0.033, .1, 0.333, 1.
 
     # da_carmargo_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_0)
-    # da_carmargo_framework.load_and_process_carmargo('UnivariantWinTest', train_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
+    # da_carmargo_framework.load_and_process_carmargo(train_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
     # run_da(da_carmargo_framework, da_use_ratios=[.2, .4, .6, .8, 1.])
 
     plt.show()

@@ -6,8 +6,8 @@ import numpy as np
 import ast
 from scipy.signal import medfilt
 from utils import get_data_by_merging_data_struct, find_peak_max, data_filter
-from const import DATA_PATH, TRIAL_TYPES, GRAVITY, IMU_SAMPLE_RATE, EMG_SAMPLE_RATE, GRF_SAMPLE_RATE, \
-    IMU_SEGMENT_LIST, DICT_LABEL, STANCE_V_GRF_THD
+from const import DATA_PATH, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, GRF_CARMARGO_SAMPLE_RATE, \
+    IMU_CARMARGO_SEGMENT_LIST, DICT_LABEL, STANCE_V_GRF_THD
 from const import DICT_SUBJECT_ID, DICT_TRIAL_TYPE_ID
 
 
@@ -55,7 +55,7 @@ def add_clinical_metrics(data, trial, columns):
             peak_loc, peak_val = find_peak_max(kinematic_to_process[kinematic_metric_name] * kin_clip, -1e5)
             if peak_loc:
                 peak_kinematic[peak_loc+clip_start, i_kin] = kinematic_to_process[kinematic_metric_name] * peak_val
-
+    #
     # if len(strike_and_walking):
     #     plt.figure()
     #     plt.title(trial)
@@ -72,7 +72,7 @@ def add_clinical_metrics(data, trial, columns):
 
 class ContinuousDatasetLoader:
     def __init__(self, subject_list):
-        self.sample_rate = IMU_SAMPLE_RATE
+        self.sample_rate = IMU_CARMARGO_SAMPLE_RATE
         self.columns_raw = self.load_columns()
         self.col_200 = INFO_LIST + IMU_LIST
         self.col_1000 = EMG_LIST + FORCE_LIST
@@ -123,6 +123,10 @@ class ContinuousDatasetLoader:
         columns = self.col_200 + self.col_1000
         return data_trials, columns
 
+    @staticmethod
+    def resample_200_to_100(trial_data):
+        return trial_data[::2]      # resample to 100 hz
+
     def process_grf(self, data_trials):
         for trial, trial_data in data_trials.items():
             trial_info = trial.split('_')
@@ -151,7 +155,7 @@ class ContinuousDatasetLoader:
                 data_combined = np.zeros([data_.shape[0], 3])
                 for i in range(0, data_.shape[1], 3):
                     data_combined += data_[:, i:i+3]
-                data_combined = data_filter(data_combined, 15, GRF_SAMPLE_RATE)
+                data_combined = data_filter(data_combined, 15, GRF_CARMARGO_SAMPLE_RATE)
 
                 trial_data[1] = np.column_stack([trial_data[1], data_combined])
                 data_trials[trial] = trial_data
@@ -164,7 +168,7 @@ class ContinuousDatasetLoader:
             condition = trial.split('_')[0]
             emg_col_loc = [self.columns_raw[condition]['1000'].index(x) for x in EMG_LIST]
             emg_data = trial_data[1][:, emg_col_loc]
-            emg_data = data_filter(np.abs(emg_data), 20, EMG_SAMPLE_RATE)
+            emg_data = data_filter(np.abs(emg_data), 20, EMG_CARMARGO_SAMPLE_RATE)
             trial_data[1][:, emg_col_loc] = emg_data
         return data_trials
 
@@ -205,13 +209,14 @@ class ContinuousDatasetLoader:
                     DATA_PATH + ambulation + '_' + frequency + '_columns.txt').read()), dtype=object))
         return columns
 
-    def add_additional_columns(self):
+    def add_additional_columns_and_resample_200_to_100(self):
         for subject in self.subject_list:
             for trial in self.trials:
                 if trial not in self.data_contin_merged[subject].keys():
                     continue
                 self.data_contin_merged[subject][trial], new_cols = add_clinical_metrics(
                     self.data_contin_merged[subject][trial], trial, self.columns)
+                self.data_contin_merged[subject][trial] = self.resample_200_to_100(self.data_contin_merged[subject][trial])
         if new_cols[0] not in self.columns: self.columns.extend(new_cols)
 
     def loop_all_the_trials(self, segment_methods):
@@ -232,8 +237,8 @@ class ContinuousDatasetLoader:
 
 
 class DataStruct:
+    """ 3 dimensions of self.data: [window, columns, time_step]"""
     def __init__(self, col_num, step_len_max):
-
         self.step_len_max = step_len_max
         self.num_of_step_allocate_one_time = 2000
         self.data = np.zeros([self.num_of_step_allocate_one_time, col_num, step_len_max])
@@ -264,9 +269,9 @@ class BaseSegment:
 
 
 class WindowSegment(BaseSegment):
-    def __init__(self):
-        self.data_len = 200
-        self.name = 'UnivariantWinTest'
+    def __init__(self, name='Carmargo'):
+        self.data_len = 100
+        self.name = name
         self.win_len, self.win_step = self.data_len, int(self.data_len/5)
 
     def start_segment(self, trial_data, columns):
@@ -290,7 +295,7 @@ class StepSegment(BaseSegment):
         self.data_len = 256
         self.name = 'StepWinTest'
         self.win_len, self.win_step = self.data_len, int(self.data_len/2)
-        self.step_len_max, self.step_len_min = int(256*IMU_SAMPLE_RATE/200), int(40*IMU_SAMPLE_RATE/200)
+        self.step_len_max, self.step_len_min = int(256 * IMU_CARMARGO_SAMPLE_RATE / 200), int(40 * IMU_CARMARGO_SAMPLE_RATE / 200)
 
     @staticmethod
     def strike_off_to_step_and_remove_incorrect_step(gyr_y, strike_list, off_list, step_len_max, step_len_min, from_strike_to_off=True):
@@ -318,7 +323,7 @@ class StepSegment(BaseSegment):
         gyr_all = np.deg2rad(data_df[['gyr_x', 'gyr_y', 'gyr_z']])
         gyr_magnitude = np.linalg.norm(gyr_all, axis=1)
 
-        imu_sample_rate = IMU_SAMPLE_RATE
+        imu_sample_rate = IMU_CARMARGO_SAMPLE_RATE
         stance_phase_sample_thd_lower = 0.3 * imu_sample_rate
         stance_phase_sample_thd_higher = 1 * imu_sample_rate
         data_len = data_df.shape[0]
@@ -354,16 +359,16 @@ class StepSegment(BaseSegment):
         """ Reliable algorithm used in TNSRE first submission"""
         gyr_thd = 2.6
         acc_thd = 1.2 / GRAVITY
-        max_distance = IMU_SAMPLE_RATE * 2  # distance from stationary phase should be smaller than 2 seconds
+        max_distance = IMU_CARMARGO_SAMPLE_RATE * 2  # distance from stationary phase should be smaller than 2 seconds
         acc_magnitude = np.linalg.norm(acc_data, axis=1)
         gyr_magnitude = np.linalg.norm(gyr_data, axis=1)
         gyr_y = gyr_data[:, 1]
         data_len = gyr_data.shape[0]
 
         if cut_off_fre_strike_off is not None:
-            acc_magnitude = data_filter(acc_magnitude, cut_off_fre_strike_off, IMU_SAMPLE_RATE, filter_order=2)
-            gyr_magnitude = data_filter(gyr_magnitude, cut_off_fre_strike_off, IMU_SAMPLE_RATE, filter_order=2)
-            gyr_y = data_filter(gyr_y, cut_off_fre_strike_off, IMU_SAMPLE_RATE, filter_order=2)
+            acc_magnitude = data_filter(acc_magnitude, cut_off_fre_strike_off, IMU_CARMARGO_SAMPLE_RATE, filter_order=2)
+            gyr_magnitude = data_filter(gyr_magnitude, cut_off_fre_strike_off, IMU_CARMARGO_SAMPLE_RATE, filter_order=2)
+            gyr_y = data_filter(gyr_y, cut_off_fre_strike_off, IMU_CARMARGO_SAMPLE_RATE, filter_order=2)
 
         acc_magnitude = acc_magnitude - 1       # remove the gravity
 
@@ -420,7 +425,7 @@ class StepSegment(BaseSegment):
         Detected as a zero crossing if the value is lower than negative threshold.
         :return:
         """
-        max_search_range = IMU_SAMPLE_RATE * 3  # search 3 second front data at most
+        max_search_range = IMU_CARMARGO_SAMPLE_RATE * 3  # search 3 second front data at most
         front_crossing, back_crossing = False, False
         for j_sample in range(i_sample, max(0, i_sample - max_search_range), -1):
             if gyr_x[j_sample] < - foot_stationary_gyr_thd:
@@ -444,7 +449,7 @@ class StepSegment(BaseSegment):
             self.data_struct.add_new_step(data_)
 
 
-IMU_LIST = [segment + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for segment in IMU_SEGMENT_LIST for axis in ['X', 'Y', 'Z']]
+IMU_LIST = [segment + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for segment in IMU_CARMARGO_SEGMENT_LIST for axis in ['X', 'Y', 'Z']]
 INFO_LIST = ['sub_id', 'trial_type_id', 'label', 'treadmill_speed', 'ramp', 'heel_strike', 'toe_off',
              'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r', 'knee_angle_r_moment']
 # 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment',
@@ -472,6 +477,6 @@ if __name__ == '__main__':
         'AB30'
     ]
     data_reader = ContinuousDatasetLoader(sub_list)
-    data_reader.add_additional_columns()
+    data_reader.add_additional_columns_and_resample_200_to_100()
     data_reader.loop_all_the_trials([WindowSegment(), StepSegment()])
 
