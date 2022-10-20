@@ -17,6 +17,7 @@ from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, res
 from const import DATA_PATH, DICT_TRIAL_TYPE_ID, IMU_CARMARGO_SEGMENT_LIST, RESULTS_PATH
 import json
 import pytorch_warmup as warmup
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
 class FrameworkDownstream:
@@ -41,7 +42,7 @@ class FrameworkDownstream:
         # print(num_params)
 
     def load_post_ssl_emb_net(self):
-        emb_path = os.path.join(RESULTS_PATH, self.config.ssl_note + '.pth')
+        emb_path = os.path.join(RESULTS_PATH, self.da_task['ssl_model'] + '.pth')
         return torch.load(emb_path)
 
     def load_and_process_carmargo(self, train_sub_ids: List[str], validate_sub_ids: List[str],
@@ -111,7 +112,8 @@ class FrameworkDownstream:
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
-                current_set_data_list = [hf[sub_][('0' + str(trial+1))[-2:]] for sub_ in set_sub_ids for trial in range(30) if ('0' + str(trial+1))[-2:] in hf[sub_]]
+                current_set_data_list = [hf[sub_][('0' + str(trial+1))[-2:]] for sub_ in set_sub_ids for trial in range(30)     # 30 drop jump trials
+                                         if ('0' + str(trial+1))[-2:] in hf[sub_]]
                 current_set_data = np.stack(current_set_data_list, axis=0).transpose([0, 2, 1])
                 step_lens = get_step_len(current_set_data)
                 output_selected = current_set_data[:, self.data_columns.index(self.da_task['output'])]
@@ -120,6 +122,24 @@ class FrameworkDownstream:
                     output_loc[i_step] = np.argmax(output_selected[i_step, :int(.5 * step_len)])
                 output_loc = output_loc.astype(int)
                 output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
+                output_processed = np.repeat(output_[:, np.newaxis], current_set_data.shape[2], axis=1).reshape([-1, 1, current_set_data.shape[2]])
+
+                current_set_data = np.concatenate([current_set_data, output_processed], axis=1)
+                self.set_data[data_name] = current_set_data
+
+    def load_and_process_hw_running(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
+        self.set_data = {}
+        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
+            self.data_columns = json.loads(hf.attrs['columns'])
+            if 'output_processed' not in self.data_columns:
+                self.data_columns.append('output_processed')
+            for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
+                current_set_data_list = [hf[sub_] for sub_ in set_sub_ids]
+                current_set_data = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
+                """ [step, feature, time] """
+                output_raw = current_set_data[:, self.data_columns.index(self.da_task['output'])]
+                output_loc = np.argmax(np.abs(output_raw), axis=1)
+                output_ = np.array([output_raw[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
                 output_processed = np.repeat(output_[:, np.newaxis], current_set_data.shape[2], axis=1).reshape([-1, 1, current_set_data.shape[2]])
                 current_set_data = np.concatenate([current_set_data, output_processed], axis=1)
                 self.set_data[data_name] = current_set_data
@@ -243,19 +263,20 @@ class FrameworkDownstream:
 
         model = self.regress_net
         dtype, model = set_dtype_and_model(self.config.device, model)
+        lr = 1e-3
         if only_linear_layer:
             param_to_train = model.linear.parameters()
-            lr = 3e-3
+            # lr = 3e-3
         else:
             param_to_train = model.parameters()
-            lr = 1e-3
+            # lr = 1e-3
 
         optimizer = torch.optim.AdamW(param_to_train, lr, weight_decay=1e-5)
         epoch_end_time = time.time()
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.num_gradient_de_ssl)
         warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.num_gradient_de_da/5))
 
-        epoch = int(self.config.num_gradient_de_da / len(train_dl))
+        epoch = int(np.ceil(self.config.num_gradient_de_da / len(train_dl)))
         for i_epoch in range(epoch):
             train_loss = eval_during_training(model, train_dl, torch.nn.MSELoss())
             test_loss = eval_during_training(model, test_dl, torch.nn.MSELoss())
@@ -369,7 +390,7 @@ class FrameworkSSL:
         warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.num_gradient_de_ssl/5))
         dtype, model = set_dtype_and_model(self.config.device, model)
         epoch_end_time = time.time()
-        epoch = int(self.config.num_gradient_de_ssl / len(train_dl))
+        epoch = int(np.ceil(self.config.num_gradient_de_ssl / len(train_dl)))
         for i_epoch in range(epoch):
             train_loss, mod_outputs = eval_during_training(model, train_dl, config['ssl_loss_fn'])
             test_loss, _ = eval_during_training(model, vali_dl, config['ssl_loss_fn'])
@@ -391,7 +412,7 @@ class FrameworkSSL:
 
     def save_emb_net_post_ssl(self, model):
         emb_nets_post_ssl_state = copy.deepcopy({mod: model.emb_nets[i_mod].state_dict() for i_mod, mod in enumerate(ssl_task['_mods'])})
-        save_path = os.path.join(RESULTS_PATH, self.config.ssl_note + '.pth')
+        save_path = os.path.join(RESULTS_PATH, ssl_task['ssl_file_name'] + '.pth')
         torch.save(emb_nets_post_ssl_state, save_path)
 
     def hyperparam_tuning(self, model, x_test):
@@ -419,29 +440,34 @@ def run_da(da_framework, da_use_ratios=[1.]):
 PARAMS_TRIED = ['ramp', 'treadmill_speed', 'peak_knee_extension_angle']
 
 DOWNSTREAM_TASK_0 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
-                     'output': 'peak_fy', 'imu_segments': ['trunk', 'shank']}
+                     'output': 'peak_fy', 'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi'}
 DOWNSTREAM_TASK_1 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo',
-                     'output': 'peak_knee_angle_r_moment', 'imu_segments': ['shank', 'foot']}
+                     'output': 'peak_knee_angle_r_moment', 'imu_segments': ['shank', 'foot'], 'ssl_model': 'MoVi'}
 DOWNSTREAM_TASK_2 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'all_17_subjects',
-                     'output': 'KAM', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
+                     'output': 'KAM', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi'}
 DOWNSTREAM_TASK_3 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'all_17_subjects',
-                     'output': 'KFM', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
-DOWNSTREAM_TASK_4 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
-                     'output': 'R_KNEE_MOMENT_X', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
-DOWNSTREAM_TASK_5 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
-                     'output': 'R_GRF_Z', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH']}
+                     'output': 'KFM', 'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi'}
+DOWNSTREAM_TASK_4 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_KNEE_MOMENT_X',
+                     'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi'}
+DOWNSTREAM_TASK_5 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_GRF_Z',
+                     'imu_segments': ['L_FOOT', 'R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi'}
+DOWNSTREAM_TASK_6 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'hw_running',
+                     'output': 'VALR', 'imu_segments': ['l_shank'], 'max_pooling_to_downsample': True, 'ssl_model': 'MoVi_200'}
 
-ssl_task_0 = {'ssl_file_name': 'Carmargo', '_mods': ['acc', 'gyr'], 'imu_segments': IMU_CARMARGO_SEGMENT_LIST}
-ssl_task_1 = {'ssl_file_name': 'MoVi', '_mods': ['acc', 'gyr'], 'imu_segments': [
-    'Hip', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'Neck']}
-# 'Hip', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'RightShoulder',
-# 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand', 'Head', 'Neck'
-ssl_task = ssl_task_1
+ssl_task_0 = {'ssl_file_name': 'MoVi', '_mods': ['acc', 'gyr'], 'imu_segments': [
+    # 'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot']}
+    'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'Head',
+    'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand']}
+ssl_task_1 = copy.deepcopy(ssl_task_0)
+ssl_task_1['ssl_file_name'] = 'MoVi_100'
+ssl_task_2 = copy.deepcopy(ssl_task_0)
+ssl_task_2['ssl_file_name'] = 'MoVi_200'
+ssl_task = ssl_task_0
 
-config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 2000, 'batch_size_ssl': 256, 'batch_size_linear': 64, 'lr_ssl': 2e-4,
-          'emb_net': CnnEmbedding, 'emb_output_dim': 512, 'common_space_dim': 512,
-          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'ssl_note': 'cnn'+ssl_task['ssl_file_name'],
-          'down_to_100hz': False, 'log_with_wandb': False, 'ssl_loss_fn': nce_loss, 'ssl_use_ratio': 0.0011}
+config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1000, 'batch_size_ssl': 256, 'batch_size_linear': 64, 'lr_ssl': 2e-4,
+          'emb_net': CnnEmbedding, 'emb_output_dim': 128, 'common_space_dim': 512,
+          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()),
+          'down_to_100hz': False, 'log_with_wandb': False, 'ssl_loss_fn': nce_loss, 'ssl_use_ratio': 1}
 # torch.nn.MSELoss()    torch.nn.SmoothL1Loss(beta=2)     vic_loss   nce_loss
 if config['log_with_wandb']:
     wandb.init(project="IMU_EMG_SSL", config=config, name='')
@@ -456,26 +482,32 @@ test_sub_kam = ['subject_' + ('0' + str(i))[-2:] for i in range(12, 18)]
 train_sub_sun = ['P_14_hunan', 'P_15_liuzhaoyu', 'P_16_zhangjinduo', 'P_17_congyuanqi', 'P_18_hezhonghai', 'P_19_xiongyihui',
                  'P_20_xuanweicheng', 'P_21_wujianing', 'P_22_zhangning', 'P_23_wangjinhong', 'P_24_liziqing']
 test_sub_sun = ['P_08_zhangboyuan', 'P_09_libang', 'P_10_dongxuan', 'P_11_liuchunyu', 'P_12_fuzijun', 'P_13_xulibang']
+train_sub_hw = ['subject_' + str(i) for i in range(5, 15)]
+test_sub_hw = ['subject_' + str(i) for i in range(5)]
 
 
 if __name__ == '__main__':
-    run_ssl()
+    # run_ssl()
 
     # da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_4)
     # da_kam_framework.load_and_process_sun(train_sub_sun, test_sub_sun, test_sub_sun)
     # run_da(da_kam_framework, da_use_ratios=[1.])
     #
-    # da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_5)
-    # da_kam_framework.load_and_process_sun(train_sub_sun, test_sub_sun, test_sub_sun)
-    # run_da(da_kam_framework, da_use_ratios=[1.])
+    da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_5)
+    da_kam_framework.load_and_process_sun(train_sub_sun, test_sub_sun, test_sub_sun)
+    run_da(da_kam_framework, da_use_ratios=[1.])
 
-    da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
-    da_kam_framework.load_and_process_kam(train_sub_kam, test_sub_kam, test_sub_kam)
-    run_da(da_kam_framework, da_use_ratios=[1])      # .2, .4, .6, .8, 1.      .01, 0.033, .1, 0.333, 1.
+    # da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
+    # da_kam_framework.load_and_process_kam(train_sub_kam, test_sub_kam, test_sub_kam)
+    # run_da(da_kam_framework, da_use_ratios=[1])      # .2, .4, .6, .8, 1.      .01, 0.033, .1, 0.333, 1.
 
     # da_carmargo_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_0)
     # da_carmargo_framework.load_and_process_carmargo(train_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
     # run_da(da_carmargo_framework, da_use_ratios=[.2, .4, .6, .8, 1.])
+
+    # da_kam_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_6)
+    # da_kam_framework.load_and_process_hw_running(train_sub_hw, test_sub_hw, test_sub_hw)
+    # run_da(da_kam_framework, da_use_ratios=[1])      # .2, .4, .6, .8, 1.      .01, 0.033, .1, 0.333, 1.
 
     plt.show()
 

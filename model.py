@@ -15,7 +15,6 @@ from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 # TODO: for RNN, Transformer, FCNN, check if the input follows (batch, channel, time_step)
 
 fix_seed()
-temperature = 0.1
 
 
 def vic_loss(mod_outputs):
@@ -48,6 +47,7 @@ def nce_loss(mod_outputs):
         similarity = torch.matmul(emb1, emb2.transpose(1, 2))
         return similarity / temperature
 
+    temperature = 0.1
     if len(mod_outputs) == 2:
         combos = [[0, 1]]
     elif len(mod_outputs) == 3:
@@ -265,18 +265,18 @@ class RestNetDownBlock(nn.Module):
 class CnnEmbedding(nn.Module):
     def __init__(self, x_dim, output_dim, net_name):
         super(CnnEmbedding, self).__init__()
-        self.conv1 = nn.Conv1d(x_dim, 8, kernel_size=7, stride=2, padding=3)
-        self.bn1 = nn.BatchNorm1d(8)
-        # self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+        self.conv1 = nn.Conv1d(x_dim, 16, kernel_size=49, stride=2, padding=24)
+        self.bn1 = nn.BatchNorm1d(16)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
 
         self.output_dim = output_dim
         self.net_name = net_name
-        self.layer1 = nn.Sequential(RestNetBasicBlock(8, 8), RestNetBasicBlock(8, 8))
-        self.layer2 = nn.Sequential(RestNetDownBlock(8, 16, [2, 1]), RestNetBasicBlock(16, 16))
-        self.layer3 = nn.Sequential(RestNetDownBlock(16, 32, [2, 1]), RestNetBasicBlock(32, 32))
-        self.layer4 = nn.Sequential(RestNetDownBlock(32, output_dim, [2, 1]), RestNetBasicBlock(output_dim, output_dim))
+        self.layer1 = nn.Sequential(RestNetBasicBlock(16, 16), RestNetBasicBlock(16, 16))
+        self.layer2 = nn.Sequential(RestNetDownBlock(16, 32, [2, 1]), RestNetBasicBlock(32, 32))
+        self.layer3 = nn.Sequential(RestNetDownBlock(32, 64, [2, 1]), RestNetBasicBlock(64, 64))
+        self.layer4 = nn.Sequential(RestNetDownBlock(64, output_dim, [2, 1]), RestNetBasicBlock(output_dim, output_dim))
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        # self.fc = nn.Linear(512, output_dim)
         self.net_name = 'CnnEmbedding'
 
     def __str__(self):
@@ -284,20 +284,20 @@ class CnnEmbedding(nn.Module):
 
     def forward(self, sequence, lens):
         out = sequence.transpose(-1, -2)
-        print(out.shape[1:])
-        out = self.conv1(out)
-        print(out.shape[1:])
-        out = self.bn1(out)
+        # print(out.shape[1:])
+        out = self.relu(self.bn1(self.conv1(out)))
+        # print(out.shape[1:])
+        out = self.maxpool(out)
         out = self.layer1(out)
-        print(out.shape[1:])
+        # print(out.shape[1:])
         out = self.layer2(out)
-        print(out.shape[1:])
+        # print(out.shape[1:])
         out = self.layer3(out)
-        print(out.shape[1:])
+        # print(out.shape[1:])
         out = self.layer4(out)
-        print(out.shape[1:])
+        # print(out.shape[1:])
         out = self.avgpool(out)
-        print(out.shape[1:])
+        # print(out.shape[1:])
         return out.squeeze(dim=-1), None
 
 

@@ -1,12 +1,13 @@
 import os
 
-IMU_MOVI_SEGMENT_LIST = [
-    'Hip', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'RightShoulder',
-    'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand', 'Head', 'Neck']
+IMU_MOVI_SEGMENT_LIST = ['Hip', 'Head', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg',
+                         'LeftFoot', 'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm',
+                         'LeftForeArm', 'LeftHand']
 DICT_TRIAL_MOVI = {index: i for i, index in enumerate(['I1', 'I2', 'S1', 'S2'])}
 
 CODE_PATH = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(CODE_PATH, 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/camargo/data_processed/')
+DATA_PATH = os.path.join(CODE_PATH, 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/data_processed/')
+DATA_PATH_CAMARGO = os.path.join(CODE_PATH, 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/camargo/data_processed/')
 RESULTS_PATH = 'D://SSL_training_results'
 TRIAL_TYPES = ['LevelGround', 'Treadmill', 'Stair', 'Ramp']
 IMU_CARMARGO_SEGMENT_LIST = ['foot', 'shank', 'thigh', 'trunk']

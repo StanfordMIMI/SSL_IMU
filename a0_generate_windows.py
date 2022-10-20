@@ -6,7 +6,7 @@ import numpy as np
 import ast
 from scipy.signal import medfilt
 from utils import get_data_by_merging_data_struct, find_peak_max, data_filter
-from const import DATA_PATH, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, GRF_CARMARGO_SAMPLE_RATE, \
+from const import DATA_PATH, DATA_PATH_CAMARGO, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, GRF_CARMARGO_SAMPLE_RATE, \
     IMU_CARMARGO_SEGMENT_LIST, DICT_LABEL, STANCE_V_GRF_THD
 from const import DICT_SUBJECT_ID, DICT_TRIAL_TYPE_ID
 
@@ -80,7 +80,7 @@ class ContinuousDatasetLoader:
         self.data_contin_merged = {}
         for subject in subject_list:
             print("Loading subject " + subject)
-            with h5py.File(DATA_PATH + subject + '.h5', 'r') as hf:
+            with h5py.File(DATA_PATH_CAMARGO + subject + '.h5', 'r') as hf:
                 data_trials = {}
                 [data_trials.update({trial: [trial_data['data_200'][:], trial_data['data_1000'][:]]})
                  for trial, trial_data in hf.items()]
@@ -206,7 +206,7 @@ class ContinuousDatasetLoader:
         for ambulation in TRIAL_TYPES:
             for frequency in ['200', '1000']:
                 columns[ambulation][frequency] = list(np.array(ast.literal_eval(open(
-                    DATA_PATH + ambulation + '_' + frequency + '_columns.txt').read()), dtype=object))
+                    DATA_PATH_CAMARGO + ambulation + '_' + frequency + '_columns.txt').read()), dtype=object))
         return columns
 
     def add_additional_columns_and_resample_200_to_100(self):
@@ -270,9 +270,9 @@ class BaseSegment:
 
 class WindowSegment(BaseSegment):
     def __init__(self, name='Carmargo'):
-        self.data_len = 100
+        self.data_len = 128
         self.name = name
-        self.win_len, self.win_step = self.data_len, int(self.data_len/5)
+        self.win_len, self.win_step = self.data_len, int(self.data_len/4)
 
     def start_segment(self, trial_data, columns):
         trial_len = trial_data.shape[0]
@@ -478,5 +478,5 @@ if __name__ == '__main__':
     ]
     data_reader = ContinuousDatasetLoader(sub_list)
     data_reader.add_additional_columns_and_resample_200_to_100()
-    data_reader.loop_all_the_trials([WindowSegment(), StepSegment()])
+    data_reader.loop_all_the_trials([WindowSegment()])
 

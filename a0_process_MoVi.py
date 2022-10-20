@@ -1,22 +1,16 @@
-
-import json
-
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
 import ast
-from scipy.signal import medfilt
-from utils import get_data_by_merging_data_struct, find_peak_max, data_filter
 from const import TRIAL_TYPES, GRAVITY, STANCE_V_GRF_THD, DICT_TRIAL_MOVI
-from const import DICT_SUBJECT_ID, DICT_TRIAL_TYPE_ID
 from scipy.interpolate import interp1d
 from a0_generate_windows import BaseSegment, DataStruct
+import matplotlib.pyplot as plt
 
 DATA_PATH_MOVI = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/MoVi/data_processed/'
 
 
 class ContinuousDatasetLoader:
-    def __init__(self, subject_list):
+    def __init__(self, subject_list, target_fre):
         self.columns = self.load_columns()
         self.subject_list = subject_list
         self.data_contin = {}
@@ -27,19 +21,15 @@ class ContinuousDatasetLoader:
                 for trial, trial_data in hf.items():
                     i_trial = DICT_TRIAL_MOVI[trial]
                     trial_data = trial_data[:].T
-                    trial_data = self.resample_120_to_100hz(trial_data)
+                    if target_fre is not None:
+                        trial_data = self.resample_120hz_to_target_fre(trial_data, target_fre)
                     trial_data = self.add_additional_info(trial_data, i_subject, i_trial)
                     self.data_contin[subject].append(trial_data)
-                # if np.mean(trial_data[:10, 32]) > 0.8:
-                #     print(subject)
-                # plt.plot(trial_data[:10, 26])
-        # plt.show()
-
 
     @staticmethod
-    def resample_120_to_100hz(trial_data):
+    def resample_120hz_to_target_fre(trial_data, target_fre):
         x, step = np.linspace(0., 1., trial_data.shape[0], retstep=True)
-        new_x = np.arange(0., 1., step*120/100)
+        new_x = np.arange(0., 1., step*120/target_fre)
         f = interp1d(x, trial_data, axis=0)
         trial_data_resampled = f(new_x)
 
@@ -72,9 +62,9 @@ class ContinuousDatasetLoader:
 
 class WindowSegment(BaseSegment):
     def __init__(self, name='UnivariantWinTest'):
-        self.data_len = 100
+        self.data_len = 128
         self.name = name
-        self.win_len, self.win_step = self.data_len, int(self.data_len/5)
+        self.win_len, self.win_step = self.data_len, int(self.data_len/4)
 
     def start_segment(self, trial_data):
         trial_len = trial_data.shape[0]
@@ -90,6 +80,14 @@ class WindowSegment(BaseSegment):
 
 
 if __name__ == '__main__':
-    sub_list = ['sub_' + str(i+1) for i in range(88)]
-    data_reader = ContinuousDatasetLoader(sub_list)
-    data_reader.loop_all_the_trials([WindowSegment('MoVi')])
+    sub_list = ['sub_' + str(i+1) for i in range(90)]
+
+    data_reader_100 = ContinuousDatasetLoader(sub_list, None)
+    data_reader_100.loop_all_the_trials([WindowSegment('MoVi')])
+
+    # data_reader_100 = ContinuousDatasetLoader(sub_list, 100)
+    # data_reader_100.loop_all_the_trials([WindowSegment('MoVi_100')])
+    #
+    # data_reader_100 = ContinuousDatasetLoader(sub_list, 200)
+    # data_reader_100.loop_all_the_trials([WindowSegment('MoVi_200')])
+
