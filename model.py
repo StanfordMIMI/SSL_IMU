@@ -74,7 +74,7 @@ class SslGeneralNet(nn.Module):
         self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for output_channel_num in output_channel_nums])
         self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in output_channel_nums])
         self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])
-        self.bn_proj_2 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])
+        # self.bn_proj_2 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])       # !!!
         self.net_name = 'Combined Net'
 
     def __str__(self):
@@ -84,24 +84,24 @@ class SslGeneralNet(nn.Module):
         self.scalars = scalars
 
     def forward(self, mods, lens):
-        def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1, bn_proj_2):
+        def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1):
             mod_ = mod_.view(-1, 3, *mod_.shape[2:])
             mod_ = mod_.transpose(1, 2)
             mod_, _ = embnet(mod_, lens)
             mod_ = F.relu(bn_proj_1(linear_proj_1(mod_)))
-            mod_ = bn_proj_2(linear_proj_2(mod_))
+            mod_ = linear_proj_2(mod_)
             return mod_
 
         mod_outputs = []
         for i_mod, mod in enumerate(mods):
             mod_outputs.append(reshape_and_emb(
-                mod, self.emb_nets[i_mod], self.linear_proj_1[i_mod], self.linear_proj_2[i_mod], self.bn_proj_1[i_mod], self.bn_proj_2[i_mod]))
+                mod, self.emb_nets[i_mod], self.linear_proj_1[i_mod], self.linear_proj_2[i_mod], self.bn_proj_1[i_mod]))
         return mod_outputs
 
 
-class LinearRegressNet(nn.Module):
+class RegressNet(nn.Module):
     def __init__(self, emb_nets, mod_channel_num, output_dim):
-        super(LinearRegressNet, self).__init__()
+        super(RegressNet, self).__init__()
         self.emb_nets = emb_nets
 
         emb_output_dims = [net.output_dim * channel_num / 3 for net, channel_num in zip(self.emb_nets, mod_channel_num)]

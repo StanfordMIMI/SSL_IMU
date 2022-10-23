@@ -138,8 +138,6 @@ def define_channel_names(the_task):
     channel_names = {
         'acc': [segment + '_Accel_' + axis for segment in imu_segments for axis in ['X', 'Y', 'Z']],
         'gyr': [segment + '_Gyro_' + axis for segment in imu_segments for axis in ['X', 'Y', 'Z']]}
-    if 'emg' in the_task['_mods']:
-        channel_names.update({'emg': the_task['emg_channels']})
     return channel_names
 
 

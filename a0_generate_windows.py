@@ -123,10 +123,6 @@ class ContinuousDatasetLoader:
         columns = self.col_200 + self.col_1000
         return data_trials, columns
 
-    @staticmethod
-    def resample_200_to_100(trial_data):
-        return trial_data[::2]      # resample to 100 hz
-
     def process_grf(self, data_trials):
         for trial, trial_data in data_trials.items():
             trial_info = trial.split('_')
@@ -209,14 +205,14 @@ class ContinuousDatasetLoader:
                     DATA_PATH_CAMARGO + ambulation + '_' + frequency + '_columns.txt').read()), dtype=object))
         return columns
 
-    def add_additional_columns_and_resample_200_to_100(self):
+    def add_additional_columns(self):
         for subject in self.subject_list:
             for trial in self.trials:
                 if trial not in self.data_contin_merged[subject].keys():
                     continue
                 self.data_contin_merged[subject][trial], new_cols = add_clinical_metrics(
                     self.data_contin_merged[subject][trial], trial, self.columns)
-                self.data_contin_merged[subject][trial] = self.resample_200_to_100(self.data_contin_merged[subject][trial])
+                # self.data_contin_merged[subject][trial] = self.resample_200_to_100(self.data_contin_merged[subject][trial])
         if new_cols[0] not in self.columns: self.columns.extend(new_cols)
 
     def loop_all_the_trials(self, segment_methods):
@@ -270,9 +266,9 @@ class BaseSegment:
 
 class WindowSegment(BaseSegment):
     def __init__(self, name='Carmargo'):
-        self.data_len = 128
+        self.win_len = self.data_len = 256
         self.name = name
-        self.win_len, self.win_step = self.data_len, int(self.data_len/4)
+        self.win_step = int(self.win_len/4)
 
     def start_segment(self, trial_data, columns):
         trial_len = trial_data.shape[0]
@@ -284,10 +280,27 @@ class WindowSegment(BaseSegment):
             start_loc = np.where(walking_turning_stair_ramp_treadmill[1:] & ~walking_turning_stair_ramp_treadmill[:-1])[0] + 1
         for i_start in start_loc:
             i_current = i_start
-            while(i_current+self.data_len < trial_len and walking_turning_stair_ramp_treadmill[i_current:i_current+self.data_len].all()):
-                data_ = trial_data[i_current:i_current+self.data_len]
+            while(i_current+self.win_len < trial_len and walking_turning_stair_ramp_treadmill[i_current:i_current+self.win_len].all()):
+                data_ = trial_data[i_current:i_current+self.win_len]
                 self.data_struct.add_new_step(data_)
                 i_current += self.win_step
+
+
+class CenterSegment(BaseSegment):
+    def __init__(self, name='Carmargo'):
+        self.win_len = self.data_len = 400
+        self.half_win_len = int(self.win_len/2)
+        self.name = name
+        self.peak_outcome = 'peak_fy'
+
+    def start_segment(self, trial_data, columns):
+        trial_len = trial_data.shape[0]
+
+        outcome_loc = np.where(trial_data[:, columns.index(self.peak_outcome)] != 0)[0]
+        for loc in outcome_loc:
+            if loc - self.half_win_len > 0 and loc + self.half_win_len < trial_len:
+                data_ = trial_data[loc-self.half_win_len:loc + self.half_win_len]
+                self.data_struct.add_new_step(data_)
 
 
 class StepSegment(BaseSegment):
@@ -477,6 +490,6 @@ if __name__ == '__main__':
         'AB30'
     ]
     data_reader = ContinuousDatasetLoader(sub_list)
-    data_reader.add_additional_columns_and_resample_200_to_100()
+    data_reader.add_additional_columns()
     data_reader.loop_all_the_trials([WindowSegment()])
 

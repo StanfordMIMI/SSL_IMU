@@ -52,7 +52,7 @@ class ContinuousDatasetLoader:
 
     def loop_all_the_trials(self, segment_methods):
         for subject, data_trials in self.data_contin.items():
-            [method.set_data_struct(DataStruct(len(self.columns), method.data_len)) for method in segment_methods]
+            [method.set_data_struct(DataStruct(len(self.columns), method.win_len)) for method in segment_methods]
             for trial_data in data_trials:
                 # trial_data = self.clean_imu_data(trial_data, self.columns)
                 for method in segment_methods:
@@ -61,18 +61,18 @@ class ContinuousDatasetLoader:
 
 
 class WindowSegment(BaseSegment):
-    def __init__(self, name='UnivariantWinTest'):
-        self.data_len = 128
+    def __init__(self, win_len, name='UnivariantWinTest'):
+        self.win_len = win_len
         self.name = name
-        self.win_len, self.win_step = self.data_len, int(self.data_len/4)
+        self.win_step = int(self.win_len/4)
 
     def start_segment(self, trial_data):
         trial_len = trial_data.shape[0]
         i_current = 0
         acc_cols = [6*i for i in range(17)] + [6*i + 1 for i in range(17)] + [6*i + 2 for i in range(17)]
         acc_cols.sort()
-        while i_current+self.data_len < trial_len:
-            data_ = trial_data[i_current:i_current+self.data_len]
+        while i_current+self.win_len < trial_len:
+            data_ = trial_data[i_current:i_current+self.win_len]
             acc_std = np.std(data_[:, acc_cols], axis=0)
             if acc_std.mean() >= 0.2:
                 self.data_struct.add_new_step(data_)
@@ -81,13 +81,19 @@ class WindowSegment(BaseSegment):
 
 if __name__ == '__main__':
     sub_list = ['sub_' + str(i+1) for i in range(90)]
-
-    data_reader_100 = ContinuousDatasetLoader(sub_list, None)
-    data_reader_100.loop_all_the_trials([WindowSegment('MoVi')])
-
-    # data_reader_100 = ContinuousDatasetLoader(sub_list, 100)
-    # data_reader_100.loop_all_the_trials([WindowSegment('MoVi_100')])
     #
-    # data_reader_100 = ContinuousDatasetLoader(sub_list, 200)
-    # data_reader_100.loop_all_the_trials([WindowSegment('MoVi_200')])
+    # data_reader = ContinuousDatasetLoader(sub_list, 200)
+    # data_reader.loop_all_the_trials([WindowSegment(64, 'MoVi_hw_running')])
+
+    # data_reader = ContinuousDatasetLoader(sub_list, 200)
+    # data_reader.loop_all_the_trials([WindowSegment(256, 'MoVi_Carmargo')])
+
+    data_reader = ContinuousDatasetLoader(sub_list, 100)
+    data_reader.loop_all_the_trials([WindowSegment(128, 'MoVi_walking_knee_moment')])
+
+    # data_reader = ContinuousDatasetLoader(sub_list, 100)
+    # data_reader.loop_all_the_trials([WindowSegment(80, 'MoVi_sun_drop_jump')])
+
+
+
 

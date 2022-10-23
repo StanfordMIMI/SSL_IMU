@@ -53,13 +53,13 @@ def finalize_f10():
 if __name__ == "__main__":
     data_path = 'D:\ssl_training_results\\2022-10-01 08_57_39'      # 2022-10-02 22_43_13
     with h5py.File(data_path + '/results.h5', 'r') as hf:
-        data_all_tests = {subject: subject_data[:] for subject, subject_data in hf.items()}
+        data_all_tests = {test_name: test_results[:] for test_name, test_results in hf.items()}
         data_fields = json.loads(hf.attrs['columns'])
 
     result_list = []
     for test_name, test_results in data_all_tests.items():
-        only_linear = test_name.split('only_linear_layer_')[1].split(',')[0] == 'True'
-        use_ssl = test_name.split('use_ssl_emb_')[1].split(',')[0] == 'True'
+        only_linear = test_name.split('linear_protocol_')[1].split(',')[0] == 'True'
+        use_ssl = test_name.split('use_ssl_')[1].split(',')[0] == 'True'
         ratio = float(test_name.split('ratio_')[1])
         # metric = np.sqrt(mse(test_results[:, 0], test_results[:, 1]))
         # metric = r2_score(test_results[:, 0], test_results[:, 1])

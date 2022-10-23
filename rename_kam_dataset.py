@@ -5,7 +5,7 @@ import numpy as np
 
 
 def rename_kam_dataset():
-    with h5py.File(DATA_PATH + 'all_17_subjects.h5', 'r+') as hf:
+    with h5py.File(DATA_PATH + 'walking_knee_moment.h5', 'r+') as hf:
         data_columns = json.loads(hf.attrs['columns'])
         for i, column in enumerate(data_columns):
             if 'Accel' == column[:5]:
