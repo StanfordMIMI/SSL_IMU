@@ -81,12 +81,12 @@ class WindowSegment(BaseSegment):
 
 if __name__ == '__main__':
     sub_list = ['sub_' + str(i+1) for i in range(90)]
-    #
-    # data_reader = ContinuousDatasetLoader(sub_list, 200)
-    # data_reader.loop_all_the_trials([WindowSegment(64, 'MoVi_hw_running')])
 
-    # data_reader = ContinuousDatasetLoader(sub_list, 200)
-    # data_reader.loop_all_the_trials([WindowSegment(256, 'MoVi_Carmargo')])
+    data_reader = ContinuousDatasetLoader(sub_list, 200)
+    data_reader.loop_all_the_trials([WindowSegment(64, 'MoVi_hw_running')])
+
+    data_reader = ContinuousDatasetLoader(sub_list, 200)
+    data_reader.loop_all_the_trials([WindowSegment(128, 'MoVi_Carmargo')])
 
     data_reader = ContinuousDatasetLoader(sub_list, 100)
     data_reader.loop_all_the_trials([WindowSegment(128, 'MoVi_walking_knee_moment')])

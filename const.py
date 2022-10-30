@@ -23,15 +23,15 @@ STEP_TYPES = STANCE, STANCE_SWING = range(2)
 IMU_CARMARGO_SAMPLE_RATE = 200
 GRF_CARMARGO_SAMPLE_RATE = EMG_CARMARGO_SAMPLE_RATE = 1000
 
-FONT_SIZE_LARGE = 12
-FONT_SIZE = 10
-FONT_SIZE_SMALL = 8
+FONT_SIZE_LARGE = 15
+FONT_SIZE = 13
+FONT_SIZE_SMALL = 11
 FONT_DICT = {'fontsize': FONT_SIZE, 'fontname': 'Arial'}
 FONT_DICT_LARGE = {'fontsize': FONT_SIZE_LARGE, 'fontname': 'Arial'}
 FONT_DICT_SMALL = {'fontsize': FONT_SIZE_SMALL, 'fontname': 'Arial'}
 FONT_DICT_X_SMALL = {'fontsize': 15, 'fontname': 'Arial'}
-LINE_WIDTH = 2
-LINE_WIDTH_THICK = 3
+LINE_WIDTH = 1.5
+LINE_WIDTH_THICK = 2
 
 MISSING_TRIALS = {
     'AB07': ['levelground_ccw_fast_01_05'],
@@ -76,11 +76,34 @@ TRIAL_LIST = [
     'Stair_4_L_01_05', 'Stair_4_R_01_01', 'Stair_4_R_01_02', 'Stair_4_R_01_03', 'Stair_4_R_01_04', 'Stair_4_R_01_05',
     'Treadmill_01_01', 'Treadmill_02_01', 'Treadmill_03_01', 'Treadmill_04_01', 'Treadmill_05_01']
 
-SUB_LIST_ALL = [
-    'AB06', 'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
-    'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30'
-]
+CAMARGO_SUB_HEIGHT_WEIGHT = {
+    'AB06': [1.80, 74.8], 'AB07': [1.65, 55.3], 'AB08': [1.74, 72.6], 'AB09': [1.63, 63.5], 'AB10': [1.75, 83.9],
+    'AB11': [1.75, 77.1], 'AB12': [1.74, 86.2], 'AB13': [1.73, 59.0], 'AB14': [1.52, 58.4], 'AB15': [1.78, 96.2],
+    'AB16': [1.65, 55.8], 'AB17': [1.68, 61.2], 'AB18': [1.80, 60.1], 'AB19': [1.70, 68.0],
+    # 'AB20': [1.71, 68.0],     # this sub has not GRF
+    'AB21': [1.57, 58.1], 'AB23': [1.80, 76.8], 'AB24': [1.73, 72.6], 'AB25': [1.63, 52.2], 'AB27': [1.70, 68.0],
+    'AB28': [1.69, 62.1], 'AB30': [1.77, 77.0]
+}
 
-DICT_SUBJECT_ID = {subject: i for i, subject in enumerate(SUB_LIST_ALL)}
-DICT_TRIAL_ID = {trial: i for i, trial in enumerate(TRIAL_LIST)}
+SUB_ID_ALL_DATASETS = {
+    'hw_running': ['subject_' + str(i) for i in range(15)],
+    'Carmargo': list(CAMARGO_SUB_HEIGHT_WEIGHT.keys()),
+    'CarmargoStepWin': ['AB06', 'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
+                        'AB18', 'AB19', 'AB20', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30'],
+    'walking_knee_moment': ['subject_' + ('0' + str(i))[-2:] for i in range(1, 18)],
+    'sun_drop_jump': ['P_08_zhangboyuan', 'P_09_libang', 'P_10_dongxuan', 'P_11_liuchunyu', 'P_12_fuzijun',
+                      'P_13_xulibang''P_14_hunan', 'P_15_liuzhaoyu', 'P_16_zhangjinduo', 'P_17_congyuanqi',
+                      'P_18_hezhonghai', 'P_19_xiongyihui', 'P_20_xuanweicheng', 'P_21_wujianing',
+                      'P_22_zhangning', 'P_23_wangjinhong', 'P_24_liziqing']
+}
 
+DICT_SUBJECT_ID = {subject: i for i, subject in enumerate(SUB_ID_ALL_DATASETS['Carmargo'])}
+
+test_sub_kam = ['subject_' + ('0' + str(i))[-2:] for i in range(12, 18)]
+train_sub_kam = [id for id in SUB_ID_ALL_DATASETS['walking_knee_moment'] if id not in test_sub_kam]
+
+test_sub_carmargo = ['AB06', 'AB07', 'AB08', 'AB09', 'AB10']
+train_sub_carmargo = [id for id in SUB_ID_ALL_DATASETS['Carmargo'] if id not in test_sub_carmargo]
+
+test_sub_hw = ['subject_' + str(i) for i in range(5)]
+train_sub_hw = [id for id in SUB_ID_ALL_DATASETS['hw_running'] if id not in test_sub_hw]

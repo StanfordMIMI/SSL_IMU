@@ -26,7 +26,7 @@ def add_clinical_metrics(data, trial, columns):
     v_grf = data[:, columns.index('fy')]
     kinetic_to_process = {'fy': 1, 'knee_angle_r_moment': -1}
     peak_kinetic = np.zeros([v_grf.shape[0], len(kinetic_to_process)])
-    strike_and_walking_and_has_grf_loc = [loc for loc in strike_loc if label[loc] in [-1, 0] and v_grf[loc+10] > STANCE_V_GRF_THD]  # , 4, 5, 7, 8
+    strike_and_walking_and_has_grf_loc = [loc for loc in strike_loc if label[loc] in [-1, 0, 4, 5, 7, 8] and v_grf[loc+10] > STANCE_V_GRF_THD]  #
     for i_kin, kinetic_metric_name in enumerate(kinetic_to_process.keys()):
         kin_data = data[:, columns.index(kinetic_metric_name)]
         for step_start in strike_and_walking_and_has_grf_loc:
@@ -266,7 +266,7 @@ class BaseSegment:
 
 class WindowSegment(BaseSegment):
     def __init__(self, name='Carmargo'):
-        self.win_len = self.data_len = 256
+        self.win_len = self.data_len = 128
         self.name = name
         self.win_step = int(self.win_len/4)
 
@@ -304,9 +304,9 @@ class CenterSegment(BaseSegment):
 
 
 class StepSegment(BaseSegment):
-    def __init__(self):
+    def __init__(self, name):
         self.data_len = 256
-        self.name = 'StepWinTest'
+        self.name = name
         self.win_len, self.win_step = self.data_len, int(self.data_len/2)
         self.step_len_max, self.step_len_min = int(256 * IMU_CARMARGO_SAMPLE_RATE / 200), int(40 * IMU_CARMARGO_SAMPLE_RATE / 200)
 
@@ -465,8 +465,6 @@ class StepSegment(BaseSegment):
 IMU_LIST = [segment + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for segment in IMU_CARMARGO_SEGMENT_LIST for axis in ['X', 'Y', 'Z']]
 INFO_LIST = ['sub_id', 'trial_type_id', 'label', 'treadmill_speed', 'ramp', 'heel_strike', 'toe_off',
              'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r', 'knee_angle_r_moment']
-# 'hip_flexion_r_moment', 'hip_adduction_r_moment', 'hip_rotation_r_moment',
-# , 'ankle_angle_r_moment', 'knee_angle_r_moment'
 
 EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
