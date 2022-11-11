@@ -12,12 +12,11 @@ from utils import fix_seed, off_diagonal
 import matplotlib.pyplot as plt
 from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 
-# TODO: for RNN, Transformer, FCNN, check if the input follows (batch, channel, time_step)
 
 fix_seed()
 
 
-def vic_loss(mod_outputs):
+def vic_loss(mod_outputs, temperature):
     if len(mod_outputs) == 2:
         combos = [[0, 1]]
     elif len(mod_outputs) == 3:
@@ -39,7 +38,7 @@ def vic_loss(mod_outputs):
     return loss
 
 
-def nce_loss(mod_outputs):
+def nce_loss(mod_outputs, temperature):
     def _calculate_similarity(emb1, emb2):
         # make each vector unit length
         emb1 = F.normalize(emb1, p=2, dim=-1)
@@ -47,7 +46,6 @@ def nce_loss(mod_outputs):
         similarity = torch.matmul(emb1, emb2.transpose(1, 2))
         return similarity / temperature
 
-    temperature = 0.1
     if len(mod_outputs) == 2:
         combos = [[0, 1]]
     elif len(mod_outputs) == 3:
@@ -66,8 +64,58 @@ def nce_loss(mod_outputs):
     return loss
 
 
+def nce_loss_hard_negative(mod_outputs, temperature):
+    def _calculate_similarity(emb1, emb2):
+        # make each vector unit length
+        emb1 = F.normalize(emb1, p=2, dim=-1)
+        emb2 = F.normalize(emb2, p=2, dim=-1)
+        similarity = torch.matmul(emb1, emb2.transpose(1, 2))
+        return similarity / temperature
+
+    def get_negative_mask(batch_size):
+        negative_mask = torch.ones((batch_size, batch_size), dtype=bool)
+        for i in range(batch_size):
+            negative_mask[i, i] = 0
+            # negative_mask[i, i + batch_size] = 0
+
+        # negative_mask = torch.cat((negative_mask, negative_mask), 0)
+        return negative_mask
+
+    sim_pos = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 1), torch.unsqueeze(mod_outputs[1], 1))
+    sim_all = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 0), torch.unsqueeze(mod_outputs[1], 0))
+
+    pos = sim_pos[:, 0, 0].exp()
+    neg = sim_all[0].exp()
+
+    N = batch_size = mod_outputs[0].shape[0]
+    mask = get_negative_mask(batch_size).to("cuda")
+    neg = neg.masked_select(mask).view(batch_size, -1)
+
+    beta, tau_plus = 1, .1
+    reweight = (beta * neg) / neg.mean(dim=1).unsqueeze(1)
+    # Neg = torch.max((-N * tau_plus * pos + (reweight * neg).sum(dim=1)) / (1 - tau_plus), torch.full([N], np.e ** (-1 / temperature)).cuda())
+
+    loss = ((pos + (reweight * neg).sum(dim=1)).log() - pos.log()).mean()
+    return loss
+
+
+def clip_loss(mod_outputs, temperature):
+    def _calculate_similarity(emb1, emb2):
+        # make each vector unit length
+        emb1 = F.normalize(emb1, p=2, dim=-1)
+        emb2 = F.normalize(emb2, p=2, dim=-1)
+        similarity = torch.matmul(emb1, emb2.transpose(1, 2))
+        return similarity / temperature
+
+    sim_all = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 0), torch.unsqueeze(mod_outputs[1], 0))[0]
+    labels = torch.arange(sim_all.shape[1], device='cuda')
+    loss_t = F.cross_entropy(sim_all, labels)
+    loss_i = F.cross_entropy(sim_all.T, labels)
+    return (loss_t + loss_i) / 2.
+
+
 class SslGeneralNet(nn.Module):
-    def __init__(self, emb_nets, common_space_dim):
+    def __init__(self, emb_nets, common_space_dim, loss_fn):
         super(SslGeneralNet, self).__init__()
         self.emb_nets = emb_nets
         output_channel_nums = [embnet.output_dim for embnet in emb_nets]
@@ -76,6 +124,9 @@ class SslGeneralNet(nn.Module):
         self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])
         # self.bn_proj_2 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])       # !!!
         self.net_name = 'Combined Net'
+        self.loss_fn = loss_fn
+        # self.temperature = nn.Parameter(torch.from_numpy(np.full([1], 0.1)), requires_grad=True)
+        self.temperature = 0.1
 
     def __str__(self):
         return self.net_name
@@ -96,7 +147,8 @@ class SslGeneralNet(nn.Module):
         for i_mod, mod in enumerate(mods):
             mod_outputs.append(reshape_and_emb(
                 mod, self.emb_nets[i_mod], self.linear_proj_1[i_mod], self.linear_proj_2[i_mod], self.bn_proj_1[i_mod]))
-        return mod_outputs
+        loss = self.loss_fn(mod_outputs, self.temperature)
+        return loss, mod_outputs
 
 
 class RegressNet(nn.Module):

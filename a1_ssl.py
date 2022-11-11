@@ -25,7 +25,6 @@ os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 class FrameworkDownstream:
     def __init__(self, config, da_task):
         self.config = SimpleNamespace(**config)
-        add_file_handler(logging, os.path.join(self.config.result_dir, 'training_log.txt'))
         self._data_scalar = {'base_scalar': StandardScaler()}
         self.da_task = da_task
         fix_seed()
@@ -218,10 +217,13 @@ class FrameworkDownstream:
         return data[selected_rows]
 
     def save_model_and_results(self, test_name, y_true, y_pred, sub_ids, model):
-        sub_id_set = list(set(sub_ids))
-        os.makedirs(os.path.join(self.config.result_dir, 'test_models'), exist_ok=True)
+        os.makedirs(os.path.join(self.config.result_dir, 'test_models', self.da_task['dataset']), exist_ok=True)
         copied_model = copy.deepcopy(model)
-        torch.save(copied_model.cpu(), os.path.join(self.config.result_dir, 'test_models', test_name + '.pth'))
+        torch.save(copied_model.state_dict(), os.path.join(self.config.result_dir, 'test_models', self.da_task['dataset'], test_name + '.pth'))
+        self.save_results(test_name, y_true, y_pred, sub_ids)
+
+    def save_results(self, test_name, y_true, y_pred, sub_ids):
+        sub_id_set = list(set(sub_ids))
         results = np.concatenate([y_true, y_pred], axis=1)
         columns = ['y_true', 'y_pred']
         with h5py.File(os.path.join(self.config.result_dir, self.da_task['dataset'] + '_' + self.da_task['output'] + '.h5'), 'a') as hf:
@@ -231,20 +233,25 @@ class FrameworkDownstream:
                 grp.require_dataset('sub_' + str(int(i_sub)), shape=results_sub.shape, data=results_sub, dtype='float32')
                 grp.attrs['columns'] = json.dumps(columns)
 
+    def set_regress_net_to_post_linear_init_head_first(self, use_ssl):
+        model_name = 'linear_protocol_True, use_ssl_' + str(use_ssl) + ', ratio_' + str(self.config.da_use_ratio)
+        regress_net_post_linear_head_init = torch.load(os.path.join(self.config.result_dir, 'test_models', self.da_task['dataset'], model_name + '.pth'))
+        self.regress_net.load_state_dict(regress_net_post_linear_head_init)        # !!!
+
     def set_regress_net_to_init_state(self):
         self.regress_net.load_state_dict(self.regress_net_init_state)
 
     def set_regress_net_to_post_ssl_state(self):
         self.regress_net.load_state_dict(self.regress_net_post_ssl_state)
 
-    def regressibility(self, linear_protocol, use_ssl, show_fig=False, verbose=False):
+    def regressibility(self, linear_protocol, use_ssl, show_fig=False, verbose=True):
         def convert_batch_data(batch_data):
             xb = [data_.float().type(dtype) for data_ in batch_data[:-2]]
             yb = batch_data[-2].float().type(dtype)
             lens = batch_data[-1].float()
             return xb, yb, lens
 
-        def train_batch(model, train_dl, optimizer, loss_fn):
+        def train_batch(model, train_dl, optimizer, loss_fn, i_optimize):
             model.train()
             for i_batch, batch_data in enumerate(train_dl):
                 optimizer.zero_grad()
@@ -255,8 +262,12 @@ class FrameworkDownstream:
                     wandb.log({'linear batch loss': loss.item(), 'lr da': optimizer.param_groups[0]['lr']})
                 loss.backward()
                 optimizer.step()
+                i_optimize += 1
+                # if i_optimize in [int(10 ** x) for x in np.linspace(1, 3, 81)]:         # !!!
+                #     record_intermediate_results(i_optimize)
                 with warmup_scheduler.dampening():
                     scheduler.step()
+            return i_optimize
 
         def eval_during_training(model, dl, loss_fn, use_batch_num=5):
             model.eval()
@@ -282,6 +293,13 @@ class FrameworkDownstream:
                 y_pred = torch.cat(y_pred_list).numpy()
             return y_true, y_pred
 
+        def record_intermediate_results(i_optimize):
+            y_true, y_pred = evaluate_after_training(test_dl)
+            y_true, y_pred = self.inverse_normalize_output(y_true, y_pred)
+            intermediate_result_name = 'linear_protocol_' + str(linear_protocol) + ', use_ssl_' + str(use_ssl) + \
+                                       ', ratio_' + str(self.config.da_use_ratio) + ', i_optimize_' + str(i_optimize)
+            self.save_results(intermediate_result_name, y_true, y_pred, test_data['sub_id'])
+
         self.config = SimpleNamespace(**config)
         test_name = 'linear_protocol_' + str(linear_protocol) + ', use_ssl_' + str(use_ssl) + \
                     ', ratio_' + str(self.config.da_use_ratio)
@@ -290,6 +308,9 @@ class FrameworkDownstream:
             self.set_regress_net_to_post_ssl_state()
         else:
             self.set_regress_net_to_init_state()
+
+        # if not linear_protocol:
+        #     self.set_regress_net_to_post_linear_init_head_first(use_ssl)
         self.sample_and_normalize_data()
         train_data, test_data = self.da_task['train'], self.da_task['test']
         train_input_data = [train_data[mod] for mod in self.da_task['_mods']]
@@ -314,13 +335,14 @@ class FrameworkDownstream:
         warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.num_gradient_de_da/5))
 
         epoch = int(np.ceil(self.config.num_gradient_de_da / len(train_dl)))
+        i_optimize = 0
         for i_epoch in range(epoch):
-            train_batch(model, train_dl, optimizer, torch.nn.MSELoss())
+            i_optimize = train_batch(model, train_dl, optimizer, torch.nn.MSELoss(), i_optimize)
             if verbose:
                 train_loss = eval_during_training(model, train_dl, torch.nn.MSELoss())
                 test_loss = eval_during_training(model, test_dl, torch.nn.MSELoss())
                 if self.config.log_with_wandb:
-                    wandb.log({'linear train loss': train_loss, 'linear test loss': test_loss})     # , 'linear lr': scheduler.get_last_lr()[0]
+                    wandb.log({'linear train loss': train_loss, 'linear test loss': test_loss})
                 logging.info(f'| Regressibility | epoch{i_epoch:3d}/{epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s |'
                              f' train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
                 epoch_end_time = time.time()
@@ -352,7 +374,6 @@ class FrameworkSSL:
                              for sub_, sub_data in hf.items()}
             self.ssl_columns = json.loads(hf.attrs['columns'])
         os.makedirs(os.path.join(self.config.result_dir), exist_ok=True)
-        add_file_handler(logging, os.path.join(self.config.result_dir, 'training_log.txt'))
 
         self.emb_nets = {mod: self.config.emb_net(3, self.config.emb_output_dim, mod + ' embedding') for mod in _mods}
         self._data_scalar = {'base_scalar': StandardScaler()}
@@ -384,14 +405,13 @@ class FrameworkSSL:
             plt.plot(param.cpu().detach().numpy(), [i for _ in param], '.', markersize=1)
 
     def ssl_training(self, config):
-        def train_batch(model, train_dl, optimizer, loss_fn):
+        def train_batch(model, train_dl, optimizer):
             model.train()
             for i_batch, x in enumerate(train_dl):
                 optimizer.zero_grad()
                 xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[:-1]]
                 lens = x[2].float()
-                mod_outputs = model(xb_mods, lens)
-                loss = loss_fn(mod_outputs)
+                loss, _ = model(xb_mods, lens)
                 if self.config.log_with_wandb:
                     wandb.log({'ssl batch loss': loss.item(), 'lr ssl': optimizer.param_groups[0]['lr']})
                 loss.backward()
@@ -399,7 +419,7 @@ class FrameworkSSL:
                 with warmup_scheduler.dampening():
                     scheduler.step()
 
-        def eval_during_training(model, dl, loss_fn, use_batch_num=5):
+        def eval_during_training(model, dl, use_batch_num=5):
             model.eval()
             with torch.no_grad():
                 validation_loss = []
@@ -408,15 +428,15 @@ class FrameworkSSL:
                         continue
                     xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[:-1]]
                     lens = x[2].float()
-                    mod_outputs = model(xb_mods, lens)
-                    validation_loss.append(loss_fn(mod_outputs).item())
+                    loss, mod_outputs = model(xb_mods, lens)
+                    validation_loss.append(loss.item())
             return np.mean(validation_loss), mod_outputs
 
         train_data, vali_data = self.train_data_ssl, self.vali_data_ssl
         train_step_lens = get_step_len(train_data[_mods[0]])
         vali_step_lens = get_step_len(vali_data[_mods[0]])
         model = SslGeneralNet(torch.nn.ModuleList([self.emb_nets[mod] for mod in _mods]),
-                              self.config.common_space_dim)
+                              self.config.common_space_dim, config['ssl_loss_fn'])
         if self.config.log_with_wandb:
             wandb.watch(model, config['ssl_loss_fn'], log='all', log_freq=20)
 
@@ -430,8 +450,8 @@ class FrameworkSSL:
         epoch_end_time = time.time()
         epoch = int(np.ceil(self.config.num_gradient_de_ssl / len(train_dl)))
         for i_epoch in range(epoch):
-            train_loss, mod_outputs = eval_during_training(model, train_dl, config['ssl_loss_fn'])
-            test_loss, _ = eval_during_training(model, vali_dl, config['ssl_loss_fn'])
+            train_loss, mod_outputs = eval_during_training(model, train_dl)
+            test_loss, _ = eval_during_training(model, vali_dl)
 
             # # # DEBUG
             # if i_epoch % 2 == 0:
@@ -442,7 +462,7 @@ class FrameworkSSL:
             logging.info(f'| SSL | epoch{i_epoch:3d}/{epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
                          f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
             epoch_end_time = time.time()
-            train_batch(model, train_dl, optimizer, config['ssl_loss_fn'])
+            train_batch(model, train_dl, optimizer)
             if self.config.log_with_wandb:
                 wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
         self.save_emb_net_post_ssl(model)
@@ -462,21 +482,21 @@ def run_ssl(ssl_task):
     if 'MoVi' in ssl_task['ssl_file_name']:
         ssl_framework.preprocess(train_sub_movi, test_sub_movi, test_sub_movi)
     elif ssl_task['ssl_file_name'] == 'Carmargo':
-        ssl_framework.preprocess(train_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
+        ssl_framework.preprocess(train_sub_carmargo+test_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
     elif ssl_task['ssl_file_name'] == 'walking_knee_moment':
-        ssl_framework.preprocess(train_sub_kam, test_sub_kam, test_sub_kam)
+        ssl_framework.preprocess(train_sub_kam+test_sub_kam, test_sub_kam, test_sub_kam)
     elif ssl_task['ssl_file_name'] == 'hw_running':
-        ssl_framework.preprocess(train_sub_hw, test_sub_hw, test_sub_hw)
+        ssl_framework.preprocess(train_sub_hw+test_sub_hw, test_sub_hw, test_sub_hw)
     ssl_framework.ssl_training(config)
 
 
 def run_da(da_framework, da_use_ratios=[1.]):
     for ratio in da_use_ratios:
         config['da_use_ratio'] = ratio
-        da_framework.regressibility(linear_protocol=False, use_ssl=True)
-        da_framework.regressibility(linear_protocol=False, use_ssl=False)
         da_framework.regressibility(linear_protocol=True, use_ssl=True)
         da_framework.regressibility(linear_protocol=True, use_ssl=False)
+        da_framework.regressibility(linear_protocol=False, use_ssl=True)
+        da_framework.regressibility(linear_protocol=False, use_ssl=False)
 
 
 def run_cross_vali(da_framework, da_use_ratios, fold_num=5, only_test_one_fold=False):
@@ -521,15 +541,19 @@ ssl_task_kam.update({'ssl_file_name': 'MoVi_walking_knee_moment'})
 ssl_task_hw_running = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_hw_running.update({'ssl_file_name': 'MoVi_hw_running'})
 
-config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1000, 'batch_size_ssl': 256, 'batch_size_linear': 256,        # !!!
-          'lr_ssl': 1e-4, 'lr_regress': 1e-3,
-          'emb_net': CnnEmbedding, 'emb_output_dim': 128, 'common_space_dim': 512,
+# # !!! fast version
+# config = {'num_gradient_de_ssl': 3e3, 'num_gradient_de_da': 300, 'batch_size_ssl': 256, 'batch_size_linear': 256,
+#           'lr_ssl': 3e-4, 'lr_regress': 3e-3, 'emb_net': CnnEmbedding, 'emb_output_dim': 128, 'common_space_dim': 512,
+config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1000, 'batch_size_ssl': 256, 'batch_size_linear': 256,
+          'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_net': CnnEmbedding, 'emb_output_dim': 128, 'common_space_dim': 512,
           'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()),
           'log_with_wandb': False, 'ssl_loss_fn': nce_loss, 'ssl_use_ratio': 1}
-# torch.nn.MSELoss()    torch.nn.SmoothL1Loss(beta=2)     vic_loss   nce_loss
+# clip_loss   nce_loss   nce_loss_hard_negative
 if config['log_with_wandb']:
     wandb.init(project="IMU_EMG_SSL", config=config, name='')
 os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
+add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
+logging.info('Init head first')
 train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
 test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
 
@@ -555,4 +579,11 @@ if __name__ == '__main__':
     # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_5)
     # da_framework.load_and_process_sun(train_sub_sun, test_sub_sun, test_sub_sun)
     # run_da(da_framework, da_use_ratios=[1.])
+
+    # TEST SSL subject number
+    # for ssl_sub_num in range(60, 81, 10):
+    #     train_sub_movi = ['sub_' + str(i+1) for i in random.sample(range(0, 80), ssl_sub_num)]
+    #     run_ssl(ssl_task_Carmargo)
+    #     da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_2)
+    #     run_cross_vali(da_framework, da_use_ratios=[1])
 

@@ -36,6 +36,47 @@ def results_dict_to_pd(result_all_tests):
     return result_df
 
 
+def results_dict_to_pd_ssl_sub_num(result_all_tests):
+    result_list = []
+    for test_name, test_results in result_all_tests.items():
+        only_linear = test_name.split('linear_protocol_')[1].split(',')[0] == 'True'
+        use_ssl = test_name.split('use_ssl_')[1].split(',')[0] == 'True'
+        da_ratio = float(test_name.split('ratio_')[1].split(',')[0])
+        ssl_sub_num = int(test_name.split('ssl_sub_num_')[1].split(',')[0])
+        for sub_name, subject_data in test_results.items():
+            sub_id = int(sub_name[4:])
+            rmse = np.sqrt(mse(subject_data[:, 0], subject_data[:, 1]))
+            r_rmse = rmse / (np.max(subject_data[:, 0]) - np.min(subject_data[:, 0])) * 100
+            r2 = r2_score(subject_data[:, 0], subject_data[:, 1])
+            correlation, _ = pearsonr(subject_data[:, 0], subject_data[:, 1])
+            result_list.append([only_linear, use_ssl, da_ratio, ssl_sub_num, sub_id, rmse, r_rmse, r2, correlation])
+
+    result_df = pd.DataFrame(result_list, columns=['only_linear', 'use_ssl', 'da_ratio', 'ssl_sub_num', 'sub_id', 'rmse', 'r_rmse', 'r2', 'correlation'])
+    return result_df
+
+
+def results_dict_to_pd_convergence_speed(result_all_tests):
+    result_list = []
+    for test_name, test_results in result_all_tests.items():
+        only_linear = test_name.split('linear_protocol_')[1].split(',')[0] == 'True'
+        use_ssl = test_name.split('use_ssl_')[1].split(',')[0] == 'True'
+        da_ratio = float(test_name.split('ratio_')[1].split(',')[0])
+        try:
+            i_optimize = int(test_name.split('i_optimize_')[1])
+        except IndexError:
+            continue
+        for sub_name, subject_data in test_results.items():
+            sub_id = int(sub_name[4:])
+            rmse = np.sqrt(mse(subject_data[:, 0], subject_data[:, 1]))
+            r_rmse = rmse / (np.max(subject_data[:, 0]) - np.min(subject_data[:, 0])) * 100
+            r2 = r2_score(subject_data[:, 0], subject_data[:, 1])
+            correlation, _ = pearsonr(subject_data[:, 0], subject_data[:, 1])
+            result_list.append([only_linear, use_ssl, da_ratio, i_optimize, sub_id, rmse, r_rmse, r2, correlation])
+
+    result_df = pd.DataFrame(result_list, columns=['only_linear', 'use_ssl', 'da_ratio', 'i_optimize', 'sub_id', 'rmse', 'r_rmse', 'r2', 'correlation'])
+    return result_df
+
+
 def get_step_len(data, feature_col_num=0):
     """
     :param data: Numpy array, 3d (step, sample, feature)
