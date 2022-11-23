@@ -64,7 +64,8 @@ class WindowSegment(BaseSegment):
     def __init__(self, win_len, name='UnivariantWinTest'):
         self.win_len = win_len
         self.name = name
-        self.win_step = int(self.win_len/4)
+        # self.win_step = int(self.win_len/4)
+        self.win_step = win_len
 
     def start_segment(self, trial_data):
         trial_len = trial_data.shape[0]

@@ -12,6 +12,7 @@ import prettytable as pt
 from customized_logger import logger as logging, add_file_handler
 from sklearn.metrics import r2_score, mean_squared_error as mse
 from scipy.stats import pearsonr
+from scipy.stats import kendalltau
 
 
 def fix_seed():
@@ -52,7 +53,7 @@ def get_profile_scores(y_true, y_pred, field, test_step_lens):
             arr_pred_i = arr_pred[i, :test_step_lens[i]]
             r2[i] = r2_score(arr_true_i, arr_pred_i)
             rmse[i] = np.sqrt(mse(arr_true_i, arr_pred_i))
-            cor_value[i] = pearsonr(arr_true_i, arr_pred_i)[0]
+            cor_value[i] = kendalltau(arr_true_i, arr_pred_i)[0]
         return {'r2': np.mean(r2), 'rmse': np.mean(rmse), 'cor_value': np.mean(cor_value)}
 
     scores = []
@@ -68,7 +69,7 @@ def get_scores(y_true, y_pred, y_fields, lens):         # TODO: !!! update
         if len(y_true.shape) == 2:
             r2 = r2_score(y_true[:, col], y_pred[:, col])
             rmse = np.sqrt(mse(y_true[:, col], y_pred[:, col]))
-            cor_value = pearsonr(y_true[:, col], y_pred[:, col])[0]
+            cor_value = kendalltau(y_true[:, col], y_pred[:, col])[0]
         else:
             r2, rmse, cor_value = [np.zeros(y_true.shape[0]) for _ in range(3)]
             for i_step in range(y_true.shape[0]):
@@ -76,7 +77,7 @@ def get_scores(y_true, y_pred, y_fields, lens):         # TODO: !!! update
                 y_pred_one_step = y_pred[i_step, :lens[i_step], col]
                 r2[i_step] = r2_score(y_true_one_step, y_pred_one_step)
                 rmse[i_step] = np.sqrt(mse(y_true_one_step, y_pred_one_step))
-                cor_value[i_step] = pearsonr(y_true_one_step, y_pred_one_step)[0]
+                cor_value[i_step] = kendalltau(y_true_one_step, y_pred_one_step)[0]
         score_one_field = {'field': field, 'r2': r2, 'rmse': rmse, 'cor_value': cor_value}
         scores.append(score_one_field)
     return scores

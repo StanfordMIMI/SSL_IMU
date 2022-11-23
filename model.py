@@ -64,6 +64,64 @@ def nce_loss(mod_outputs, temperature):
     return loss
 
 
+def nce_loss_groups_of_positive(mod_outputs, temperature):
+    def _calculate_similarity(emb1, emb2):
+        # make each vector unit length
+        emb1 = F.normalize(emb1, p=2, dim=-1)
+        emb2 = F.normalize(emb2, p=2, dim=-1)
+        similarity = torch.matmul(emb1, emb2.transpose(1, 2))
+        return similarity / temperature
+
+    def get_group_negative_mask(matrix_size, group_len):
+        negative_mask = torch.ones(matrix_size, dtype=bool)
+        for i in range(group_num):
+            negative_mask[i*group_len:(i+1)*group_len, i*group_len:(i+1)*group_len] = 0
+        return negative_mask
+
+    sim_pos = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 1), torch.unsqueeze(mod_outputs[1], 1))
+    logsumexp_pos = torch.flatten(torch.mean(sim_pos))
+
+    sim_all = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 0), torch.unsqueeze(mod_outputs[1], 0))[0]
+    group_len = 17
+    assert sim_all.shape[0] % group_len == 0
+    group_num = int(sim_all.shape[0] / group_len)
+    mask = get_group_negative_mask(sim_all.shape, group_len).to("cuda")
+    sim_all = sim_all.masked_select(mask).view(-1, mask.shape[0] - group_len)
+    logsumexp_all = torch.logsumexp(sim_all, dim=1)
+    logsumexp_all = torch.flatten(torch.mean(logsumexp_all, dim=0))
+    loss = logsumexp_all - logsumexp_pos
+    return loss
+
+
+# def nce_loss_groups_of_positive_2(mod_outputs, temperature):
+#     def _calculate_similarity(emb1, emb2):
+#         # make each vector unit length
+#         emb1 = F.normalize(emb1, p=2, dim=-1)
+#         emb2 = F.normalize(emb2, p=2, dim=-1)
+#         similarity = torch.matmul(emb1, emb2.transpose(1, 2))
+#         return similarity / temperature
+#
+#     def get_group_positive_mask(matrix_size, group_len):
+#         negative_mask = torch.zeros(matrix_size, dtype=bool)
+#         for i in range(group_num):
+#             negative_mask[i*group_len:(i+1)*group_len, i*group_len:(i+1)*group_len] = 1
+#         return negative_mask
+#
+#     sim_all = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 0), torch.unsqueeze(mod_outputs[1], 0))[0]
+#     group_len = 17
+#     assert sim_all.shape[0] % group_len == 0
+#     group_num = int(sim_all.shape[0] / group_len)
+#     mask = get_group_positive_mask(sim_all.shape, group_len).to("cuda")
+#     sim_pos = sim_all
+#     sim_pos = sim_pos.masked_select(mask).view(-1, group_len)
+#     logsumexp_pos = torch.logsumexp(sim_pos, dim=1)
+#     logsumexp_all = torch.logsumexp(sim_all, dim=1)
+#     logsumexp_pos = torch.flatten(torch.mean(logsumexp_pos, dim=0))
+#     logsumexp_all = torch.flatten(torch.mean(logsumexp_all, dim=0))
+#     loss = logsumexp_all - logsumexp_pos
+#     return loss
+
+
 def nce_loss_hard_negative(mod_outputs, temperature):
     def _calculate_similarity(emb1, emb2):
         # make each vector unit length
@@ -159,7 +217,10 @@ class RegressNet(nn.Module):
         emb_output_dims = [net.output_dim * channel_num / 3 for net, channel_num in zip(self.emb_nets, mod_channel_num)]
         self.emb_output_dim = int(sum(emb_output_dims))
         self.output_dim = output_dim
-        self.linear = nn.Linear(self.emb_output_dim, output_dim)
+        self.linear_1 = nn.Linear(self.emb_output_dim, 128)
+        self.linear_2 = nn.Linear(128, 128)
+        self.linear_3 = nn.Linear(128, output_dim)
+        self.linear = nn.ModuleList([self.linear_1, self.linear_2, self.linear_3])
 
     def forward(self, x, lens):
         batch_size = x[0].shape[0]
@@ -171,8 +232,10 @@ class RegressNet(nn.Module):
             mod_outputs.append(mod_output.reshape(batch_size, -1))
 
         output = torch.concat(mod_outputs, dim=1)
-        output = self.linear(output)
-        return output
+        output = F.relu(self.linear_1(output))
+        output = F.relu(self.linear_2(output))
+        output = self.linear_3(output)
+        return output, mod_outputs
 
 
 class ImuRnnEmbedding(nn.Module):

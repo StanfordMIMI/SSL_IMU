@@ -40,7 +40,7 @@ task_names = ['\\hw_running_VALR', '\\Carmargo_peak_fy', '\\walking_knee_moment_
 metrics_and_attributes = [['correlation', '', 2], ['r_rmse', '\%', 1]]
 
 if __name__ == '__main__':
-    test_path = 'D:\ssl_training_results\\2022-10-30 11_00_59_all_test'
+    test_path = 'D:\ssl_training_results\\2022-11-18 22_49_15'
     signi = {}
     for task_name in task_names:
         results_task = load_da_data(test_path + task_name + '.h5')
