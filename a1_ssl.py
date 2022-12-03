@@ -218,14 +218,16 @@ class FrameworkDownstream:
 
     def save_embeddings(self, model, test_dl, embedding_name):
         dtype, model = set_dtype_and_model(self.config.device, model)
-        mod_output_all = []
+        mod_output_all, sub_id_all = [], []
         model.eval()
         with torch.no_grad():
             for i_batch, batch_data in enumerate(test_dl):
-                xb = [data_.float().type(dtype) for data_ in batch_data[:-2]]
-                lens = batch_data[-1].float()
+                xb = [data_.float().type(dtype) for data_ in batch_data[:-3]]
+                lens = batch_data[-2].float()
                 _, mod_outputs_batch = model(xb, lens)
                 mod_output_all.append(mod_outputs_batch)
+                sub_ids = batch_data[-1].int()
+                sub_id_all.append(sub_ids)
 
         ssl_general_model_path = os.path.join(self.config.result_dir, 'embedding_similarity_between_segments')
         os.makedirs(ssl_general_model_path, exist_ok=True)
@@ -238,9 +240,15 @@ class FrameworkDownstream:
         mod_acc, mod_gyr = torch.concat(mod_acc, dim=0), torch.concat(mod_gyr, dim=0)
         with h5py.File(os.path.join(ssl_general_model_path, self.da_task['dataset'] + '.h5'), 'a') as hf:
             grp = hf.require_group(embedding_name)
+            grp_acc, grp_gyr = grp.require_group('mod_acc'), grp.require_group('mod_gyr')
             mod_acc, mod_gyr = mod_acc.detach().cpu().numpy(), mod_gyr.detach().cpu().numpy()
-            grp.require_dataset('mod_acc', shape=mod_acc.shape, data=mod_acc, dtype='float32')
-            grp.require_dataset('mod_gyr', shape=mod_gyr.shape, data=mod_gyr, dtype='float32')
+            sub_id_all = torch.concat(sub_id_all, dim=0).cpu().numpy()
+            subject_id_set = list(set(sub_id_all))
+            for i_sub in subject_id_set:
+                sub_data_loc = np.where(sub_id_all == i_sub)[0]
+                mod_acc_sub, mod_gyr_sub = mod_acc[sub_data_loc], mod_gyr[sub_data_loc]
+                grp_acc.require_dataset('sub_'+str(i_sub), shape=mod_acc_sub.shape, data=mod_acc_sub, dtype='float32')
+                grp_gyr.require_dataset('sub_'+str(i_sub), shape=mod_gyr_sub.shape, data=mod_gyr_sub, dtype='float32')
 
     def save_model_and_results(self, test_name, y_true, y_pred, sub_ids, model):
         os.makedirs(os.path.join(self.config.result_dir, 'test_models', self.da_task['dataset']), exist_ok=True)
@@ -400,7 +408,9 @@ class FrameworkDownstream:
         test_input_data = [test_data[mod] for mod in self.da_task['_mods']]
         test_output_data = test_data[self.da_task['output']]
         test_step_lens = get_step_len(test_input_data[0])
-        test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens], 1024, shuffle=False)
+        test_data_sub_id = test_data['sub_id']
+        test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens, test_data_sub_id],
+                             1024, shuffle=False)
 
         self.set_regress_net_to_post_ssl_state()
         self.save_embeddings(copy.deepcopy(self.regress_net), test_dl, 'use_ssl')
@@ -608,7 +618,7 @@ ssl_task_hw_running = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_hw_running.update({'ssl_file_name': 'MoVi_hw_running'})
 
 # # !!! fast version
-config = {'num_gradient_de_ssl': 1e2, 'num_gradient_de_da': 1e1, 'batch_size_ssl': 256, 'batch_size_linear': 256,
+config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1e3, 'batch_size_ssl': 256, 'batch_size_linear': 256,
           'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_net': CnnEmbedding, 'emb_output_dim': 128, 'common_space_dim': 128,
 # config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1000, 'batch_size_ssl': 256, 'batch_size_linear': 256,
 #           'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_net': CnnEmbedding, 'emb_output_dim': 128, 'common_space_dim': 128,
