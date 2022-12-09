@@ -1,8 +1,9 @@
 import random
 import h5py
 import numpy as np
-import os
-from a1_ssl import ssl_task_Carmargo, DOWNSTREAM_TASK_3
+import os, sys
+DOWNSTREAM_TASK_3 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'walking_knee_moment',
+                     'output': 'KFM', 'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': 'MoVi_'}
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
@@ -42,7 +43,8 @@ def draw_tsne(mod_data_reshaped, num_of_segment, title=''):
 
 
 emb_len = 128
-data_path = 'D:\ssl_training_results\\2022-11-29 07_54_40'
+data_path = sys.path[0] + '/results/2022-12-05 21_03_16'
+
 test_name = 'walking_knee_moment'
 mod_to_process = 'mod_acc'
 

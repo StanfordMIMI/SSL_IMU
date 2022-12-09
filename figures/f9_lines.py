@@ -1,5 +1,5 @@
 import numpy as np
-from const import LINE_WIDTH, FONT_DICT, LINE_WIDTH_THICK
+from ssl_main.const import FONT_DICT, LINE_WIDTH_THICK
 import matplotlib.pyplot as plt
 from matplotlib import rc
 from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd, format_axis

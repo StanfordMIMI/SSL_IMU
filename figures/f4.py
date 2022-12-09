@@ -1,6 +1,6 @@
 from scipy.stats import ttest_rel
 import numpy as np
-from const import LINE_WIDTH, FONT_DICT
+from ssl_main.const import LINE_WIDTH, FONT_DICT
 from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd, format_axis
 import matplotlib.pyplot as plt
 from matplotlib import rc

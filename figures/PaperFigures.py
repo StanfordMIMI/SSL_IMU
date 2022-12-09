@@ -1,10 +1,8 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from const import LINE_WIDTH
-from const import LINE_WIDTH_THICK, FONT_SIZE_LARGE
+from ssl_main.const import LINE_WIDTH
 import h5py
-import json
 from sklearn.metrics import r2_score
 from sklearn.metrics import mean_squared_error as mse
 from scipy.stats import pearsonr

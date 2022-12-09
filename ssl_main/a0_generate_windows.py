@@ -6,7 +6,7 @@ import numpy as np
 import ast
 from scipy.signal import medfilt
 from utils import get_data_by_merging_data_struct, find_peak_max, data_filter
-from const import DATA_PATH, DATA_PATH_CAMARGO, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, GRF_CARMARGO_SAMPLE_RATE, \
+from const import DATA_PATH_WIN, DATA_PATH_CAMARGO_WIN, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, GRF_CARMARGO_SAMPLE_RATE, \
     IMU_CARMARGO_SEGMENT_LIST, DICT_LABEL, STANCE_V_GRF_THD
 from const import DICT_SUBJECT_ID, DICT_TRIAL_TYPE_ID
 
@@ -80,7 +80,7 @@ class ContinuousDatasetLoader:
         self.data_contin_merged = {}
         for subject in subject_list:
             print("Loading subject " + subject)
-            with h5py.File(DATA_PATH_CAMARGO + subject + '.h5', 'r') as hf:
+            with h5py.File(DATA_PATH_CAMARGO_WIN + subject + '.h5', 'r') as hf:
                 data_trials = {}
                 [data_trials.update({trial: [trial_data['data_200'][:], trial_data['data_1000'][:]]})
                  for trial, trial_data in hf.items()]
@@ -202,7 +202,7 @@ class ContinuousDatasetLoader:
         for ambulation in TRIAL_TYPES:
             for frequency in ['200', '1000']:
                 columns[ambulation][frequency] = list(np.array(ast.literal_eval(open(
-                    DATA_PATH_CAMARGO + ambulation + '_' + frequency + '_columns.txt').read()), dtype=object))
+                    DATA_PATH_CAMARGO_WIN + ambulation + '_' + frequency + '_columns.txt').read()), dtype=object))
         return columns
 
     def add_additional_columns(self):
@@ -257,7 +257,7 @@ class BaseSegment:
 
     def export(self, columns, subject):
         all_data = self.data_struct.get_all_data()
-        with h5py.File(DATA_PATH + self.name + '.h5', 'a') as hf:
+        with h5py.File(DATA_PATH_WIN + self.name + '.h5', 'a') as hf:
             try: del hf[subject]
             except KeyError: pass
             dset = hf.create_dataset(subject, all_data.shape, data=all_data)

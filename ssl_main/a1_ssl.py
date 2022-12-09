@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import random
 import numpy as np
 from typing import List
-from customized_logger import logger as logging, add_file_handler
+from ssl_main.customized_logger import logger as logging, add_file_handler
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
@@ -13,10 +13,9 @@ from model import nce_loss, CnnEmbedding, RegressNet, SslGeneralNet, nce_loss_gr
 import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
-    preprocess_modality, get_scores, print_table, get_step_len
-from const import DATA_PATH, DICT_TRIAL_TYPE_ID, IMU_CARMARGO_SEGMENT_LIST, RESULTS_PATH, CAMARGO_SUB_HEIGHT_WEIGHT, \
-    GRAVITY
-from const import train_sub_carmargo, test_sub_carmargo, test_sub_hw, train_sub_hw, train_sub_kam, test_sub_kam, SUB_ID_ALL_DATASETS
+    preprocess_modality, get_scores, print_table, get_step_len, save_multi_image
+from const import DATA_PATH_SERVER, DICT_TRIAL_TYPE_ID, IMU_CARMARGO_SEGMENT_LIST, RESULTS_PATH, CAMARGO_SUB_HEIGHT_WEIGHT, \
+    GRAVITY, train_sub_carmargo, test_sub_carmargo, test_sub_hw, train_sub_hw, train_sub_kam, test_sub_kam, SUB_ID_ALL_DATASETS
 import json
 import pytorch_warmup as warmup
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
@@ -64,7 +63,7 @@ class FrameworkDownstream:
 
         type_to_exclude = [DICT_TRIAL_TYPE_ID[type] for type in self.da_task['remove_trial_type']]
         self.set_data = {}
-        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH_SERVER + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
@@ -94,7 +93,7 @@ class FrameworkDownstream:
     def load_and_process_kam(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
         self.set_data = {}
-        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH_SERVER + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
@@ -124,7 +123,7 @@ class FrameworkDownstream:
     def load_and_process_sun(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
         self.set_data = {}
-        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH_SERVER + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = list(hf[train_sub_ids[0]].attrs['columns'])
             if 'sub_id' not in self.data_columns:
                 self.data_columns.append('sub_id')
@@ -163,7 +162,7 @@ class FrameworkDownstream:
 
     def load_and_process_hw_running(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         self.set_data = {}
-        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH_SERVER + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
@@ -423,7 +422,7 @@ class FrameworkSSL:
     def __init__(self, config, ssl_task):
         self.config = SimpleNamespace(**config)
         self.ssl_task = ssl_task
-        with h5py.File(DATA_PATH + ssl_task['ssl_file_name'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH_SERVER + ssl_task['ssl_file_name'] + '.h5', 'r') as hf:
             self.ssl_data = {sub_: sub_data[:int(self.config.ssl_use_ratio * hf[sub_].shape[0]), :, :]
                              for sub_, sub_data in hf.items()}
             self.ssl_columns = json.loads(hf.attrs['columns'])
@@ -588,24 +587,22 @@ def run_cross_vali(da_framework, da_use_ratios, fold_num=5, only_test_one_fold=F
         run_da(da_framework, da_use_ratios)
 
 
-PARAMS_TRIED = ['ramp', 'treadmill_speed', 'peak_knee_extension_angle']
 _mods = ['acc', 'gyr']
-DOWNSTREAM_TASK_0 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
+DOWNSTREAM_TASK_0 = {'_mods': _mods, 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
                      'output': 'peak_fy', 'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_1 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['LevelGround', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
+DOWNSTREAM_TASK_1 = {'_mods': _mods, 'remove_trial_type': ['LevelGround', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
                      'output': 'peak_fy', 'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_2 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo',
+DOWNSTREAM_TASK_2 = {'_mods': _mods, 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo',
                      'output': 'peak_fy', 'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_3 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'walking_knee_moment',
+DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment',
                      'output': 'KFM', 'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_4 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_KNEE_MOMENT_X',
+DOWNSTREAM_TASK_4 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_KNEE_MOMENT_X',
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_FOOT', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_5 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_GRF_Z',
+DOWNSTREAM_TASK_5 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_GRF_Z',
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_FOOT', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_6 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'hw_running',     # batch size = 64, lr = 1e-3
+DOWNSTREAM_TASK_6 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'hw_running',
                      'output': 'VALR', 'imu_segments': ['l_shank'], 'max_pooling_to_downsample': True, 'ssl_model': 'MoVi_'}
 
-# run_ssl(ssl_task_Carmargo)
 ssl_task_Carmargo = {'ssl_file_name': 'MoVi_Carmargo', 'imu_segments': [
     # 'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot']}
     'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'Head',
@@ -617,13 +614,13 @@ ssl_task_kam.update({'ssl_file_name': 'MoVi_walking_knee_moment'})
 ssl_task_hw_running = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_hw_running.update({'ssl_file_name': 'MoVi_hw_running'})
 
-# # !!! fast version
-config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1e3, 'batch_size_ssl': 256, 'batch_size_linear': 256,
-          'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_net': CnnEmbedding, 'emb_output_dim': 128, 'common_space_dim': 128,
-# config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1000, 'batch_size_ssl': 256, 'batch_size_linear': 256,
+# !!! fast version
+# config = {'num_gradient_de_ssl': 1e1, 'num_gradient_de_da': 1e1, 'batch_size_ssl': 256, 'batch_size_linear': 256,
 #           'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_net': CnnEmbedding, 'emb_output_dim': 128, 'common_space_dim': 128,
+config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1000, 'batch_size_ssl': 256, 'batch_size_linear': 256,
+          'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_net': CnnEmbedding, 'emb_output_dim': 128, 'common_space_dim': 128,
           'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()),
-          'log_with_wandb': False, 'ssl_loss_fn': nce_loss_groups_of_positive, 'ssl_use_ratio': 1}
+          'log_with_wandb': False, 'ssl_loss_fn': nce_loss_groups_of_positive, 'ssl_use_ratio': 1}       # !!!
 # clip_loss   nce_loss   nce_loss_hard_negative
 if config['log_with_wandb']:
     wandb.init(project="IMU_EMG_SSL", config=config, name='')
@@ -664,3 +661,6 @@ if __name__ == '__main__':
     #     da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_2)
     #     run_cross_vali(da_framework, da_use_ratios=[1])
 
+
+# TODO: try masking
+# TODO LEARNING: DOSMA; Radiology

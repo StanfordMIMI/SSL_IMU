@@ -9,7 +9,7 @@ import torch
 from scipy.signal import find_peaks
 import datetime
 import prettytable as pt
-from customized_logger import logger as logging, add_file_handler
+from ssl_main.customized_logger import logger as logging, add_file_handler
 from sklearn.metrics import r2_score, mean_squared_error as mse
 from scipy.stats import pearsonr
 from scipy.stats import kendalltau
@@ -188,6 +188,15 @@ def get_data_by_merging_data_struct(data_struct_list):
         x_emg.append(x_emg_trial)
         y.append(y_trial)
     return {'IMU': np.concatenate(x_imu, axis=0), 'EMG': np.concatenate(x_emg, axis=0), 'y': np.concatenate(y, axis=0)}
+
+
+def save_multi_image(filename):
+    pp = PdfPages(filename)
+    fig_nums = plt.get_fignums()
+    figs = [plt.figure(n) for n in fig_nums]
+    for fig in figs:
+        fig.savefig(pp, format='pdf')
+    pp.close()
 
 
 class DataStruct:

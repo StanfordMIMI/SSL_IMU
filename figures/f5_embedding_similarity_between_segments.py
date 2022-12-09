@@ -1,12 +1,9 @@
 import h5py
-import json
-from const import DATA_PATH, RESULTS_PATH
-from utils import preprocess_modality, define_channel_names
+from ssl_main.const import RESULTS_PATH
 from torch.nn import functional as F
 import torch
-import numpy as np
 import os
-from a1_ssl import ssl_task_Carmargo
+from ssl_main.a1_ssl import ssl_task_Carmargo
 import matplotlib.pyplot as plt
 
 
