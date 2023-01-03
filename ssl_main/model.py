@@ -1,5 +1,5 @@
 import copy
-
+from const import _mods
 from torch import nn, Tensor
 import torch
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
@@ -9,8 +9,6 @@ from torch.nn import TransformerEncoder
 import math
 import numpy as np
 from utils import fix_seed, off_diagonal
-import matplotlib.pyplot as plt
-from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 
 
 fix_seed()
@@ -93,70 +91,6 @@ def nce_loss_groups_of_positive(mod_outputs, temperature):
     return loss
 
 
-# def nce_loss_groups_of_positive_2(mod_outputs, temperature):
-#     def _calculate_similarity(emb1, emb2):
-#         # make each vector unit length
-#         emb1 = F.normalize(emb1, p=2, dim=-1)
-#         emb2 = F.normalize(emb2, p=2, dim=-1)
-#         similarity = torch.matmul(emb1, emb2.transpose(1, 2))
-#         return similarity / temperature
-#
-#     def get_group_positive_mask(matrix_size, group_len):
-#         negative_mask = torch.zeros(matrix_size, dtype=bool)
-#         for i in range(group_num):
-#             negative_mask[i*group_len:(i+1)*group_len, i*group_len:(i+1)*group_len] = 1
-#         return negative_mask
-#
-#     sim_all = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 0), torch.unsqueeze(mod_outputs[1], 0))[0]
-#     group_len = 17
-#     assert sim_all.shape[0] % group_len == 0
-#     group_num = int(sim_all.shape[0] / group_len)
-#     mask = get_group_positive_mask(sim_all.shape, group_len).to("cuda")
-#     sim_pos = sim_all
-#     sim_pos = sim_pos.masked_select(mask).view(-1, group_len)
-#     logsumexp_pos = torch.logsumexp(sim_pos, dim=1)
-#     logsumexp_all = torch.logsumexp(sim_all, dim=1)
-#     logsumexp_pos = torch.flatten(torch.mean(logsumexp_pos, dim=0))
-#     logsumexp_all = torch.flatten(torch.mean(logsumexp_all, dim=0))
-#     loss = logsumexp_all - logsumexp_pos
-#     return loss
-
-
-def nce_loss_hard_negative(mod_outputs, temperature):
-    def _calculate_similarity(emb1, emb2):
-        # make each vector unit length
-        emb1 = F.normalize(emb1, p=2, dim=-1)
-        emb2 = F.normalize(emb2, p=2, dim=-1)
-        similarity = torch.matmul(emb1, emb2.transpose(1, 2))
-        return similarity / temperature
-
-    def get_negative_mask(batch_size):
-        negative_mask = torch.ones((batch_size, batch_size), dtype=bool)
-        for i in range(batch_size):
-            negative_mask[i, i] = 0
-            # negative_mask[i, i + batch_size] = 0
-
-        # negative_mask = torch.cat((negative_mask, negative_mask), 0)
-        return negative_mask
-
-    sim_pos = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 1), torch.unsqueeze(mod_outputs[1], 1))
-    sim_all = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 0), torch.unsqueeze(mod_outputs[1], 0))
-
-    pos = sim_pos[:, 0, 0].exp()
-    neg = sim_all[0].exp()
-
-    N = batch_size = mod_outputs[0].shape[0]
-    mask = get_negative_mask(batch_size).to("cuda")
-    neg = neg.masked_select(mask).view(batch_size, -1)
-
-    beta, tau_plus = 1, .1
-    reweight = (beta * neg) / neg.mean(dim=1).unsqueeze(1)
-    # Neg = torch.max((-N * tau_plus * pos + (reweight * neg).sum(dim=1)) / (1 - tau_plus), torch.full([N], np.e ** (-1 / temperature)).cuda())
-
-    loss = ((pos + (reweight * neg).sum(dim=1)).log() - pos.log()).mean()
-    return loss
-
-
 def clip_loss(mod_outputs, temperature):
     def _calculate_similarity(emb1, emb2):
         # make each vector unit length
@@ -173,24 +107,19 @@ def clip_loss(mod_outputs, temperature):
 
 
 class SslGeneralNet(nn.Module):
-    def __init__(self, emb_nets, common_space_dim, loss_fn):
+    def __init__(self, emb_net, common_space_dim, loss_fn):
         super(SslGeneralNet, self).__init__()
-        self.emb_nets = emb_nets
-        output_channel_nums = [embnet.output_dim for embnet in emb_nets]
-        self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for output_channel_num in output_channel_nums])
-        self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in output_channel_nums])
-        self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])
-        # self.bn_proj_2 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in output_channel_nums])       # !!!
-        self.net_name = 'Combined Net'
+        self.emb_net = emb_net
+        output_channel_num = emb_net.output_dim
+        self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for _ in range(len(_mods))])
+        self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in range(len(_mods))])
+        self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in range(len(_mods))])
+        self.net_name = emb_net.net_name
         self.loss_fn = loss_fn
-        # self.temperature = nn.Parameter(torch.from_numpy(np.full([1], 0.1)), requires_grad=True)
         self.temperature = 0.1
 
     def __str__(self):
         return self.net_name
-
-    def set_scalars(self, scalars):
-        self.scalars = scalars
 
     def forward(self, mods, lens):
         def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1):
@@ -204,23 +133,19 @@ class SslGeneralNet(nn.Module):
         mod_outputs = []
         for i_mod, mod in enumerate(mods):
             mod_outputs.append(reshape_and_emb(
-                mod, self.emb_nets[i_mod], self.linear_proj_1[i_mod], self.linear_proj_2[i_mod], self.bn_proj_1[i_mod]))
+                mod, self.emb_net, self.linear_proj_1[i_mod], self.linear_proj_2[i_mod], self.bn_proj_1[i_mod]))
         loss = self.loss_fn(mod_outputs, self.temperature)
         return loss, mod_outputs
 
 
 class RegressNet(nn.Module):
-    def __init__(self, emb_nets, mod_channel_num, output_dim):
+    def __init__(self, emb_net, mod_channel_num, output_dim):
         super(RegressNet, self).__init__()
-        self.emb_nets = emb_nets
-
-        emb_output_dims = [net.output_dim * channel_num / 3 for net, channel_num in zip(self.emb_nets, mod_channel_num)]
-        self.emb_output_dim = int(sum(emb_output_dims))
+        self.emb_net = emb_net
+        emb_output_dim = emb_net.output_dim * (mod_channel_num / 3)
+        self.emb_output_dim = int(emb_output_dim) * len(_mods)
         self.output_dim = output_dim
-        self.linear_1 = nn.Linear(self.emb_output_dim, 128)
-        self.linear_2 = nn.Linear(128, 128)
-        self.linear_3 = nn.Linear(128, output_dim)
-        self.linear = nn.ModuleList([self.linear_1, self.linear_2, self.linear_3])
+        self.linear = nn.Linear(self.emb_output_dim, output_dim)
 
     def forward(self, x, lens):
         batch_size = x[0].shape[0]
@@ -228,13 +153,11 @@ class RegressNet(nn.Module):
         for i_mod, x_mod in enumerate(x):
             x_mod = x_mod.view(-1, 3, *x_mod.shape[2:])
             x_mod = x_mod.transpose(1, 2)
-            mod_output, _ = self.emb_nets[i_mod](x_mod, lens)
+            mod_output, _ = self.emb_net(x_mod, lens)
             mod_outputs.append(mod_output.reshape(batch_size, -1))
 
         output = torch.concat(mod_outputs, dim=1)
-        output = F.relu(self.linear_1(output))
-        output = F.relu(self.linear_2(output))
-        output = self.linear_3(output)
+        output = self.linear(output)
         return output, mod_outputs
 
 
@@ -377,22 +300,27 @@ class RestNetDownBlock(nn.Module):
         return self.relu(extra_x + out)
 
 
-class CnnEmbedding(nn.Module):
-    def __init__(self, x_dim, output_dim, net_name):
-        super(CnnEmbedding, self).__init__()
-        self.conv1 = nn.Conv1d(x_dim, 16, kernel_size=49, stride=2, padding=24)
+class ResNetBase(nn.Module):
+    def __init__(self, x_dim, output_dim, net_name, layer_nums):
+        super(ResNetBase, self).__init__()
+        gate_size = 16
+        kernel_depths = [16, 32, 64, output_dim]
+        self.conv1 = nn.Conv1d(x_dim, gate_size, kernel_size=49, stride=2, padding=24)
         self.bn1 = nn.BatchNorm1d(16)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
-
         self.output_dim = output_dim
         self.net_name = net_name
-        self.layer1 = nn.Sequential(RestNetBasicBlock(16, 16), RestNetBasicBlock(16, 16))
-        self.layer2 = nn.Sequential(RestNetDownBlock(16, 32, [2, 1]), RestNetBasicBlock(32, 32))
-        self.layer3 = nn.Sequential(RestNetDownBlock(32, 64, [2, 1]), RestNetBasicBlock(64, 64))
-        self.layer4 = nn.Sequential(RestNetDownBlock(64, output_dim, [2, 1]), RestNetBasicBlock(output_dim, output_dim))
+
+        self.layers = nn.ModuleList()
+        block_list = [RestNetBasicBlock(gate_size, kernel_depths[0])] + \
+                     [RestNetBasicBlock(kernel_depths[0], kernel_depths[0]) for _ in range(layer_nums[0]-1)]
+        self.layers.append(nn.Sequential(*block_list))
+        for i_layer in range(1, 4):
+            block_list = [RestNetDownBlock(kernel_depths[i_layer-1], kernel_depths[i_layer], [2, 1])] +\
+                         [RestNetBasicBlock(kernel_depths[i_layer], kernel_depths[i_layer]) for _ in range(layer_nums[i_layer]-1)]
+            self.layers.append(nn.Sequential(*block_list))
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.net_name = 'CnnEmbedding'
 
     def __str__(self):
         return self.net_name
@@ -403,18 +331,29 @@ class CnnEmbedding(nn.Module):
         out = self.relu(self.bn1(self.conv1(out)))
         # print(out.shape[1:])
         out = self.maxpool(out)
-        out = self.layer1(out)
+        out = self.layers[0](out)
         # print(out.shape[1:])
-        out = self.layer2(out)
+        out = self.layers[1](out)
         # print(out.shape[1:])
-        out = self.layer3(out)
+        out = self.layers[2](out)
         # print(out.shape[1:])
-        out = self.layer4(out)
+        out = self.layers[3](out)
         # print(out.shape[1:])
         out = self.avgpool(out)
         # print(out.shape[1:])
         return out.squeeze(dim=-1), None
 
 
+def resnet18(x_dim, output_dim):
+    layer_nums = [2, 2, 2, 2]
+    return ResNetBase(x_dim, output_dim, 'resnet18', layer_nums)
 
 
+def resnet50(x_dim, output_dim):
+    layer_nums = [3, 4, 6, 3]
+    return ResNetBase(x_dim, output_dim, 'resnet50', layer_nums)
+
+
+def resnet101(x_dim, output_dim):
+    layer_nums = [3, 4, 32, 3]
+    return ResNetBase(x_dim, output_dim, 'resnet50', layer_nums)

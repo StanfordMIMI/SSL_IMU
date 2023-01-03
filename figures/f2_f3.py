@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib import rc
 from matplotlib.patches import Patch
 from tab_2 import task_names
+import sys
 
 
 def init_fig():
@@ -70,7 +71,7 @@ def finalize_fig():
     save_fig(fig_name)
 
 
-data_path = 'D:\ssl_training_results\\2022-10-30 11_00_59_all_test'
+data_path = sys.path[0] + '/results/2022-12-09 21_29_35'
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 rc('font', family='Arial')
 fig_config = [

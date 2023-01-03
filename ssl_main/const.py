@@ -1,5 +1,6 @@
 import os
 
+_mods = ['acc', 'gyr']
 IMU_MOVI_SEGMENT_LIST = ['Hip', 'Head', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg',
                          'LeftFoot', 'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm',
                          'LeftForeArm', 'LeftHand']

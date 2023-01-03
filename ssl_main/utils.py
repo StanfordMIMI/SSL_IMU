@@ -9,7 +9,7 @@ import torch
 from scipy.signal import find_peaks
 import datetime
 import prettytable as pt
-from ssl_main.customized_logger import logger as logging, add_file_handler
+from customized_logger import logger as logging, add_file_handler
 from sklearn.metrics import r2_score, mean_squared_error as mse
 from scipy.stats import pearsonr
 from scipy.stats import kendalltau
@@ -63,7 +63,7 @@ def get_profile_scores(y_true, y_pred, field, test_step_lens):
     return scores
 
 
-def get_scores(y_true, y_pred, y_fields, lens):         # TODO: !!! update
+def get_scores(y_true, y_pred, y_fields, lens):
     scores = []
     for col, field in enumerate(y_fields):
         if len(y_true.shape) == 2:
@@ -103,7 +103,7 @@ def get_non_zero_max(data_):
     zero_loc = (data_ == 0.).all(axis=1).reshape([data_.shape[0], 1, -1])
     zeros_to_exclude = np.concatenate([zero_loc for i in range(data_.shape[1])], axis=1)
     data_[zeros_to_exclude] = np.nan
-    max_vals = np.nanmax(data_[:, :, 40:], axis=2)      # !!!
+    max_vals = np.nanmax(data_[:, :, 40:], axis=2)
     max_vals[np.isnan(max_vals)] = 0.
     return max_vals
 

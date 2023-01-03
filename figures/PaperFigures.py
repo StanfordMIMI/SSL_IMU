@@ -28,7 +28,7 @@ def results_dict_to_pd(result_all_tests):
             rmse = np.sqrt(mse(subject_data[:, 0], subject_data[:, 1]))
             r_rmse = rmse / (np.max(subject_data[:, 0]) - np.min(subject_data[:, 0])) * 100
             r2 = r2_score(subject_data[:, 0], subject_data[:, 1])
-            correlation, _ = kendalltau(subject_data[:, 0], subject_data[:, 1])
+            correlation, _ = pearsonr(subject_data[:, 0], subject_data[:, 1])
             result_list.append([only_linear, use_ssl, ratio, sub_id, rmse, r_rmse, r2, correlation])
 
     result_df = pd.DataFrame(result_list, columns=['only_linear', 'use_ssl', 'ratio', 'sub_id', 'rmse', 'r_rmse', 'r2', 'correlation'])
