@@ -37,14 +37,12 @@ configs = [{'only_linear': False, 'use_ssl': True, 'start_str': '\multirow{2}{*}
            {'only_linear': False, 'use_ssl': False, 'start_str': '                               & Initial Encoders & '},
            {'only_linear': True, 'use_ssl': True, 'start_str': '\multirow{2}{*}{Linear} & Self-Supervised Encoders & '},
            {'only_linear': True, 'use_ssl': False, 'start_str': '                               & Initial Encoders & '}]
-task_names = ['/hw_running_VALR', '/Carmargo_peak_fy', '/walking_knee_moment_KFM']
-# task_names = ['/Carmargo_peak_fy']
+# task_names = ['/hw_running_VALR', '/Carmargo_peak_fy', '/walking_knee_moment_KFM']
+task_names = ['/walking_knee_moment_KFM']
 metrics_and_attributes = [['correlation', '', 2], ['r_rmse', '\%', 1]]
 
 if __name__ == '__main__':
-    # test_path = sys.path[0] + '/results/2022-12-22 15_35_28'
-    test_path = sys.path[0] + '/results/2022-12-23 14_51_58'
-    # test_path = sys.path[0] + '/results/2022-12-24 00_20_18'
+    test_path = sys.path[0] + '/results/0_contrastive_on_MoVi'
     signi = {}
     for task_name in task_names:
         results_task = load_da_data(test_path + task_name + '.h5')

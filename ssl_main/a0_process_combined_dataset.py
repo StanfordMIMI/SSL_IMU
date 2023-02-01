@@ -46,7 +46,6 @@ class CombinedDatasetLoader:
         self.columns = []
         self.data_contin = {}
 
-
         dataset_frequencies = {i_dataset: dataset_info['Sampling frequency'][i_dataset] for i_dataset in range(30)}
 
         for (dirpath, dirnames, trial_names) in os.walk(data_loc):
@@ -78,7 +77,6 @@ class CombinedDatasetLoader:
 
 if __name__ == '__main__':
     data_loc = 'D:/Data/DataAntoine/imu_in_h5/'
-    dataset_num = 30
     data_reader = CombinedDatasetLoader(data_loc, 100)
     data_reader.loop_all_the_trials([CombinedDatasetSegmentation(128, 'Combined_walking_knee_moment', 8)])
 

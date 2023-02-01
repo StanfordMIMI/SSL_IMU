@@ -14,28 +14,6 @@ from utils import fix_seed, off_diagonal
 fix_seed()
 
 
-def vic_loss(mod_outputs, temperature):
-    if len(mod_outputs) == 2:
-        combos = [[0, 1]]
-    elif len(mod_outputs) == 3:
-        combos = [[0, 1], [1, 2], [0, 2]]
-    else:
-        raise ValueError('Only 2 or 3 embs are allowed.')
-    repr_loss = sum([F.mse_loss(mod_outputs[mod_a], mod_outputs[mod_b]) for mod_a, mod_b in combos])
-
-    xs = [mod_output - mod_output.mean(dim=0) for mod_output in mod_outputs]
-    mod_stds = [torch.sqrt(x.var(dim=0) + 1e-15) for x in xs]
-    std_loss = sum([torch.mean(F.relu(1 - mod_std)) for mod_std in mod_stds]) / len(mod_outputs)
-
-    B, C = mod_outputs[0].shape
-    cov_xs = [(x.T @ x) / (B - 1) for x in xs]
-    cov_loss = sum([off_diagonal(cov_x).pow_(2).sum().div(C) for cov_x in cov_xs])
-    loss = (1 * repr_loss + 1 * std_loss
-            + 0.01 * cov_loss
-            )
-    return loss
-
-
 def nce_loss(mod_outputs, temperature):
     def _calculate_similarity(emb1, emb2):
         # make each vector unit length
@@ -80,7 +58,7 @@ def nce_loss_groups_of_positive(mod_outputs, temperature):
     logsumexp_pos = torch.flatten(torch.mean(sim_pos))
 
     sim_all = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 0), torch.unsqueeze(mod_outputs[1], 0))[0]
-    group_len = 17
+    group_len = 8
     assert sim_all.shape[0] % group_len == 0
     group_num = int(sim_all.shape[0] / group_len)
     mask = get_group_negative_mask(sim_all.shape, group_len).to("cuda")
@@ -91,7 +69,7 @@ def nce_loss_groups_of_positive(mod_outputs, temperature):
     return loss
 
 
-def clip_loss(mod_outputs, temperature):
+def nce_loss_each_segment_individually(mod_outputs, temperature):
     def _calculate_similarity(emb1, emb2):
         # make each vector unit length
         emb1 = F.normalize(emb1, p=2, dim=-1)
@@ -99,11 +77,19 @@ def clip_loss(mod_outputs, temperature):
         similarity = torch.matmul(emb1, emb2.transpose(1, 2))
         return similarity / temperature
 
-    sim_all = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 0), torch.unsqueeze(mod_outputs[1], 0))[0]
-    labels = torch.arange(sim_all.shape[1], device='cuda')
-    loss_t = F.cross_entropy(sim_all, labels)
-    loss_i = F.cross_entropy(sim_all.T, labels)
-    return (loss_t + loss_i) / 2.
+    group_len = 8
+    losses = []
+    for i_group in range(group_len):
+        sub_mod_outputs = [mod_output[i_group::group_len] for mod_output in mod_outputs]
+        sim_pos = _calculate_similarity(torch.unsqueeze(sub_mod_outputs[0], 1), torch.unsqueeze(sub_mod_outputs[1], 1))
+        logsumexp_pos = torch.flatten(torch.mean(sim_pos))
+        sim_all = _calculate_similarity(torch.unsqueeze(sub_mod_outputs[0], 0), torch.unsqueeze(sub_mod_outputs[1], 0))[0]
+
+        logsumexp_all = torch.logsumexp(sim_all, dim=1)
+        logsumexp_all = torch.flatten(torch.mean(logsumexp_all, dim=0))
+        losses.append(logsumexp_all - logsumexp_pos)
+    loss = [losses[0] + loss_ for loss_ in losses[1:]][0]
+    return loss
 
 
 class SslGeneralNet(nn.Module):
@@ -261,42 +247,42 @@ class ImuTransformerEmbedding(nn.Module):
 
 
 class RestNetBasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, out_length):
         super(RestNetBasicBlock, self).__init__()
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=9, stride=1, padding=4)
-        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.ln1 = nn.LayerNorm(out_length)
         self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=9, stride=1, padding=4)
-        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.ln2 = nn.LayerNorm(out_length)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
         output = self.conv1(x)
-        output = F.relu(self.bn1(output))
+        output = F.relu(self.ln1(output))
         output = self.conv2(output)
-        output = self.bn2(output)
+        output = self.ln2(output)
         return self.relu(x + output)
 
 
 class RestNetDownBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride):
+    def __init__(self, in_channels, out_channels, stride, out_length):
         super(RestNetDownBlock, self).__init__()
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=9, stride=stride[0], padding=4)
-        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.ln1 = nn.LayerNorm(out_length)
         self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=9, stride=stride[1], padding=4)
-        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.ln2 = nn.LayerNorm(out_length)
         self.extra = nn.Sequential(
             nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride[0], padding=0),
-            nn.BatchNorm1d(out_channels)
+            nn.LayerNorm(out_length)
         )
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
         extra_x = self.extra(x)
         output = self.conv1(x)
-        out = F.relu(self.bn1(output))
+        out = F.relu(self.ln1(output))        # !!!
 
         out = self.conv2(out)
-        out = self.bn2(out)
+        out = self.ln2(out)
         return self.relu(extra_x + out)
 
 
@@ -305,20 +291,21 @@ class ResNetBase(nn.Module):
         super(ResNetBase, self).__init__()
         gate_size = 16
         kernel_depths = [16, 32, 64, output_dim]
+        out_lengths = [64, 32, 16, 8, 4]
         self.conv1 = nn.Conv1d(x_dim, gate_size, kernel_size=49, stride=2, padding=24)
-        self.bn1 = nn.BatchNorm1d(16)
+        self.ln1 = nn.LayerNorm(out_lengths[0])     # !!!
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
         self.output_dim = output_dim
         self.net_name = net_name
 
         self.layers = nn.ModuleList()
-        block_list = [RestNetBasicBlock(gate_size, kernel_depths[0])] + \
-                     [RestNetBasicBlock(kernel_depths[0], kernel_depths[0]) for _ in range(layer_nums[0]-1)]
+        block_list = [RestNetBasicBlock(gate_size, kernel_depths[0], out_lengths[1])] + \
+                     [RestNetBasicBlock(kernel_depths[0], kernel_depths[0], out_lengths[1]) for _ in range(layer_nums[0]-1)]
         self.layers.append(nn.Sequential(*block_list))
         for i_layer in range(1, 4):
-            block_list = [RestNetDownBlock(kernel_depths[i_layer-1], kernel_depths[i_layer], [2, 1])] +\
-                         [RestNetBasicBlock(kernel_depths[i_layer], kernel_depths[i_layer]) for _ in range(layer_nums[i_layer]-1)]
+            block_list = [RestNetDownBlock(kernel_depths[i_layer-1], kernel_depths[i_layer], [2, 1], out_lengths[i_layer+1])] +\
+                         [RestNetBasicBlock(kernel_depths[i_layer], kernel_depths[i_layer], out_lengths[i_layer+1]) for _ in range(layer_nums[i_layer]-1)]
             self.layers.append(nn.Sequential(*block_list))
         self.avgpool = nn.AdaptiveAvgPool1d(1)
 
@@ -328,7 +315,7 @@ class ResNetBase(nn.Module):
     def forward(self, sequence, lens):
         out = sequence.transpose(-1, -2)
         # print(out.shape[1:])
-        out = self.relu(self.bn1(self.conv1(out)))
+        out = self.relu(self.ln1(self.conv1(out)))
         # print(out.shape[1:])
         out = self.maxpool(out)
         out = self.layers[0](out)

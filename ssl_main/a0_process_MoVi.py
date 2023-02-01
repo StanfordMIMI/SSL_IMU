@@ -3,7 +3,7 @@ import numpy as np
 import ast
 from const import TRIAL_TYPES, GRAVITY, STANCE_V_GRF_THD, DICT_TRIAL_MOVI
 from scipy.interpolate import interp1d
-from a0_generate_windows import BaseSegment, DataStruct
+from a0_generate_windows import BaseSegmentation, DataStruct
 import matplotlib.pyplot as plt
 
 DATA_PATH_MOVI = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/MoVi/data_processed/'
@@ -22,14 +22,14 @@ class ContinuousDatasetLoader:
                     i_trial = DICT_TRIAL_MOVI[trial]
                     trial_data = trial_data[:].T
                     if target_fre is not None:
-                        trial_data = self.resample_120hz_to_target_fre(trial_data, target_fre)
+                        trial_data = self.resample_to_target_fre(trial_data, target_fre)
                     trial_data = self.add_additional_info(trial_data, i_subject, i_trial)
                     self.data_contin[subject].append(trial_data)
 
     @staticmethod
-    def resample_120hz_to_target_fre(trial_data, target_fre):
+    def resample_to_target_fre(trial_data, target_fre, ori_fre=120):
         x, step = np.linspace(0., 1., trial_data.shape[0], retstep=True)
-        new_x = np.arange(0., 1., step*120/target_fre)
+        new_x = np.arange(0., 1., step*ori_fre/target_fre)
         f = interp1d(x, trial_data, axis=0)
         trial_data_resampled = f(new_x)
 
@@ -60,8 +60,9 @@ class ContinuousDatasetLoader:
             [method.export(self.columns, subject) for method in segment_methods]
 
 
-class WindowSegment(BaseSegment):
-    def __init__(self, win_len, name='UnivariantWinTest'):
+class WindowSegmentation(BaseSegmentation):
+    def __init__(self, win_len, name='UnivariantWinTest', imu_num=17):
+        self.imu_num = imu_num
         self.win_len = win_len
         self.name = name
         # self.win_step = int(self.win_len/4)
@@ -70,7 +71,7 @@ class WindowSegment(BaseSegment):
     def start_segment(self, trial_data):
         trial_len = trial_data.shape[0]
         i_current = 0
-        acc_cols = [6*i for i in range(17)] + [6*i + 1 for i in range(17)] + [6*i + 2 for i in range(17)]
+        acc_cols = [6*i for i in range(self.imu_num)] + [6*i + 1 for i in range(self.imu_num)] + [6*i + 2 for i in range(self.imu_num)]
         acc_cols.sort()
         while i_current+self.win_len < trial_len:
             data_ = trial_data[i_current:i_current+self.win_len]
@@ -84,13 +85,13 @@ if __name__ == '__main__':
     sub_list = ['sub_' + str(i+1) for i in range(90)]
 
     data_reader = ContinuousDatasetLoader(sub_list, 200)
-    data_reader.loop_all_the_trials([WindowSegment(64, 'MoVi_hw_running')])
+    data_reader.loop_all_the_trials([WindowSegmentation(64, 'MoVi_hw_running')])
 
     data_reader = ContinuousDatasetLoader(sub_list, 200)
-    data_reader.loop_all_the_trials([WindowSegment(128, 'MoVi_Carmargo')])
+    data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi_Carmargo')])
 
     data_reader = ContinuousDatasetLoader(sub_list, 100)
-    data_reader.loop_all_the_trials([WindowSegment(128, 'MoVi_walking_knee_moment')])
+    data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi_walking_knee_moment')])
 
     # data_reader = ContinuousDatasetLoader(sub_list, 100)
     # data_reader.loop_all_the_trials([WindowSegment(80, 'MoVi_sun_drop_jump')])

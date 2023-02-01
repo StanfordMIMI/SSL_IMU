@@ -1,11 +1,11 @@
 import h5py
-from const import DATA_PATH_WIN, IMU_CARMARGO_SEGMENT_LIST
+from const import IMU_CARMARGO_SEGMENT_LIST
 import json
 import numpy as np
 
 
 def rename_kam_dataset():
-    with h5py.File(DATA_PATH_WIN + 'walking_knee_moment.h5', 'r+') as hf:
+    with h5py.File(DATA_PATH + 'walking_knee_moment.h5', 'r+') as hf:
         data_columns = json.loads(hf.attrs['columns'])
         for i, column in enumerate(data_columns):
             if 'Accel' == column[:5]:

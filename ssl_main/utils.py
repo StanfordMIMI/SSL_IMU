@@ -83,10 +83,10 @@ def get_scores(y_true, y_pred, y_fields, lens):
     return scores
 
 
-def prepare_dl(data_list, batch_size, shuffle):
+def prepare_dl(data_list, batch_size, shuffle, drop_last=False):
     data_list_torch = [torch.from_numpy(data).float() for data in data_list]
     ds = TensorDataset(*data_list_torch)
-    dl = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
     return dl
 
 

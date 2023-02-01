@@ -6,8 +6,9 @@ import numpy as np
 import ast
 from scipy.signal import medfilt
 from utils import get_data_by_merging_data_struct, find_peak_max, data_filter
-from const import DATA_PATH_WIN, DATA_PATH_CAMARGO_WIN, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, GRF_CARMARGO_SAMPLE_RATE, \
+from const import DATA_PATH_CAMARGO_WIN, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, GRF_CARMARGO_SAMPLE_RATE, \
     IMU_CARMARGO_SEGMENT_LIST, DICT_LABEL, STANCE_V_GRF_THD
+from config import DATA_PATH
 from const import DICT_SUBJECT_ID, DICT_TRIAL_TYPE_ID
 
 
@@ -251,20 +252,20 @@ class DataStruct:
         return self.data[:self.i_step]
 
 
-class BaseSegment:
+class BaseSegmentation:
     def set_data_struct(self, data_struct):
         self.data_struct = data_struct
 
-    def export(self, columns, subject):
+    def export(self, columns, dataset_name):
         all_data = self.data_struct.get_all_data()
-        with h5py.File(DATA_PATH_WIN + self.name + '.h5', 'a') as hf:
-            try: del hf[subject]
+        with h5py.File(DATA_PATH + self.name + '.h5', 'a') as hf:
+            try: del hf[dataset_name]
             except KeyError: pass
-            dset = hf.create_dataset(subject, all_data.shape, data=all_data)
+            dset = hf.create_dataset(dataset_name, all_data.shape, data=all_data)
             hf.attrs['columns'] = json.dumps(columns)
 
 
-class WindowSegment(BaseSegment):
+class WindowSegmentation(BaseSegmentation):
     def __init__(self, name='Carmargo'):
         self.win_len = self.data_len = 128
         self.name = name
@@ -286,7 +287,7 @@ class WindowSegment(BaseSegment):
                 i_current += self.win_step
 
 
-class CenterSegment(BaseSegment):
+class CenterSegmentation(BaseSegmentation):
     def __init__(self, name='Carmargo'):
         self.win_len = self.data_len = 400
         self.half_win_len = int(self.win_len/2)
@@ -303,7 +304,7 @@ class CenterSegment(BaseSegment):
                 self.data_struct.add_new_step(data_)
 
 
-class StepSegment(BaseSegment):
+class StepSegmentation(BaseSegmentation):
     def __init__(self, name):
         self.data_len = 256
         self.name = name
@@ -489,5 +490,5 @@ if __name__ == '__main__':
     ]
     data_reader = ContinuousDatasetLoader(sub_list)
     data_reader.add_additional_columns()
-    data_reader.loop_all_the_trials([WindowSegment()])
+    data_reader.loop_all_the_trials([WindowSegmentation()])
 

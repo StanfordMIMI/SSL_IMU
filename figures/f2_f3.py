@@ -71,7 +71,7 @@ def finalize_fig():
     save_fig(fig_name)
 
 
-data_path = sys.path[0] + '/results/2022-12-09 21_29_35'
+data_path = sys.path[0] + '/results/0_contrastive_on_MoVi'
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 rc('font', family='Arial')
 fig_config = [

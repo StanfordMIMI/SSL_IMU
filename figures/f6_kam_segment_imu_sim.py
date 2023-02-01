@@ -72,7 +72,7 @@ def random_select_categorize_to_trials(mod_data, trial_id_data, num_to_select=10
     return mod_data_reshaped, num_of_category, rows_to_select
 
 
-def draw_tsne(mod_data_reshaped, num_of_category, label, title=''):
+def draw_umap(mod_data_reshaped, num_of_category, label, title=''):
     # mod_transformed = TSNE(random_state=0).fit_transform(mod_data_reshaped)
     mod_transformed = umap.UMAP(n_neighbors=100, random_state=1).fit_transform(mod_data_reshaped)
 
@@ -86,8 +86,8 @@ def draw_tsne(mod_data_reshaped, num_of_category, label, title=''):
 
 
 emb_len = 128
-# data_path = sys.path[0] + '/results/' + '2022-12-09 21_29_35'
-data_path = sys.path[0] + '/results/2022-12-23 09_54_56'
+data_path = sys.path[0] + '/results/' + '2023-01-22 23_30_56'
+# data_path = sys.path[0] + '/results/0_contrastive_on_MoVi'
 mod_to_process = 'mod_acc'
 
 
@@ -109,10 +109,10 @@ mod_to_process = 'mod_acc'
 """ UMAP of segments """
 mod_data = load_mod_data('walking_knee_moment', 'no_ssl', mod_to_process, all_subject=False)
 mod_data_reshaped, num_of_segment, rows_to_select = random_select_categorize_to_segments(mod_data)
-draw_tsne(mod_data_reshaped, num_of_segment, DOWNSTREAM_TASK_3['imu_segments'], 'no ssl')
+draw_umap(mod_data_reshaped, num_of_segment, DOWNSTREAM_TASK_3['imu_segments'], 'no ssl')
 mod_data = load_mod_data('walking_knee_moment', 'use_ssl', mod_to_process, all_subject=False)
 mod_data_reshaped, num_of_segment, _ = random_select_categorize_to_segments(mod_data, rows_to_select=rows_to_select)
-draw_tsne(mod_data_reshaped, num_of_segment, DOWNSTREAM_TASK_3['imu_segments'], 'use ssl')
+draw_umap(mod_data_reshaped, num_of_segment, DOWNSTREAM_TASK_3['imu_segments'], 'use ssl')
 
 # """ TSNE of MoVi """
 # mod_data = load_mod_data('MoVi_walking_knee_moment', 'no_ssl', mod_to_process)

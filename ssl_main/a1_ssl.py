@@ -12,15 +12,16 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
 from model import nce_loss, resnet18, SslGeneralNet, nce_loss_groups_of_positive, \
-    SslGeneralNet, RegressNet, resnet50, resnet101
+    SslGeneralNet, RegressNet, resnet50, resnet101, nce_loss_each_segment_individually
 import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
     preprocess_modality, get_scores, print_table, get_step_len, save_multi_image
-from const import DATA_PATH_SERVER, DICT_TRIAL_TYPE_ID, IMU_CARMARGO_SEGMENT_LIST, RESULTS_PATH, \
+from const import DICT_TRIAL_TYPE_ID, RESULTS_PATH, \
     CAMARGO_SUB_HEIGHT_WEIGHT, \
     GRAVITY, train_sub_carmargo, test_sub_carmargo, test_sub_hw, train_sub_hw, train_sub_kam, test_sub_kam, \
     SUB_ID_ALL_DATASETS, _mods
+from config import DATA_PATH
 import json
 import pytorch_warmup as warmup
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
@@ -68,7 +69,7 @@ class FrameworkDownstream:
 
         type_to_exclude = [DICT_TRIAL_TYPE_ID[type] for type in self.da_task['remove_trial_type']]
         self.set_data = {}
-        with h5py.File(DATA_PATH_SERVER + self.da_task['dataset'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
@@ -98,7 +99,7 @@ class FrameworkDownstream:
     def load_and_process_kam(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
         self.set_data = {}
-        with h5py.File(DATA_PATH_SERVER + self.da_task['dataset'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
@@ -128,7 +129,7 @@ class FrameworkDownstream:
     def load_and_process_sun(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
         self.set_data = {}
-        with h5py.File(DATA_PATH_SERVER + self.da_task['dataset'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = list(hf[train_sub_ids[0]].attrs['columns'])
             if 'sub_id' not in self.data_columns:
                 self.data_columns.append('sub_id')
@@ -167,7 +168,7 @@ class FrameworkDownstream:
 
     def load_and_process_hw_running(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         self.set_data = {}
-        with h5py.File(DATA_PATH_SERVER + self.da_task['dataset'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             if 'output_processed' not in self.data_columns:
                 self.data_columns.append('output_processed')
@@ -318,7 +319,7 @@ class FrameworkDownstream:
             loss = []
             with torch.no_grad():
                 for i_batch, batch_data in enumerate(dl):
-                    if i_batch > use_batch_num:
+                    if i_batch >= use_batch_num:
                         return np.mean(loss)
                     xb, yb, lens = convert_batch_data(batch_data)
                     y_pred, _ = model(xb, lens)
@@ -432,7 +433,7 @@ class FrameworkSSL:
     def __init__(self, config, ssl_task):
         self.config = SimpleNamespace(**config)
         self.ssl_task = ssl_task
-        with h5py.File(DATA_PATH_SERVER + ssl_task['ssl_file_name'] + '.h5', 'r') as hf:
+        with h5py.File(DATA_PATH + ssl_task['ssl_file_name'] + '.h5', 'r') as hf:
             self.ssl_data = {sub_: sub_data[:int(self.config.ssl_use_ratio * hf[sub_].shape[0]), :, :]
                              for sub_, sub_data in hf.items()}
             self.ssl_columns = json.loads(hf.attrs['columns'])
@@ -448,7 +449,10 @@ class FrameworkSSL:
         validate_sub_ids: a list of subject id for model validation
         test_sub_ids: a list of subject id for model testing
         """
-        train_data = np.concatenate([self.ssl_data[sub] for sub in train_sub_ids], axis=0)
+        if train_sub_ids == ['except test']:
+            train_data = np.concatenate([self.ssl_data[sub] for sub in list(self.ssl_data.keys()) if sub not in test_sub_ids], axis=0)
+        else:
+            train_data = np.concatenate([self.ssl_data[sub] for sub in train_sub_ids], axis=0)
         vali_data = np.concatenate([self.ssl_data[sub] for sub in validate_sub_ids], axis=0)
         test_data = np.concatenate([self.ssl_data[sub] for sub in test_sub_ids], axis=0)
 
@@ -488,7 +492,7 @@ class FrameworkSSL:
                 validation_loss = []
                 mod_output_all = []
                 for i_batch, x in enumerate(dl):
-                    if i_batch > use_batch_num:
+                    if i_batch >= use_batch_num:
                         continue
                     xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[:-1]]
                     lens = x[2].float()
@@ -504,8 +508,8 @@ class FrameworkSSL:
         if self.config.log_with_wandb:
             wandb.watch(model, config['ssl_loss_fn'], log='all', log_freq=20)
 
-        train_dl = prepare_dl([train_data[mod] for mod in _mods] + [train_step_lens], int(self.config.batch_size_ssl), shuffle=True)
-        vali_dl = prepare_dl([vali_data[mod] for mod in _mods] + [vali_step_lens], int(self.config.batch_size_ssl), shuffle=False)
+        train_dl = prepare_dl([train_data[mod] for mod in _mods] + [train_step_lens], int(self.config.batch_size_ssl), shuffle=True, drop_last=True)
+        vali_dl = prepare_dl([vali_data[mod] for mod in _mods] + [vali_step_lens], int(self.config.batch_size_ssl), shuffle=False, drop_last=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.lr_ssl, weight_decay=1e-5)
 
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.num_gradient_de_ssl)
@@ -579,6 +583,8 @@ def run_ssl(ssl_task):
         ssl_framework.preprocess(train_sub_kam+test_sub_kam, test_sub_kam, test_sub_kam)
     elif ssl_task['ssl_file_name'] == 'hw_running':
         ssl_framework.preprocess(train_sub_hw+test_sub_hw, test_sub_hw, test_sub_hw)
+    elif 'Combined' in ssl_task['ssl_file_name']:
+        ssl_framework.preprocess(train_sub_combined_dataset, test_sub_combined_dataset, test_sub_combined_dataset)
     ssl_framework.ssl_training(config)
 
 
@@ -612,7 +618,7 @@ DOWNSTREAM_TASK_1 = {'_mods': _mods, 'remove_trial_type': ['LevelGround', 'Stair
 DOWNSTREAM_TASK_2 = {'_mods': _mods, 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo',
                      'output': 'peak_fy', 'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
 DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment',
-                     'output': 'KFM', 'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': 'MoVi_'}
+                     'output': 'KFM', 'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': 'Combined_'}
 DOWNSTREAM_TASK_4 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_KNEE_MOMENT_X',
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_FOOT', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi_'}
 DOWNSTREAM_TASK_5 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_GRF_Z',
@@ -621,45 +627,47 @@ DOWNSTREAM_TASK_6 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'hw_run
                      'output': 'VALR', 'imu_segments': ['l_shank'], 'max_pooling_to_downsample': True, 'ssl_model': 'MoVi_'}
 
 ssl_task_Carmargo = {'ssl_file_name': 'MoVi_Carmargo', 'imu_segments': [
-    # 'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot']}
-    'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'Head',
-    'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand']}
+    'R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']}
+    # 'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'Head',
+    # 'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand']}
 ssl_task_sun_drop_jump = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_sun_drop_jump.update({'ssl_file_name': 'MoVi_sun_drop_jump'})
 ssl_task_kam = copy.deepcopy(ssl_task_Carmargo)
-ssl_task_kam.update({'ssl_file_name': 'MoVi_walking_knee_moment'})
+ssl_task_kam.update({'ssl_file_name': 'Combined_walking_knee_moment'})
 ssl_task_hw_running = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_hw_running.update({'ssl_file_name': 'MoVi_hw_running'})
 
-config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1e4, 'batch_size_ssl': 256, 'batch_size_linear': 256,
+config = {'num_gradient_de_ssl': 5e3, 'num_gradient_de_da': 1e3, 'batch_size_ssl': 512, 'batch_size_linear': 32,
           'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_output_dim': 128, 'common_space_dim': 128,
 # stable config
 # config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1000, 'batch_size_ssl': 256, 'batch_size_linear': 256,
 #           'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_output_dim': 128, 'common_space_dim': 128,
-          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': True,
-          'log_with_wandb': True, 'ssl_loss_fn': nce_loss_groups_of_positive, 'emb_net': resnet50, 'ssl_use_ratio': 1}
-# clip_loss   nce_loss   nce_loss_hard_negative
+          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': False,
+          'log_with_wandb': True, 'ssl_loss_fn': nce_loss, 'emb_net': resnet18, 'ssl_use_ratio': 1}
+# clip_loss   nce_loss   nce_loss_groups_of_positive    nce_loss_each_segment_individually
 config = parse_config(config)
 
 if config['log_with_wandb']:
     wandb.init(project="IMU_EMG_SSL", config=config, name='')
 train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
 test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
+train_sub_combined_dataset = ['except test']        # except test
+test_sub_combined_dataset = ['dset0'] + ['dset' + str(i) for i in range(7, 9)]
 
 if __name__ == '__main__':
     os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
     add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
     logging.info(config)
 
-    run_ssl(ssl_task_hw_running)
-    run_ssl(ssl_task_Carmargo)
+    # run_ssl(ssl_task_hw_running)
+    # run_ssl(ssl_task_Carmargo)
     run_ssl(ssl_task_kam)
 
-    da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_6)
-    run_cross_vali(da_framework, da_use_ratios=[1])
-
-    da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_2)
-    run_cross_vali(da_framework, da_use_ratios=[1.])
+    # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_6)
+    # run_cross_vali(da_framework, da_use_ratios=[1])
+    #
+    # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_2)
+    # run_cross_vali(da_framework, da_use_ratios=[1.])
 
     # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
     da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
