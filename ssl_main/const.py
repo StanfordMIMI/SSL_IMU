@@ -8,7 +8,7 @@ DICT_TRIAL_MOVI = {index: i for i, index in enumerate(['I1', 'I2', 'S1', 'S2'])}
 
 CODE_PATH = os.path.dirname(os.path.abspath(__file__))
 
-DATA_PATH_CAMARGO_WIN = os.path.join(CODE_PATH, 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/camargo/data_processed/')
+DATA_PATH_CAMARGO_WIN = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/camargo/data_processed/'
 RESULTS_PATH = '../../results/'
 TRIAL_TYPES = ['LevelGround', 'Treadmill', 'Stair', 'Ramp']
 IMU_CARMARGO_SEGMENT_LIST = ['foot', 'shank', 'thigh', 'trunk']

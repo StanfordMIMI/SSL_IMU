@@ -11,8 +11,8 @@ from customized_logger import logger as logging, add_file_handler
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
-from model import nce_loss, resnet18, SslGeneralNet, nce_loss_groups_of_positive, \
-    SslGeneralNet, RegressNet, resnet50, resnet101, nce_loss_each_segment_individually
+from model import nce_loss, resnet18, SslContrastiveNet, mse_loss, \
+    SslContrastiveNet, RegressNet, resnet50, transformer, nce_loss_each_segment_individually, SslGenerativeNet
 import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
@@ -29,13 +29,14 @@ os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 class FrameworkDownstream:
     def __init__(self, config, da_task):
+        self.output_columns = {'plate_2_force_x': 'weight', 'plate_2_force_y': 'weight', 'plate_2_force_z': 'weight'}
         self.config = SimpleNamespace(**config)
-        self._data_scalar = {'base_scalar': StandardScaler()}
+        self._data_scalar = {'base_scalar': StandardScaler}
         self.da_task = da_task
         fix_seed()
 
         self.emb_net = self.config.emb_net(3, self.config.emb_output_dim)
-        self.regress_net = RegressNet(self.emb_net, len(define_channel_names(da_task)['acc']), 1)
+        self.regress_net = RegressNet(self.emb_net, len(define_channel_names(da_task)['acc']), len(self.output_columns))
         _, self.regress_net = set_dtype_and_model(self.config.device, self.regress_net)
         self.regress_net_init_state = copy.deepcopy(self.regress_net.state_dict())
 
@@ -55,12 +56,12 @@ class FrameworkDownstream:
         if test_name == 'hw_running':
             self.load_and_process_hw_running(train_sub_ids, validate_sub_ids, test_sub_ids)
         elif 'Carmargo' in test_name:
-            self.load_and_process_carmargo(train_sub_ids, validate_sub_ids, test_sub_ids)
+            self.load_and_process_camargo(train_sub_ids, validate_sub_ids, test_sub_ids)
         elif test_name == 'walking_knee_moment':
             self.load_and_process_kam(train_sub_ids, validate_sub_ids, test_sub_ids)
 
-    def load_and_process_carmargo(self, train_sub_ids: List[str], validate_sub_ids: List[str],
-                                  test_sub_ids: List[str]):
+    def load_and_process_camargo(self, train_sub_ids: List[str], validate_sub_ids: List[str],
+                                 test_sub_ids: List[str]):
         """
         train_sub_ids: a list of subject id for model training
         validate_sub_ids: a list of subject id for model validation
@@ -79,16 +80,9 @@ class FrameworkDownstream:
                     sub_data = hf[sub_id][:, :, :]
                     sub_weight = CAMARGO_SUB_HEIGHT_WEIGHT[sub_id][1] * GRAVITY
                     data_selected = self.select_data_by_list_of_values(sub_data, self.data_columns.index('trial_type_id'), [i for i in range(4) if i not in type_to_exclude])
-                    data_selected = self.select_data_by_has_nonzero_element(data_selected, self.data_columns.index(self.da_task['output']), 3/8, 5/8)
-                    output_raw = data_selected[:, self.data_columns.index(self.da_task['output'])]
+                    data_selected = self.select_data_by_has_nonzero_element(data_selected, self.data_columns.index('output'), 3/8, 5/8)
+                    output_raw = data_selected[:, self.data_columns.index('output')]
                     output_loc = np.argmax(np.abs(output_raw[:, int(3/8 * output_raw.shape[1]): int(5/8 * output_raw.shape[1])]), axis=1) + int(3/8 * output_raw.shape[1])
-
-                    # if data_name == 'vali':
-                    #     plt.figure()
-                    #     for i_step, step_data in enumerate(data_selected):
-                    #         plt.plot(step_data[self.data_columns.index('fy')])
-                    #         plt.plot(output_loc[i_step], output_raw[i_step, output_loc[i_step]], '*')
-                    #     plt.show()
 
                     output_processed = np.array([output_raw[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1]) / sub_weight
                     output_processed = np.repeat(output_processed[:, np.newaxis], data_selected.shape[2], axis=1).reshape([-1, 1, data_selected.shape[2]])
@@ -101,29 +95,10 @@ class FrameworkDownstream:
         self.set_data = {}
         with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
-            if 'output_processed' not in self.data_columns:
-                self.data_columns.append('output_processed')
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
                 current_set_data_list = [hf[sub_][:, :128] for sub_ in set_sub_ids]     # only keep 128 time steps
                 current_set_data = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
                 """ [step, feature, time] """
-
-                step_lens = get_step_len(current_set_data, feature_col=[1, 2])
-                output_selected = current_set_data[:, self.data_columns.index(self.da_task['output'])]
-                output_loc = np.zeros([output_selected.shape[0]])
-                for i_step, step_len in enumerate(step_lens):
-                    output_loc[i_step] = np.argmax(output_selected[i_step, 20:int(.5 * step_len)])+20
-                output_loc = output_loc.astype(int)
-                output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
-                #
-                # plt.figure()
-                # for i_step, step_len in enumerate(step_lens):
-                #     plt.plot(output_selected[i_step])
-                #     plt.plot(output_loc[i_step], output_selected[i_step, output_loc[i_step]], '*')
-                # plt.show()
-
-                output_processed = np.repeat(output_[:, np.newaxis], current_set_data.shape[2], axis=1).reshape([-1, 1, current_set_data.shape[2]])
-                current_set_data = np.concatenate([current_set_data, output_processed], axis=1)
                 self.set_data[data_name] = current_set_data
 
     def load_and_process_sun(self, train_sub_ids: List[str], validate_sub_ids: List[str],
@@ -145,23 +120,13 @@ class FrameworkDownstream:
                 current_set_data = np.concatenate(current_set_data_list, axis=0)
 
                 step_lens = get_step_len(current_set_data)
-                output_selected = current_set_data[:, self.data_columns.index(self.da_task['output'])]
+                output_selected = current_set_data[:, self.data_columns.index('output')]
                 output_loc = np.zeros([output_selected.shape[0]])
                 for i_step, step_len in enumerate(step_lens):
                     output_loc[i_step] = np.argmax(output_selected[i_step, :int(.5 * step_len)])
                 output_loc = output_loc.astype(int)
                 output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
                 output_processed = np.repeat(output_[:, np.newaxis], current_set_data.shape[2], axis=1).reshape([-1, 1, current_set_data.shape[2]])
-
-                # plt.figure()
-                # for i_step, step_len in enumerate(step_lens):
-                #     plt.plot(output_selected[i_step])
-                #     plt.plot(output_loc[i_step], output_selected[i_step, output_loc[i_step]], '*')
-
-                # plt.figure()
-                # for i_step, step_len in enumerate(step_lens):
-                #     plt.plot(current_set_data[i_step, self.data_columns.index('R_FOOT_Gyro_X')], 'r')
-                # plt.show()
 
                 current_set_data = np.concatenate([current_set_data, output_processed], axis=1)
                 self.set_data[data_name] = current_set_data
@@ -176,7 +141,7 @@ class FrameworkDownstream:
                 current_set_data_list = [hf[sub_] for sub_ in set_sub_ids]
                 current_set_data = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
                 """ [step, feature, time] """
-                output_raw = current_set_data[:, self.data_columns.index(self.da_task['output'])]
+                output_raw = current_set_data[:, self.data_columns.index('output')]
                 output_loc = np.argmax(np.abs(output_raw), axis=1)
                 output_ = np.array([output_raw[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
                 output_processed = np.repeat(output_[:, np.newaxis], current_set_data.shape[2], axis=1).reshape([-1, 1, current_set_data.shape[2]])
@@ -193,8 +158,8 @@ class FrameworkDownstream:
                 sampled_data = copy.deepcopy(current_set_data)
             logging.info('Downstream {}. Number of steps: {}'.format(data_name, sampled_data.shape[0]))
             data_ds = preprocess_modality(self.data_columns, self._data_scalar, sampled_data, define_channel_names(self.da_task), norm_method)
-            data_ds[self.da_task['output']] = normalize_data(self._data_scalar, sampled_data[:, self.data_columns.index('output_processed'), 0:1],
-                                                             self.da_task['output'], norm_method, 'by_all_columns')
+            output_data = self.norm_output_by_subject_weight(sampled_data)
+            data_ds['output'] = normalize_data(self._data_scalar, output_data, 'output', norm_method, 'by_each_column')
             data_ds['sub_id'] = sampled_data[:, self.data_columns.index('sub_id'), 0]
             if 'trial_type_id' in self.data_columns:
                 data_ds['trial_type_id'] = sampled_data[:, self.data_columns.index('trial_type_id'), 0]
@@ -202,9 +167,17 @@ class FrameworkDownstream:
                 data_ds['trial_type_id'] = np.zeros([sampled_data.shape[0]])
             self.da_task[data_name] = data_ds
 
+    def norm_output_by_subject_weight(self, sampled_data):
+        output_data = sampled_data[:, [self.data_columns.index(x) for x in self.output_columns.keys()]]
+        weight_data = sampled_data[:, self.data_columns.index('body weight')]
+        for i_output, (output_name, output_norm_col) in enumerate(self.output_columns.items()):
+            if output_norm_col is not None:
+                output_data[:, i_output] = np.divide(output_data[:, i_output], weight_data, out=np.zeros_like(output_data[:, i_output]), where=weight_data!=0)
+        return output_data
+
     def inverse_normalize_output(self, y_true, y_pred):
-        y_true = normalize_data(self._data_scalar, y_true, self.da_task['output'], 'inverse_transform', 'by_all_columns')
-        y_pred = normalize_data(self._data_scalar, y_pred, self.da_task['output'], 'inverse_transform', 'by_all_columns')
+        y_true = normalize_data(self._data_scalar, y_true, 'output', 'inverse_transform', 'by_each_column')
+        y_pred = normalize_data(self._data_scalar, y_pred, 'output', 'inverse_transform', 'by_each_column')
         return y_true, y_pred
 
     @staticmethod
@@ -271,7 +244,7 @@ class FrameworkDownstream:
         sub_id_set = list(set(sub_ids))
         results = np.concatenate([y_true, y_pred], axis=1)
         columns = ['y_true', 'y_pred']
-        with h5py.File(os.path.join(self.config.result_dir, self.da_task['dataset'] + '_' + self.da_task['output'] + '.h5'), 'a') as hf:
+        with h5py.File(os.path.join(self.config.result_dir, self.da_task['dataset'] + '_' + 'output' + '.h5'), 'a') as hf:
             grp = hf.require_group(test_name)
             for i_sub in sub_id_set:
                 results_sub = results[sub_ids == i_sub]
@@ -314,7 +287,7 @@ class FrameworkDownstream:
                     scheduler.step()
             return i_optimize
 
-        def eval_during_training(model, dl, loss_fn, use_batch_num=20):
+        def eval_during_training(model, dl, loss_fn, use_batch_num=5):
             model.eval()
             loss = []
             with torch.no_grad():
@@ -360,11 +333,11 @@ class FrameworkDownstream:
         self.sample_and_normalize_data()
         train_data, test_data = self.da_task['train'], self.da_task['test']
         train_input_data = [train_data[mod] for mod in self.da_task['_mods']]
-        train_output_data = train_data[self.da_task['output']]
+        train_output_data = train_data['output']
         train_step_lens = get_step_len(train_input_data[0])
         train_dl = prepare_dl([*train_input_data, train_output_data, train_step_lens], int(self.config.batch_size_linear), shuffle=True)
         test_input_data = [test_data[mod] for mod in self.da_task['_mods']]
-        test_output_data = test_data[self.da_task['output']]
+        test_output_data = test_data['output']
         test_step_lens = get_step_len(test_input_data[0])
         test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens], int(self.config.batch_size_linear), shuffle=False)
 
@@ -398,13 +371,13 @@ class FrameworkDownstream:
         self.save_model_and_results(test_name, y_true, y_pred, test_data['sub_id'], self.regress_net)
         if show_fig:
             plt.figure()
-            plt.title('Test')
-            plt.plot(y_true.ravel(), y_pred.ravel(), '.')
-            plt.plot([np.min(y_true), np.max(y_true)], [np.min(y_true), np.max(y_true)], color='black')
-            plt.xlabel('True')
-            plt.ylabel('Predicted')
+            for i_output in range(y_true.shape[1]):
+                plt.title('test set')
+                plt.plot(y_true[:10, i_output].ravel(), '-', color='C'+str(i_output), label=list(self.output_columns.keys())[i_output])
+                plt.plot(y_pred[:10, i_output].ravel(), '--', color='C'+str(i_output), label=list(self.output_columns.keys())[i_output])
+                plt.legend()
         if verbose:
-            all_scores = get_scores(y_true, y_pred, [self.da_task['output']], test_step_lens)
+            all_scores = get_scores(y_true, y_pred, self.output_columns.keys(), test_step_lens)
             all_scores = [{'subject': 'all', **scores} for scores in all_scores]
             print_table(all_scores)
 
@@ -417,7 +390,7 @@ class FrameworkDownstream:
 
         test_data = self.da_task['test']
         test_input_data = [test_data[mod] for mod in self.da_task['_mods']]
-        test_output_data = test_data[self.da_task['output']]
+        test_output_data = test_data['output']
         test_step_lens = get_step_len(test_input_data[0])
         test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens, test_data['sub_id'],
                               test_data['trial_type_id']], 1024, shuffle=False)
@@ -440,7 +413,7 @@ class FrameworkSSL:
         os.makedirs(os.path.join(self.config.result_dir), exist_ok=True)
 
         self.emb_net = self.config.emb_net(3, self.config.emb_output_dim)
-        self._data_scalar = {'base_scalar': StandardScaler()}
+        self._data_scalar = {'base_scalar': StandardScaler}
         fix_seed()
 
     def preprocess(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
@@ -504,7 +477,7 @@ class FrameworkSSL:
         train_data, vali_data = self.train_data_ssl, self.vali_data_ssl
         train_step_lens = get_step_len(train_data[_mods[0]])
         vali_step_lens = get_step_len(vali_data[_mods[0]])
-        model = SslGeneralNet(self.emb_net, self.config.common_space_dim, config['ssl_loss_fn'])
+        model = SslGenerativeNet(self.emb_net, self.config.common_space_dim, config['ssl_loss_fn'])
         if self.config.log_with_wandb:
             wandb.watch(model, config['ssl_loss_fn'], log='all', log_freq=20)
 
@@ -612,19 +585,19 @@ def run_cross_vali(da_framework, da_use_ratios, fold_num=5, only_test_one_fold=F
 
 
 DOWNSTREAM_TASK_0 = {'_mods': _mods, 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
-                     'output': 'peak_fy', 'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
+                     'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
 DOWNSTREAM_TASK_1 = {'_mods': _mods, 'remove_trial_type': ['LevelGround', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
-                     'output': 'peak_fy', 'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
+                     'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
 DOWNSTREAM_TASK_2 = {'_mods': _mods, 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo',
-                     'output': 'peak_fy', 'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
+                     'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
 DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment',
-                     'output': 'KFM', 'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': 'Combined_'}
-DOWNSTREAM_TASK_4 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_KNEE_MOMENT_X',
+                     'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': 'Combined_'}
+DOWNSTREAM_TASK_4 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_FOOT', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_5 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output': 'R_GRF_Z',
+DOWNSTREAM_TASK_5 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_FOOT', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi_'}
 DOWNSTREAM_TASK_6 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'hw_running',
-                     'output': 'VALR', 'imu_segments': ['l_shank'], 'max_pooling_to_downsample': True, 'ssl_model': 'MoVi_'}
+                     'imu_segments': ['l_shank'], 'max_pooling_to_downsample': True, 'ssl_model': 'MoVi_'}
 
 ssl_task_Carmargo = {'ssl_file_name': 'MoVi_Carmargo', 'imu_segments': [
     'R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']}
@@ -637,14 +610,13 @@ ssl_task_kam.update({'ssl_file_name': 'Combined_walking_knee_moment'})
 ssl_task_hw_running = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_hw_running.update({'ssl_file_name': 'MoVi_hw_running'})
 
-config = {'num_gradient_de_ssl': 5e3, 'num_gradient_de_da': 1e3, 'batch_size_ssl': 512, 'batch_size_linear': 32,
-          'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_output_dim': 128, 'common_space_dim': 128,
+config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1e3, 'batch_size_ssl': 64, 'batch_size_linear': 64,
+          'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_output_dim': 16, 'common_space_dim': 128,
 # stable config
 # config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1000, 'batch_size_ssl': 256, 'batch_size_linear': 256,
 #           'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_output_dim': 128, 'common_space_dim': 128,
           'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': False,
-          'log_with_wandb': True, 'ssl_loss_fn': nce_loss, 'emb_net': resnet18, 'ssl_use_ratio': 1}
-# clip_loss   nce_loss   nce_loss_groups_of_positive    nce_loss_each_segment_individually
+          'log_with_wandb': False, 'ssl_loss_fn': mse_loss, 'emb_net': transformer, 'ssl_use_ratio': 1}
 config = parse_config(config)
 
 if config['log_with_wandb']:
@@ -653,6 +625,14 @@ train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
 test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
 train_sub_combined_dataset = ['except test']        # except test
 test_sub_combined_dataset = ['dset0'] + ['dset' + str(i) for i in range(7, 9)]
+
+
+"""
+TODO:
+1. Compare against 1000+ rand init
+2. Use joint contact force as downstream application, since AddBiom cannot provide this
+"""
+
 
 if __name__ == '__main__':
     os.makedirs(os.path.join(config['result_dir']), exist_ok=True)

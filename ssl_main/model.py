@@ -1,4 +1,3 @@
-import copy
 from const import _mods
 from torch import nn, Tensor
 import torch
@@ -8,7 +7,7 @@ from torch.nn import functional as F
 from torch.nn import TransformerEncoder
 import math
 import numpy as np
-from utils import fix_seed, off_diagonal
+from utils import fix_seed
 
 
 fix_seed()
@@ -92,20 +91,22 @@ def nce_loss_each_segment_individually(mod_outputs, temperature):
     return loss
 
 
-class SslGeneralNet(nn.Module):
+def mse_loss(mod_outputs, mods):
+    losses = [torch.square(mod - mod_output) for mod_output, mod in zip(mod_outputs, mods)]
+    loss = [losses[0].mean() + loss_.mean() for loss_ in losses[1:]][0]
+    return loss
+
+
+class SslContrastiveNet(nn.Module):
     def __init__(self, emb_net, common_space_dim, loss_fn):
-        super(SslGeneralNet, self).__init__()
+        super(SslContrastiveNet, self).__init__()
         self.emb_net = emb_net
         output_channel_num = emb_net.output_dim
         self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for _ in range(len(_mods))])
         self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in range(len(_mods))])
         self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in range(len(_mods))])
-        self.net_name = emb_net.net_name
         self.loss_fn = loss_fn
         self.temperature = 0.1
-
-    def __str__(self):
-        return self.net_name
 
     def forward(self, mods, lens):
         def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1):
@@ -129,21 +130,22 @@ class RegressNet(nn.Module):
         super(RegressNet, self).__init__()
         self.emb_net = emb_net
         emb_output_dim = emb_net.output_dim * (mod_channel_num / 3)
-        self.emb_output_dim = int(emb_output_dim) * len(_mods)
+        self.emb_output_dim = len(_mods) * 24
         self.output_dim = output_dim
         self.linear = nn.Linear(self.emb_output_dim, output_dim)
 
     def forward(self, x, lens):
-        batch_size = x[0].shape[0]
+        batch_size, _, seq_len = x[0].shape
         mod_outputs = []
         for i_mod, x_mod in enumerate(x):
             x_mod = x_mod.view(-1, 3, *x_mod.shape[2:])
-            x_mod = x_mod.transpose(1, 2)
             mod_output, _ = self.emb_net(x_mod, lens)
-            mod_outputs.append(mod_output.reshape(batch_size, -1))
+            mod_outputs.append(mod_output.view(batch_size, -1, seq_len))
 
         output = torch.concat(mod_outputs, dim=1)
+        output = output.transpose(1, 2)
         output = self.linear(output)
+        output = output.transpose(1, 2)
         return output, mod_outputs
 
 
@@ -198,52 +200,81 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class ImuTransformerEmbedding(nn.Module):
-    def __init__(self, d_model, output_dim, net_name, nlayers=1, nhead=1, d_hid=20, dropout=0, device='cuda'):
+class SslGenerativeNet(SslContrastiveNet):
+    def forward(self, mods, lens):
+        def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1):
+            mod_ = mod_.view(-1, 3, *mod_.shape[2:])
+            mod_, _ = embnet(mod_, lens)
+            return mod_
+        mod_outputs = []
+        for i_mod, mod in enumerate(mods):
+            mod_outputs.append(reshape_and_emb(
+                mod, self.emb_net, self.linear_proj_1[i_mod], self.linear_proj_2[i_mod], self.bn_proj_1[i_mod]))
+        loss = self.loss_fn(mod_outputs, [mod_.view(-1, 3, *mod_.shape[2:]) for mod_ in mods])
+
+        return loss, mod_outputs
+
+
+class TransformerBase(nn.Module):
+    def __init__(self, d_model, output_dim, nlayers, nhead, d_hid, dropout, patch_len, patch_step_len, device='cuda'):
         super().__init__()
-        self.patch_len = 16
-        self.patch_step_len = 8
-        self.pad_len = int(self.patch_step_len / 2)
+        self.patch_len = patch_len
+        self.patch_step_len = patch_step_len
+        self.pad_len = 0
         self.pos_encoder = PositionalEncoding(d_model, dropout)
-        self.d_model = int(d_model * (256 / self.patch_len))
-        encoder_layers = TransformerEncoderLayer(self.d_model, nhead, d_hid, dropout)
+        self.d_model = patch_len*3
+        encoder_layers = TransformerEncoderLayer(self.d_model, nhead, d_hid, dropout, batch_first=True)
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.output_dim = output_dim
-        self.linear = nn.Linear(self.d_model, output_dim * self.patch_step_len)
+        # self.linear = nn.Linear(self.d_model, output_dim * self.patch_step_len)
         self.device = device
 
-    def forward(self, sequence, lens):
-        """
-        Args:
-            src: Tensor, shape [seq_len, batch_size]
-            src_mask: Tensor, shape [seq_len, seq_len]
+        self.mask_prob = 0.1
+        # self.mask_length = self.patch_len
+        self.mask_emb = nn.Parameter(torch.zeros([48]).uniform_()-0.5)
 
-        Returns:
-            output Tensor of shape [seq_len, batch_size, ntoken]
-        """
+    def forward(self, sequence, lens):
         sequence = self.divide_into_patches(sequence)
-        sequence = sequence.transpose(0, 1)
+        sequence, mask_indices = self.apply_mask(sequence)
         output = self.transformer_encoder(sequence)
-        output = self.linear(output)
-        output = output.transpose(0, 1)
         output = self.flat_patches(output)
         return output, None
 
     def divide_into_patches(self, sequence):
         sequence = F.pad(sequence, (0, 0, self.pad_len, self.pad_len))
-        sequence = sequence.unfold(1, self.patch_len, self.patch_step_len).flatten(start_dim=2)
+        sequence = sequence.unfold(2, self.patch_len, self.patch_step_len)
+        sequence = sequence.transpose(1, 2).flatten(start_dim=2)
         return sequence
 
     def flat_patches(self, sequence):
-        shape_1 = sequence.shape[1] * self.patch_step_len
-        sequence = sequence.reshape([sequence.shape[0], shape_1, -1])
+        sequence = sequence.view([*sequence.shape[:2], 3, -1])
+        sequence = sequence.transpose(1, 2).flatten(start_dim=2)
         return sequence
 
-    def generate_padding_mask(self, lens, seq_len):
-        msk = np.ones([len(lens), seq_len], dtype=bool)
-        for i, the_len in enumerate(lens):
-            msk[i, :int(the_len)] = 0
-        return torch.from_numpy(msk).to(self.device)
+    def apply_mask(self, seq):
+        bs, patches, length = seq.shape
+        mask_indices_np = np.random.choice(a=[True, False], size=(bs, patches), p=[self.mask_prob, 1 - self.mask_prob])
+        mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
+
+        for _ in range(mask_indices.dim(), seq.dim()):
+            mask_indices = mask_indices.unsqueeze(-1)
+        if mask_indices.size(-1) < seq.size(-1):
+            mask_indices = mask_indices.expand_as(seq)
+        # t1 = torch.mul(seq, ~mask_indices).detach().cpu().numpy()
+        # t2 = torch.mul(self.mask_emb, mask_indices).detach().cpu().numpy()
+        tensor = torch.mul(seq, ~mask_indices) + torch.mul(self.mask_emb, mask_indices)
+
+        # masked_patch_list = random.sample(range(patches), int(patches * self.mask_prob))
+        # mask = np.full(x.shape, False)
+        # for masked_patch in masked_patch_list:
+        #     mask[:, :, masked_patch] = True
+        # mask_indices = torch.from_numpy(mask).to(x.device)
+        return tensor, mask_indices
+
+
+def transformer(x_dim, output_dim):
+    return TransformerBase(x_dim, output_dim,       # , mask_prob=50, mask_length=50, mask_selection=50, mask_other=50
+                           nlayers=4, nhead=4, d_hid=20, dropout=0, patch_len=16, patch_step_len=16)
 
 
 class RestNetBasicBlock(nn.Module):

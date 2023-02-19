@@ -73,11 +73,11 @@ def get_scores(y_true, y_pred, y_fields, lens):
         else:
             r2, rmse, cor_value = [np.zeros(y_true.shape[0]) for _ in range(3)]
             for i_step in range(y_true.shape[0]):
-                y_true_one_step = y_true[i_step, :lens[i_step], col]
-                y_pred_one_step = y_pred[i_step, :lens[i_step], col]
+                y_true_one_step = y_true[i_step, col, :lens[i_step]]
+                y_pred_one_step = y_pred[i_step, col, :lens[i_step]]
                 r2[i_step] = r2_score(y_true_one_step, y_pred_one_step)
                 rmse[i_step] = np.sqrt(mse(y_true_one_step, y_pred_one_step))
-                cor_value[i_step] = kendalltau(y_true_one_step, y_pred_one_step)[0]
+                cor_value[i_step] = pearsonr(y_true_one_step, y_pred_one_step)[0]
         score_one_field = {'field': field, 'r2': r2, 'rmse': rmse, 'cor_value': cor_value}
         scores.append(score_one_field)
     return scores
@@ -115,21 +115,28 @@ def result_folder():
     return folder_name
 
 
-def normalize_data(data_scalar, data, name, method, scalar_mode):
+def normalize_data(data_scalar, data, name, method, scalar_mode, with_mean=False):
+    """
+    :param data_scalar:
+    :param data: []
+    :param name:
+    :param method:
+    :param scalar_mode:
+    :return:
+    """
     if method == 'fit_transform':
-        data_scalar[name] = copy.deepcopy(data_scalar['base_scalar'])
-    assert (scalar_mode in ['by_all_columns'])
+        data_scalar[name] = copy.deepcopy(data_scalar['base_scalar'](with_mean=with_mean))
+    assert (scalar_mode in ['by_each_column', 'by_all_columns'])
+
     input_data = data.copy()
-    original_shape = input_data.shape
-    if len(input_data.shape) == 3:
-        zero_loc = (input_data == 0.).all(axis=1)
-        for i in range(input_data.shape[1]):
-            input_data[:, i][zero_loc] = np.nan
-        input_data = input_data.reshape([-1, 1])
-    else:
-        input_data[(input_data == 0.).all(axis=1), :] = np.nan
+    size, channel, length = input_data.shape
+    target_shape = [-1, input_data.shape[1]] if scalar_mode == 'by_each_column' else [-1, 1]
+    zero_loc = (input_data == 0.).all(axis=1)
+    for i in range(input_data.shape[1]):
+        input_data[:, i][zero_loc] = np.nan
+    input_data = input_data.transpose(0, 2, 1).reshape(target_shape) if scalar_mode == 'by_each_column' else input_data.reshape(target_shape)
     scaled_data = getattr(data_scalar[name], method)(input_data)
-    scaled_data = scaled_data.reshape(original_shape)
+    scaled_data = scaled_data.reshape(size, length, channel).transpose(0, 2, 1) if scalar_mode == 'by_each_column' else scaled_data.reshape(size, channel, length)
     scaled_data[np.isnan(scaled_data)] = 0.
     return scaled_data
 
