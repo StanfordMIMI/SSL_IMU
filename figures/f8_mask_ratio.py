@@ -2,7 +2,7 @@ import numpy as np
 from ssl_main.const import FONT_DICT, LINE_WIDTH_THICK
 import matplotlib.pyplot as plt
 from matplotlib import rc
-from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd, format_axis
+from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd_profiles, format_axis
 
 
 def init_fig():
@@ -34,37 +34,37 @@ def draw_line(line_config):
         std_.append(np.std(data_[:, 1]))
     plt.plot(amount_list, mean_, line_config['style'], linewidth=LINE_WIDTH_THICK, markersize=10,
              color=line_config['color'], label=line_config['label'])
-    format_ticks()
+    # format_ticks()
 
 
 def finalize_fig():
     format_axis()
-    plt.tight_layout(rect=[0., 0., 1., 1.])
     plt.legend(bbox_to_anchor=(0.88, 1.1), ncol=1, fontsize=FONT_DICT['fontsize'], frameon=False, handlelength=4)
+    plt.tight_layout(rect=[0., 0., 1., 1.])
     save_fig('f9')
 
 
-data_path = 'D:\ssl_training_results\\2022-10-30 11_00_59_all_test'
-test_name = '\\walking_knee_moment_KFM'     # hw_running_VALR
+data_path = './results/2023-03-13 17_57_31'     # D:/Local/ssl_py/figures
+test_name = '/Carmargo_output'     # hw_running_VALR   walking_knee_moment_output  Carmargo_output
 rc('font', family='Arial')
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 
 if __name__ == "__main__":
-    metric = 'correlation'
+    metric = 'rmse'
     results_task = load_da_data(data_path + test_name + '.h5')
 
-    result_df = results_dict_to_pd(results_task)
+    result_df = results_dict_to_pd_profiles(results_task, 2)
 
-    amount_list = list(set(result_df['ratio']))
+    amount_list = list(set(result_df['mask_prob']))
     amount_list.sort()
 
-    line_0_data = result_df[~result_df['only_linear']&result_df['use_ssl']].sort_values(by=['ratio'])[['ratio', metric]]
+    line_0_data = result_df[~result_df['only_linear']&result_df['use_ssl']].sort_values(by=['mask_prob'])[['mask_prob', metric]]
     line_config_0 = {'color': colors[0], 'style': '-', 'label': 'Self-Supervised Encoders - Fine-tuning', 'data': line_0_data.values}
-    line_1_data = result_df[result_df['only_linear']&result_df['use_ssl']].sort_values(by=['ratio'])[['ratio', metric]]
+    line_1_data = result_df[result_df['only_linear']&result_df['use_ssl']].sort_values(by=['mask_prob'])[['mask_prob', metric]]
     line_config_1 = {'color': colors[0], 'style': '--', 'label': 'Self-Supervised Encoders - Linear', 'data': line_1_data.values}
-    line_2_data = result_df[~result_df['only_linear']&~result_df['use_ssl']].sort_values(by=['ratio'])[['ratio', metric]]
+    line_2_data = result_df[~result_df['only_linear']&~result_df['use_ssl']].sort_values(by=['mask_prob'])[['mask_prob', metric]]
     line_config_2 = {'color': colors[1], 'style': '-', 'label': 'Initial Encoders - Fine-tuning', 'data': line_2_data.values}
-    line_3_data = result_df[result_df['only_linear']&~result_df['use_ssl']].sort_values(by=['ratio'])[['ratio', metric]]
+    line_3_data = result_df[result_df['only_linear']&~result_df['use_ssl']].sort_values(by=['mask_prob'])[['mask_prob', metric]]
     line_config_3 = {'color': colors[1], 'style': '--', 'label': 'Initial Encoders - Linear', 'data': line_3_data.values}
 
     fig = init_fig()

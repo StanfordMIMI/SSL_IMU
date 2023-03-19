@@ -11,8 +11,9 @@ from customized_logger import logger as logging, add_file_handler
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
-from model import nce_loss, resnet18, SslContrastiveNet, mse_loss, \
-    SslContrastiveNet, RegressNet, resnet50, transformer, nce_loss_each_segment_individually, SslGenerativeNet
+from model import nce_loss, resnet18, SslContrastiveNet, \
+    SslContrastiveNet, RegressNet, resnet50, transformer, nce_loss_each_segment_individually, SslReconstructNet, \
+    mse_loss_masked, mse_loss
 import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
@@ -29,14 +30,14 @@ os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 class FrameworkDownstream:
     def __init__(self, config, da_task):
-        self.output_columns = {'plate_2_force_x': 'weight', 'plate_2_force_y': 'weight', 'plate_2_force_z': 'weight'}
         self.config = SimpleNamespace(**config)
+        self.output_columns = da_task['output_columns']
         self._data_scalar = {'base_scalar': StandardScaler}
         self.da_task = da_task
         fix_seed()
 
-        self.emb_net = self.config.emb_net(3, self.config.emb_output_dim)
-        self.regress_net = RegressNet(self.emb_net, len(define_channel_names(da_task)['acc']), len(self.output_columns))
+        self.emb_net = self.config.emb_net(len(da_task['imu_segments'])*6, self.config.emb_output_dim, mask_patch_num=0)
+        self.regress_net = RegressNet(self.emb_net, len(define_channel_names(da_task)['acc'])+len(define_channel_names(da_task)['gyr']), len(self.output_columns))
         _, self.regress_net = set_dtype_and_model(self.config.device, self.regress_net)
         self.regress_net_init_state = copy.deepcopy(self.regress_net.state_dict())
 
@@ -67,28 +68,23 @@ class FrameworkDownstream:
         validate_sub_ids: a list of subject id for model validation
         test_sub_ids: a list of subject id for model testing
         """
-
         type_to_exclude = [DICT_TRIAL_TYPE_ID[type] for type in self.da_task['remove_trial_type']]
         self.set_data = {}
         with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
-            if 'output_processed' not in self.data_columns:
-                self.data_columns.append('output_processed')
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
-                current_set_data_list, current_set_output_list = [], []
+                current_set_data_list = []
                 for sub_id in set_sub_ids:
-                    sub_data = hf[sub_id][:, :, :]
+                    sub_data = hf[sub_id][::100, :, :]      #
+                    has_grf_index = np.where(np.max(sub_data[:, self.data_columns.index('fz')], axis=1) > 10)
+                    sub_data = sub_data[has_grf_index]
                     sub_weight = CAMARGO_SUB_HEIGHT_WEIGHT[sub_id][1] * GRAVITY
-                    data_selected = self.select_data_by_list_of_values(sub_data, self.data_columns.index('trial_type_id'), [i for i in range(4) if i not in type_to_exclude])
-                    data_selected = self.select_data_by_has_nonzero_element(data_selected, self.data_columns.index('output'), 3/8, 5/8)
-                    output_raw = data_selected[:, self.data_columns.index('output')]
-                    output_loc = np.argmax(np.abs(output_raw[:, int(3/8 * output_raw.shape[1]): int(5/8 * output_raw.shape[1])]), axis=1) + int(3/8 * output_raw.shape[1])
-
-                    output_processed = np.array([output_raw[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1]) / sub_weight
-                    output_processed = np.repeat(output_processed[:, np.newaxis], data_selected.shape[2], axis=1).reshape([-1, 1, data_selected.shape[2]])
-                    data_selected = np.concatenate([data_selected, output_processed], axis=1)
-                    current_set_data_list.append(data_selected)
-                self.set_data[data_name] = np.concatenate(current_set_data_list, axis=0)
+                    force_col_loc = [self.data_columns.index(x) for x in ['fx', 'fy', 'fz']]
+                    sub_data[:, force_col_loc] = sub_data[:, force_col_loc] / sub_weight
+                    current_set_data_list.append(sub_data)
+                current_set_data = np.concatenate(current_set_data_list, axis=0)
+                """ [step, feature, time] """
+                self.set_data[data_name] = current_set_data
 
     def load_and_process_kam(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
@@ -158,7 +154,8 @@ class FrameworkDownstream:
                 sampled_data = copy.deepcopy(current_set_data)
             logging.info('Downstream {}. Number of steps: {}'.format(data_name, sampled_data.shape[0]))
             data_ds = preprocess_modality(self.data_columns, self._data_scalar, sampled_data, define_channel_names(self.da_task), norm_method)
-            output_data = self.norm_output_by_subject_weight(sampled_data)
+            output_data = sampled_data[:, [self.data_columns.index(x) for x in self.output_columns]]
+            # output_data = self.norm_output_by_subject_weight(sampled_data)
             data_ds['output'] = normalize_data(self._data_scalar, output_data, 'output', norm_method, 'by_each_column')
             data_ds['sub_id'] = sampled_data[:, self.data_columns.index('sub_id'), 0]
             if 'trial_type_id' in self.data_columns:
@@ -167,13 +164,13 @@ class FrameworkDownstream:
                 data_ds['trial_type_id'] = np.zeros([sampled_data.shape[0]])
             self.da_task[data_name] = data_ds
 
-    def norm_output_by_subject_weight(self, sampled_data):
-        output_data = sampled_data[:, [self.data_columns.index(x) for x in self.output_columns.keys()]]
-        weight_data = sampled_data[:, self.data_columns.index('body weight')]
-        for i_output, (output_name, output_norm_col) in enumerate(self.output_columns.items()):
-            if output_norm_col is not None:
-                output_data[:, i_output] = np.divide(output_data[:, i_output], weight_data, out=np.zeros_like(output_data[:, i_output]), where=weight_data!=0)
-        return output_data
+    # def norm_output_by_subject_weight(self, sampled_data):
+    #     output_data = sampled_data[:, [self.data_columns.index(x) for x in self.output_columns.keys()]]
+    #     for i_output, (output_name, output_norm_col) in enumerate(self.output_columns.items()):
+    #         if output_norm_col is not None:
+    #             weight_data = sampled_data[:, self.data_columns.index(output_norm_col)]
+    #             output_data[:, i_output] = np.divide(output_data[:, i_output], weight_data, out=np.zeros_like(output_data[:, i_output]), where=weight_data!=0)
+    #     return output_data
 
     def inverse_normalize_output(self, y_true, y_pred):
         y_true = normalize_data(self._data_scalar, y_true, 'output', 'inverse_transform', 'by_each_column')
@@ -252,8 +249,9 @@ class FrameworkDownstream:
                 grp.attrs['columns'] = json.dumps(columns)
 
     def set_regress_net_to_post_linear_init_head_first(self, use_ssl):
-        model_name = 'linear_protocol_True, use_ssl_' + str(use_ssl) + ', ratio_' + str(self.config.da_use_ratio)
-        regress_net_post_linear_head_init = torch.load(os.path.join(self.config.result_dir, 'test_models', self.da_task['dataset'], model_name + '.pth'))
+        model_name = 'linear_protocol_True, use_ssl_' + str(use_ssl) + ', ratio_' + str(self.config.da_use_ratio) + self.config.file_name_appendix
+        regress_net_post_linear_head_init = torch.load(os.path.join(
+            self.config.result_dir, 'test_models', self.da_task['dataset'], model_name + '.pth'))
         self.regress_net.load_state_dict(regress_net_post_linear_head_init)
 
     def set_regress_net_to_init_state(self):
@@ -321,7 +319,7 @@ class FrameworkDownstream:
 
         self.config = SimpleNamespace(**config)
         test_name = 'linear_protocol_' + str(linear_protocol) + ', use_ssl_' + str(use_ssl) + \
-                    ', ratio_' + str(self.config.da_use_ratio)
+                    ', ratio_' + str(self.config.da_use_ratio) + self.config.file_name_appendix
         logging.info('Regressing, ' + test_name)
         if linear_protocol:
             if use_ssl:
@@ -377,7 +375,7 @@ class FrameworkDownstream:
                 plt.plot(y_pred[:10, i_output].ravel(), '--', color='C'+str(i_output), label=list(self.output_columns.keys())[i_output])
                 plt.legend()
         if verbose:
-            all_scores = get_scores(y_true, y_pred, self.output_columns.keys(), test_step_lens)
+            all_scores = get_scores(y_true, y_pred, self.output_columns, test_step_lens)
             all_scores = [{'subject': 'all', **scores} for scores in all_scores]
             print_table(all_scores)
 
@@ -412,7 +410,7 @@ class FrameworkSSL:
             self.ssl_columns = json.loads(hf.attrs['columns'])
         os.makedirs(os.path.join(self.config.result_dir), exist_ok=True)
 
-        self.emb_net = self.config.emb_net(3, self.config.emb_output_dim)
+        self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.emb_output_dim, self.config.mask_patch_num)
         self._data_scalar = {'base_scalar': StandardScaler}
         fix_seed()
 
@@ -477,7 +475,7 @@ class FrameworkSSL:
         train_data, vali_data = self.train_data_ssl, self.vali_data_ssl
         train_step_lens = get_step_len(train_data[_mods[0]])
         vali_step_lens = get_step_len(vali_data[_mods[0]])
-        model = SslGenerativeNet(self.emb_net, self.config.common_space_dim, config['ssl_loss_fn'])
+        model = SslReconstructNet(self.emb_net, self.config.common_space_dim, config['ssl_loss_fn'])
         if self.config.log_with_wandb:
             wandb.watch(model, config['ssl_loss_fn'], log='all', log_freq=20)
 
@@ -502,9 +500,24 @@ class FrameworkSSL:
             train_batch(model, train_dl, optimizer)
             if self.config.log_with_wandb:
                 wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
+
+                if i_epoch in list(range(0, epoch, int(epoch/6))) + [epoch-1]:
+                    model.eval()
+                    with torch.no_grad():
+                        for i_fig_num in range(2):
+                            x = list(enumerate(train_dl))[i_fig_num]
+                            xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[1][:-1]]
+                            model.show_reconstructed_signal(xb_mods, None, f'Train_{i_epoch}')
+
+                            x = list(enumerate(vali_dl))[i_fig_num]
+                            xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[1][:-1]]
+                            model.show_reconstructed_signal(xb_mods, None, f'Train_{i_epoch}')
+
+                    plt.show()
         self.save_emb_net_post_ssl(model)
-        _, mod_output_all = eval_during_training(model, vali_dl, np.nan)
-        if self.config.save_emb: self.save_embeddings(mod_output_all, 'use_ssl')
+        if self.config.save_emb:
+            _, mod_output_all = eval_during_training(model, vali_dl, np.nan)
+            self.save_embeddings(mod_output_all, 'use_ssl')
         return {'model': model}
 
     def save_emb_net_post_ssl(self, model):
@@ -546,7 +559,8 @@ def parse_config(config):
     return config
 
 
-def run_ssl(ssl_task):
+def run_ssl(ssl_task, mask_patch_num):
+    config['mask_patch_num'] = mask_patch_num
     ssl_framework = FrameworkSSL(config, ssl_task)
     if 'MoVi' in ssl_task['ssl_file_name']:
         ssl_framework.preprocess(train_sub_movi, test_sub_movi, test_sub_movi)
@@ -588,9 +602,9 @@ DOWNSTREAM_TASK_0 = {'_mods': _mods, 'remove_trial_type': ['Treadmill', 'Stair',
                      'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
 DOWNSTREAM_TASK_1 = {'_mods': _mods, 'remove_trial_type': ['LevelGround', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
                      'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_2 = {'_mods': _mods, 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo',
-                     'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment',
+DOWNSTREAM_TASK_2 = {'_mods': _mods, 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo', 'output_columns': ['fx', 'fy', 'fz'],
+                     'imu_segments': ['trunk', 'shank'], 'ssl_model': 'Combined_'}
+DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['KFM', 'KAM', 'EXT_KM_Z'],
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': 'Combined_'}
 DOWNSTREAM_TASK_4 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_FOOT', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi_'}
@@ -599,32 +613,29 @@ DOWNSTREAM_TASK_5 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_dr
 DOWNSTREAM_TASK_6 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'hw_running',
                      'imu_segments': ['l_shank'], 'max_pooling_to_downsample': True, 'ssl_model': 'MoVi_'}
 
-ssl_task_Carmargo = {'ssl_file_name': 'MoVi_Carmargo', 'imu_segments': [
-    'R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']}
+ssl_task_Carmargo = {'ssl_file_name': 'Combined_Carmargo', 'imu_segments': ['R_SHANK', 'R_THIGH']}
     # 'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'Head',
     # 'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand']}
 ssl_task_sun_drop_jump = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_sun_drop_jump.update({'ssl_file_name': 'MoVi_sun_drop_jump'})
 ssl_task_kam = copy.deepcopy(ssl_task_Carmargo)
-ssl_task_kam.update({'ssl_file_name': 'Combined_walking_knee_moment'})
+ssl_task_kam.update({'ssl_file_name': 'Combined_walking_knee_moment', 'imu_segments': [
+    'R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']})
 ssl_task_hw_running = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_hw_running.update({'ssl_file_name': 'MoVi_hw_running'})
 
-config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1e3, 'batch_size_ssl': 64, 'batch_size_linear': 64,
+config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1e3, 'batch_size_ssl': 256, 'batch_size_linear': 32,
           'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_output_dim': 16, 'common_space_dim': 128,
-# stable config
-# config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1000, 'batch_size_ssl': 256, 'batch_size_linear': 256,
-#           'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_output_dim': 128, 'common_space_dim': 128,
           'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': False,
-          'log_with_wandb': False, 'ssl_loss_fn': mse_loss, 'emb_net': transformer, 'ssl_use_ratio': 1}
+          'log_with_wandb': True, 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer, 'ssl_use_ratio': 1}
 config = parse_config(config)
 
 if config['log_with_wandb']:
-    wandb.init(project="IMU_EMG_SSL", config=config, name='')
+    wandb.init(project="IMU_SSL", config=config, name='Test temporal masking, updated loss')
 train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
 test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
 train_sub_combined_dataset = ['except test']        # except test
-test_sub_combined_dataset = ['dset0'] + ['dset' + str(i) for i in range(7, 9)]
+test_sub_combined_dataset = ['dset0'] + ['dset' + str(i) for i in range(6, 9)]
 
 
 """
@@ -639,19 +650,25 @@ if __name__ == '__main__':
     add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
     logging.info(config)
 
-    # run_ssl(ssl_task_hw_running)
-    # run_ssl(ssl_task_Carmargo)
-    run_ssl(ssl_task_kam)
+    for mask_patch_num in [1]:
+        logging.info(f"Masked patch number: {mask_patch_num}")
+        # for patch_len in [1, 2, 4, 8, 16]:     # TODO:
 
-    # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_6)
-    # run_cross_vali(da_framework, da_use_ratios=[1])
-    #
-    # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_2)
-    # run_cross_vali(da_framework, da_use_ratios=[1.])
+        # run_ssl(ssl_task_hw_running)
+        # run_ssl(ssl_task_Carmargo, mask_patch_num)
+        run_ssl(ssl_task_kam, mask_patch_num)
 
-    # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
-    da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
-    run_cross_vali(da_framework, da_use_ratios=[1])
+        config['file_name_appendix'] = f', masking_{mask_patch_num}'
+
+        # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_6)
+        # run_cross_vali(da_framework, da_use_ratios=[1])
+
+        # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_2)
+        # run_cross_vali(da_framework, da_use_ratios=[1])
+
+        # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
+        da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
+        run_cross_vali(da_framework, da_use_ratios=[0.1])
 
     plt.show()
 

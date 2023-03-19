@@ -1,3 +1,7 @@
+import copy
+import random
+
+import wandb
 from const import _mods
 from torch import nn, Tensor
 import torch
@@ -8,93 +12,56 @@ from torch.nn import TransformerEncoder
 import math
 import numpy as np
 from utils import fix_seed
+import matplotlib.pyplot as plt
 
 
 fix_seed()
 
 
-def nce_loss(mod_outputs, temperature):
-    def _calculate_similarity(emb1, emb2):
-        # make each vector unit length
-        emb1 = F.normalize(emb1, p=2, dim=-1)
-        emb2 = F.normalize(emb2, p=2, dim=-1)
-        similarity = torch.matmul(emb1, emb2.transpose(1, 2))
-        return similarity / temperature
-
-    if len(mod_outputs) == 2:
-        combos = [[0, 1]]
-    elif len(mod_outputs) == 3:
-        combos = [[0, 1], [1, 2], [0, 2]]
-    else:
-        raise ValueError('Only 2 or 3 embs are allowed.')
-    emb_pos = [torch.unsqueeze(emb, 1) for emb in mod_outputs]
-    sim_pos = [_calculate_similarity(emb_pos[combo[0]], emb_pos[combo[1]]) for combo in combos]
-    emb_all = [torch.unsqueeze(emb, 0) for emb in mod_outputs]
-    sim_all = [_calculate_similarity(emb_all[combo[0]], emb_all[combo[1]]) for combo in combos]
-
-    logsumexp_pos = torch.flatten(torch.mean(torch.stack(sim_pos), dim=0))
-    logsumexp_all = [torch.logsumexp(sim_, dim=2) for sim_ in sim_all]
-    logsumexp_all = torch.flatten(torch.mean(torch.stack(logsumexp_all), dim=0))
-    loss = (logsumexp_all - logsumexp_pos).mean()
-    return loss
+def mse_loss_masked(mod_outputs, mods, mask_indices):
+    loss = torch.square(mod_outputs[mask_indices] - mods[mask_indices])
+    return loss.mean()
 
 
-def nce_loss_groups_of_positive(mod_outputs, temperature):
-    def _calculate_similarity(emb1, emb2):
-        # make each vector unit length
-        emb1 = F.normalize(emb1, p=2, dim=-1)
-        emb2 = F.normalize(emb2, p=2, dim=-1)
-        similarity = torch.matmul(emb1, emb2.transpose(1, 2))
-        return similarity / temperature
-
-    def get_group_negative_mask(matrix_size, group_len):
-        negative_mask = torch.ones(matrix_size, dtype=bool)
-        for i in range(group_num):
-            negative_mask[i*group_len:(i+1)*group_len, i*group_len:(i+1)*group_len] = 0
-        return negative_mask
-
-    sim_pos = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 1), torch.unsqueeze(mod_outputs[1], 1))
-    logsumexp_pos = torch.flatten(torch.mean(sim_pos))
-
-    sim_all = _calculate_similarity(torch.unsqueeze(mod_outputs[0], 0), torch.unsqueeze(mod_outputs[1], 0))[0]
-    group_len = 8
-    assert sim_all.shape[0] % group_len == 0
-    group_num = int(sim_all.shape[0] / group_len)
-    mask = get_group_negative_mask(sim_all.shape, group_len).to("cuda")
-    sim_all = sim_all.masked_select(mask).view(-1, mask.shape[0] - group_len)
-    logsumexp_all = torch.logsumexp(sim_all, dim=1)
-    logsumexp_all = torch.flatten(torch.mean(logsumexp_all, dim=0))
-    loss = logsumexp_all - logsumexp_pos
-    return loss
+def mse_loss(mod_outputs, mods, _):
+    loss = torch.square(mod_outputs - mods)
+    return loss.mean()
 
 
-def nce_loss_each_segment_individually(mod_outputs, temperature):
-    def _calculate_similarity(emb1, emb2):
-        # make each vector unit length
-        emb1 = F.normalize(emb1, p=2, dim=-1)
-        emb2 = F.normalize(emb2, p=2, dim=-1)
-        similarity = torch.matmul(emb1, emb2.transpose(1, 2))
-        return similarity / temperature
+class SslReconstructNet(nn.Module):
+    def __init__(self, emb_net, common_space_dim, loss_fn):
+        super(SslReconstructNet, self).__init__()
+        self.emb_net = emb_net
+        # output_channel_num = emb_net.output_dim
+        # self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for _ in range(len(_mods))])
+        # self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in range(len(_mods))])
+        # self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in range(len(_mods))])
+        self.loss_fn = loss_fn
 
-    group_len = 8
-    losses = []
-    for i_group in range(group_len):
-        sub_mod_outputs = [mod_output[i_group::group_len] for mod_output in mod_outputs]
-        sim_pos = _calculate_similarity(torch.unsqueeze(sub_mod_outputs[0], 1), torch.unsqueeze(sub_mod_outputs[1], 1))
-        logsumexp_pos = torch.flatten(torch.mean(sim_pos))
-        sim_all = _calculate_similarity(torch.unsqueeze(sub_mod_outputs[0], 0), torch.unsqueeze(sub_mod_outputs[1], 0))[0]
+    def forward(self, mods, lens):
+        mod_all = torch.concat(mods, dim=1)
+        mod_outputs, mask_indices = self.emb_net(mod_all, lens)
+        loss = self.loss_fn(mod_outputs, mod_all, mask_indices)
+        return loss, mod_outputs
 
-        logsumexp_all = torch.logsumexp(sim_all, dim=1)
-        logsumexp_all = torch.flatten(torch.mean(logsumexp_all, dim=0))
-        losses.append(logsumexp_all - logsumexp_pos)
-    loss = [losses[0] + loss_ for loss_ in losses[1:]][0]
-    return loss
+    def show_reconstructed_signal(self, mods, lens, fig_title):
+        mod_all = torch.concat(mods, dim=1)
+        mod_outputs, mask_indices = self.emb_net(mod_all, lens)
 
-
-def mse_loss(mod_outputs, mods):
-    losses = [torch.square(mod - mod_output) for mod_output, mod in zip(mod_outputs, mods)]
-    loss = [losses[0].mean() + loss_.mean() for loss_ in losses[1:]][0]
-    return loss
+        fig = plt.figure()
+        max_vals, min_vals = [], []
+        for i_color, (i_channel, label_) in enumerate(zip([0, -1], ['Acc channel 1', 'Gyr channel 1'])):       # one acc and one gyr channel
+            true_data = mod_all.detach().cpu().numpy()[0, i_channel]
+            pred_data = mod_outputs.detach().cpu().numpy()[0, i_channel]
+            msk = mask_indices.detach().cpu().numpy()[0, i_channel]
+            plt.plot(true_data, color=f'C{i_color}', label=label_+' - True')
+            plt.plot(pred_data, '-.', color=f'C{i_color}', label=label_+' - Reconstructed')
+            max_vals.append(max(np.max(true_data), np.max(pred_data)))
+            min_vals.append(min(np.min(true_data), np.min(pred_data)))
+        plt.fill_between(range(true_data.shape[0]), min(min_vals), max(max_vals), label='Masked Patch', where=msk, facecolor='gray', alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        wandb.log({"img":[wandb.Image(fig, caption=fig_title)]})
 
 
 class SslContrastiveNet(nn.Module):
@@ -129,56 +96,27 @@ class RegressNet(nn.Module):
     def __init__(self, emb_net, mod_channel_num, output_dim):
         super(RegressNet, self).__init__()
         self.emb_net = emb_net
-        emb_output_dim = emb_net.output_dim * (mod_channel_num / 3)
-        self.emb_output_dim = len(_mods) * 24
+        self.emb_output_dim = mod_channel_num
         self.output_dim = output_dim
+
         self.linear = nn.Linear(self.emb_output_dim, output_dim)
+
+        # self.linear = nn.Linear(self.emb_output_dim*128, output_dim*128)
 
     def forward(self, x, lens):
         batch_size, _, seq_len = x[0].shape
-        mod_outputs = []
-        for i_mod, x_mod in enumerate(x):
-            x_mod = x_mod.view(-1, 3, *x_mod.shape[2:])
-            mod_output, _ = self.emb_net(x_mod, lens)
-            mod_outputs.append(mod_output.view(batch_size, -1, seq_len))
+        mod_all = torch.concat(x, dim=1)
+        mod_outputs, _ = self.emb_net(mod_all, lens)
 
-        output = torch.concat(mod_outputs, dim=1)
-        output = output.transpose(1, 2)
+        output = mod_outputs.transpose(1, 2)
         output = self.linear(output)
         output = output.transpose(1, 2)
+
+        # output = torch.flatten(mod_outputs, start_dim=1)
+        # output = self.linear(output)
+        # output = output.view([batch_size, -1, seq_len])
+
         return output, mod_outputs
-
-
-class ImuRnnEmbedding(nn.Module):
-    def __init__(self, x_dim, output_dim, net_name, nlayer=2, linear_dim=32):
-        super(ImuRnnEmbedding, self).__init__()
-        self.net_name = net_name
-        self.rnn_layer = nn.LSTM(x_dim, linear_dim, nlayer, bidirectional=True, bias=True)
-        self.linear = nn.Linear(linear_dim*2, output_dim)
-        self.bn = nn.BatchNorm1d(output_dim)
-        self.output_dim = output_dim
-        self.ratio_to_base_fre = 1
-        for name, param in self.linear.named_parameters():
-            if 'weight' in name:
-                nn.init.xavier_normal_(param, gain=10)
-
-    def __str__(self):
-        return self.net_name
-
-    def forward(self, sequence, lens):
-        sequence = sequence.transpose(0, 1)
-        total_len = sequence.shape[0]
-        lens = lens * self.ratio_to_base_fre
-        sequence = pack_padded_sequence(sequence, lens, enforce_sorted=False)
-        sequence, (emb, _) = self.rnn_layer(sequence)
-        sequence, _ = pad_packed_sequence(sequence, total_length=total_len)
-        sequence = self.linear(sequence)
-        sequence = sequence.transpose(0, 1)
-        emb = emb[-2:]
-        emb = emb.transpose(0, 1)
-        emb = torch.flatten(emb, start_dim=1)
-        emb = emb.transpose(0, 1)
-        return sequence, emb
 
 
 class PositionalEncoding(nn.Module):
@@ -200,45 +138,30 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class SslGenerativeNet(SslContrastiveNet):
-    def forward(self, mods, lens):
-        def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1):
-            mod_ = mod_.view(-1, 3, *mod_.shape[2:])
-            mod_, _ = embnet(mod_, lens)
-            return mod_
-        mod_outputs = []
-        for i_mod, mod in enumerate(mods):
-            mod_outputs.append(reshape_and_emb(
-                mod, self.emb_net, self.linear_proj_1[i_mod], self.linear_proj_2[i_mod], self.bn_proj_1[i_mod]))
-        loss = self.loss_fn(mod_outputs, [mod_.view(-1, 3, *mod_.shape[2:]) for mod_ in mods])
-
-        return loss, mod_outputs
-
-
 class TransformerBase(nn.Module):
-    def __init__(self, d_model, output_dim, nlayers, nhead, d_hid, dropout, patch_len, patch_step_len, device='cuda'):
+    def __init__(self, x_dim, output_dim, mask_patch_num, nlayers, nhead, patch_len, patch_step_len,
+                 device='cuda'):
         super().__init__()
         self.patch_len = patch_len
         self.patch_step_len = patch_step_len
         self.pad_len = 0
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
-        self.d_model = patch_len*3
-        encoder_layers = TransformerEncoderLayer(self.d_model, nhead, d_hid, dropout, batch_first=True)
+        # self.d_model = 256
+        # self.linear_expansion = nn.Linear(int(x_dim * patch_len), self.d_model)
+        self.d_model = int(x_dim * patch_len)
+        encoder_layers = TransformerEncoderLayer(self.d_model, nhead, batch_first=True)
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.output_dim = output_dim
-        # self.linear = nn.Linear(self.d_model, output_dim * self.patch_step_len)
         self.device = device
-
-        self.mask_prob = 0.1
-        # self.mask_length = self.patch_len
-        self.mask_emb = nn.Parameter(torch.zeros([48]).uniform_()-0.5)
+        self.mask_patch_num = mask_patch_num
+        self.mask_emb = nn.Parameter(torch.zeros([x_dim * patch_len]).uniform_() - 0.5)
 
     def forward(self, sequence, lens):
         sequence = self.divide_into_patches(sequence)
         sequence, mask_indices = self.apply_mask(sequence)
-        output = self.transformer_encoder(sequence)
-        output = self.flat_patches(output)
-        return output, None
+        sequence = self.transformer_encoder(sequence)
+        output = self.flat_patches(sequence)
+        mask_indices = self.flat_patches(mask_indices)
+        return output, mask_indices
 
     def divide_into_patches(self, sequence):
         sequence = F.pad(sequence, (0, 0, self.pad_len, self.pad_len))
@@ -247,13 +170,18 @@ class TransformerBase(nn.Module):
         return sequence
 
     def flat_patches(self, sequence):
-        sequence = sequence.view([*sequence.shape[:2], 3, -1])
+        sequence = sequence.view([*sequence.shape[:2], -1, self.patch_len])
         sequence = sequence.transpose(1, 2).flatten(start_dim=2)
         return sequence
 
     def apply_mask(self, seq):
-        bs, patches, length = seq.shape
-        mask_indices_np = np.random.choice(a=[True, False], size=(bs, patches), p=[self.mask_prob, 1 - self.mask_prob])
+        bs, length, patch_emb = seq.shape
+        # mask_indices_np = np.random.choice(a=[True, False], size=(bs, length), p=[self.mask_patch_num, 1 - self.mask_patch_num])
+        mask_indices_np = np.full((bs, length), False)
+        for i_row in range(mask_indices_np.shape[0]):
+            masked_loc = random.sample(range(length), self.mask_patch_num)
+            mask_indices_np[i_row, masked_loc] = True
+
         mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
 
         for _ in range(mask_indices.dim(), seq.dim()):
@@ -264,17 +192,11 @@ class TransformerBase(nn.Module):
         # t2 = torch.mul(self.mask_emb, mask_indices).detach().cpu().numpy()
         tensor = torch.mul(seq, ~mask_indices) + torch.mul(self.mask_emb, mask_indices)
 
-        # masked_patch_list = random.sample(range(patches), int(patches * self.mask_prob))
-        # mask = np.full(x.shape, False)
-        # for masked_patch in masked_patch_list:
-        #     mask[:, :, masked_patch] = True
-        # mask_indices = torch.from_numpy(mask).to(x.device)
         return tensor, mask_indices
 
 
-def transformer(x_dim, output_dim):
-    return TransformerBase(x_dim, output_dim,       # , mask_prob=50, mask_length=50, mask_selection=50, mask_other=50
-                           nlayers=4, nhead=4, d_hid=20, dropout=0, patch_len=16, patch_step_len=16)
+def transformer(x_dim, output_dim, mask_patch_num=0):
+    return TransformerBase(x_dim, output_dim, mask_patch_num=mask_patch_num, nlayers=6, nhead=8, patch_len=16, patch_step_len=16)
 
 
 class RestNetBasicBlock(nn.Module):
