@@ -40,8 +40,9 @@ def results_dict_to_pd_profiles(result_all_tests, result_field_id, block_swing_p
     for test_name, test_results in result_all_tests.items():
         only_linear = test_name.split('linear_protocol_')[1].split(',')[0] == 'True'
         use_ssl = test_name.split('use_ssl_')[1].split(',')[0] == 'True'
-        ratio, masking = test_name.split('ratio_')[1].split(', masking_')
-        ratio, masking = float(ratio), float(masking)
+        ratio, rest_ = test_name.split('ratio_')[1].split(', masking_')
+        mask_patch_num, patch_len = rest_.split(', patchlen_')
+        ratio, mask_patch_num, patch_len = float(ratio), float(mask_patch_num), float(patch_len)
         for sub_name, subject_data in test_results.items():
             sub_id = int(sub_name[4:])
             data_true, data_pred = subject_data[:, result_field_id].ravel(), subject_data[:, result_field_id+3].ravel()
@@ -54,8 +55,8 @@ def results_dict_to_pd_profiles(result_all_tests, result_field_id, block_swing_p
             r_rmse = rmse / (np.max(data_true) - np.min(data_true)) * 100
             r2 = r2_score(data_true, data_pred)
             correlation, _ = pearsonr(data_true, data_pred)
-            result_list.append([only_linear, use_ssl, ratio, masking, sub_id, rmse, r_rmse, r2, correlation])
-    result_df = pd.DataFrame(result_list, columns=['only_linear', 'use_ssl', 'ratio', 'mask_prob', 'sub_id',
+            result_list.append([only_linear, use_ssl, ratio, mask_patch_num, patch_len, sub_id, rmse, r_rmse, r2, correlation])
+    result_df = pd.DataFrame(result_list, columns=['only_linear', 'use_ssl', 'ratio', 'mask_patch_num', 'patch_len', 'sub_id',
                                                    'rmse', 'r_rmse', 'r2', 'correlation'])
     return result_df
 

@@ -11,8 +11,8 @@ from customized_logger import logger as logging, add_file_handler
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
-from model import nce_loss, resnet18, SslContrastiveNet, \
-    SslContrastiveNet, RegressNet, resnet50, transformer, nce_loss_each_segment_individually, SslReconstructNet, \
+from model import resnet18, SslContrastiveNet, \
+    SslContrastiveNet, RegressNet, resnet50, transformer, SslReconstructNet, \
     mse_loss_masked, mse_loss
 import time
 from types import SimpleNamespace
@@ -36,7 +36,7 @@ class FrameworkDownstream:
         self.da_task = da_task
         fix_seed()
 
-        self.emb_net = self.config.emb_net(len(da_task['imu_segments'])*6, self.config.emb_output_dim, mask_patch_num=0)
+        self.emb_net = self.config.emb_net(len(da_task['imu_segments'])*6, self.config.emb_output_dim, mask_patch_num=0, patch_len=self.config.patch_len)
         self.regress_net = RegressNet(self.emb_net, len(define_channel_names(da_task)['acc'])+len(define_channel_names(da_task)['gyr']), len(self.output_columns))
         _, self.regress_net = set_dtype_and_model(self.config.device, self.regress_net)
         self.regress_net_init_state = copy.deepcopy(self.regress_net.state_dict())
@@ -342,11 +342,13 @@ class FrameworkDownstream:
         model = self.regress_net
         dtype, model = set_dtype_and_model(self.config.device, model)
         if linear_protocol:
+            lr_ = 3e-3
             param_to_train = model.linear.parameters()
         else:
+            lr_ = 3e-5
             param_to_train = model.parameters()
 
-        optimizer = torch.optim.AdamW(param_to_train, self.config.lr_regress, weight_decay=1e-5)
+        optimizer = torch.optim.AdamW(param_to_train, lr_, weight_decay=1e-5)
         epoch_end_time = time.time()
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.num_gradient_de_da)
         warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.num_gradient_de_da/5))
@@ -410,7 +412,7 @@ class FrameworkSSL:
             self.ssl_columns = json.loads(hf.attrs['columns'])
         os.makedirs(os.path.join(self.config.result_dir), exist_ok=True)
 
-        self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.emb_output_dim, self.config.mask_patch_num)
+        self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.emb_output_dim, self.config.mask_patch_num, self.config.patch_len)
         self._data_scalar = {'base_scalar': StandardScaler}
         fix_seed()
 
@@ -501,19 +503,17 @@ class FrameworkSSL:
             if self.config.log_with_wandb:
                 wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
 
-                if i_epoch in list(range(0, epoch, int(epoch/6))) + [epoch-1]:
+                # if i_epoch in list(range(0, epoch, int(epoch/6))) + [epoch-1]:
+                if i_epoch in [0, epoch-1]:
                     model.eval()
                     with torch.no_grad():
-                        for i_fig_num in range(2):
-                            x = list(enumerate(train_dl))[i_fig_num]
-                            xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[1][:-1]]
-                            model.show_reconstructed_signal(xb_mods, None, f'Train_{i_epoch}')
+                        # x = list(enumerate(train_dl))[i_fig_num]
+                        # xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[1][:-1]]
+                        # model.show_reconstructed_signal(xb_mods, None, f'Train_{i_epoch}')
 
-                            x = list(enumerate(vali_dl))[i_fig_num]
-                            xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[1][:-1]]
-                            model.show_reconstructed_signal(xb_mods, None, f'Train_{i_epoch}')
-
-                    plt.show()
+                        x = list(enumerate(vali_dl))[0]
+                        xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[1][:-1]]
+                        model.show_reconstructed_signal(xb_mods, None, self.config.file_name_appendix)
         self.save_emb_net_post_ssl(model)
         if self.config.save_emb:
             _, mod_output_all = eval_during_training(model, vali_dl, np.nan)
@@ -559,8 +559,7 @@ def parse_config(config):
     return config
 
 
-def run_ssl(ssl_task, mask_patch_num):
-    config['mask_patch_num'] = mask_patch_num
+def run_ssl(ssl_task, mask_patch_num, patch_len):
     ssl_framework = FrameworkSSL(config, ssl_task)
     if 'MoVi' in ssl_task['ssl_file_name']:
         ssl_framework.preprocess(train_sub_movi, test_sub_movi, test_sub_movi)
@@ -624,14 +623,15 @@ ssl_task_kam.update({'ssl_file_name': 'Combined_walking_knee_moment', 'imu_segme
 ssl_task_hw_running = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_hw_running.update({'ssl_file_name': 'MoVi_hw_running'})
 
-config = {'num_gradient_de_ssl': 1e4, 'num_gradient_de_da': 1e3, 'batch_size_ssl': 256, 'batch_size_linear': 32,
-          'lr_ssl': 1e-4, 'lr_regress': 1e-3, 'emb_output_dim': 16, 'common_space_dim': 128,
-          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': False,
-          'log_with_wandb': True, 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer, 'ssl_use_ratio': 1}
+config = {'num_gradient_de_ssl': 2e3, 'num_gradient_de_da': 1e3, 'ssl_use_ratio': 1, 'log_with_wandb': True,
+# config = {'num_gradient_de_ssl': 1e2, 'num_gradient_de_da': 1e1, 'ssl_use_ratio': 0.02, 'log_with_wandb': False,
+          'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 1e-3, 'emb_output_dim': 16,
+          'common_space_dim': 48, 'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': False,
+          'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 config = parse_config(config)
 
 if config['log_with_wandb']:
-    wandb.init(project="IMU_SSL", config=config, name='Test temporal masking, updated loss')
+    wandb.init(project="IMU_SSL", config=config, name='Divide mask into two halves')
 train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
 test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
 train_sub_combined_dataset = ['except test']        # except test
@@ -650,25 +650,30 @@ if __name__ == '__main__':
     add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
     logging.info(config)
 
-    for mask_patch_num in [1]:
-        logging.info(f"Masked patch number: {mask_patch_num}")
-        # for patch_len in [1, 2, 4, 8, 16]:     # TODO:
+    patch_len_and_mask_patch_num = {1: [16, 32, 48, 64, 80, 96], 2: [8, 16, 24, 32, 40, 48], 4: [4, 8, 12, 16, 20, 24], 8: [2, 4, 6, 8, 10, 12]}
+    # patch_len_and_mask_patch_num = {1: [16, 32, 64], 2: [8, 16, 32], 4: [4, 8, 16], 8: [2, 4, 8], 16: [1, 2, 4]}
+    for patch_len, mask_patch_num_list in patch_len_and_mask_patch_num.items():
+        for mask_patch_num in mask_patch_num_list:
+            config['mask_patch_num'] = mask_patch_num
+            config['patch_len'] = patch_len
+            config['file_name_appendix'] = f', masking_{mask_patch_num}, patchlen_{patch_len}'
 
-        # run_ssl(ssl_task_hw_running)
-        # run_ssl(ssl_task_Carmargo, mask_patch_num)
-        run_ssl(ssl_task_kam, mask_patch_num)
+            logging.info(f"Masking patch number: {mask_patch_num}; patch len {patch_len}")
 
-        config['file_name_appendix'] = f', masking_{mask_patch_num}'
+            # run_ssl(ssl_task_hw_running)
+            # run_ssl(ssl_task_Carmargo, mask_patch_num)
+            run_ssl(ssl_task_kam, mask_patch_num, patch_len)
 
-        # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_6)
-        # run_cross_vali(da_framework, da_use_ratios=[1])
+            # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_6)
+            # run_cross_vali(da_framework, da_use_ratios=[1])
 
-        # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_2)
-        # run_cross_vali(da_framework, da_use_ratios=[1])
+            # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_2)
+            # run_cross_vali(da_framework, da_use_ratios=[1])
 
-        # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
-        da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
-        run_cross_vali(da_framework, da_use_ratios=[0.1])
+            # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
+            da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
+            run_cross_vali(da_framework, da_use_ratios=[1], fold_num=5)
 
-    plt.show()
+            plt.show()
+            plt.close("all")
 
