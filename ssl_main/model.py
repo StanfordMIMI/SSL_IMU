@@ -1,14 +1,11 @@
 import copy
 import random
-
 import wandb
 from const import _mods
 from torch import nn, Tensor
 import torch
-from torch.nn import TransformerEncoder, TransformerEncoderLayer
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from torch.nn import TransformerEncoderLayer, TransformerEncoder
 from torch.nn import functional as F
-from torch.nn import TransformerEncoder
 import math
 import numpy as np
 from utils import fix_seed
@@ -29,18 +26,15 @@ def mse_loss(mod_outputs, mods, _):
 
 
 class SslReconstructNet(nn.Module):
-    def __init__(self, emb_net, common_space_dim, loss_fn):
+    def __init__(self, emb_net, loss_fn):
         super(SslReconstructNet, self).__init__()
         self.emb_net = emb_net
-        # output_channel_num = emb_net.output_dim
-        self.linear = nn.Linear(48, 48)     # !!! 101
-        # self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for _ in range(len(_mods))])
-        # self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in range(len(_mods))])
-        # self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in range(len(_mods))])
+        self.linear = nn.Linear(emb_net.x_dim, emb_net.x_dim)
         self.loss_fn = loss_fn
 
     def forward(self, mods, lens):
         mod_all = torch.concat(mods, dim=1)
+        # mod_all = mod_all[:, 24:]     # !!!
         mod_outputs, mask_indices, mod_all_expanded = self.emb_net(mod_all, lens)
         mod_outputs = self.linear(mod_outputs.transpose(1, 2)).transpose(1, 2)
         loss = self.loss_fn(mod_outputs, mod_all, mask_indices)
@@ -48,6 +42,7 @@ class SslReconstructNet(nn.Module):
 
     def show_reconstructed_signal(self, mods, lens, fig_title):
         mod_all = torch.concat(mods, dim=1)
+        # mod_all = mod_all[:, 24:]     # !!!
         mod_outputs, mask_indices, _ = self.emb_net(mod_all, lens)
         mod_outputs = self.linear(mod_outputs.transpose(1, 2)).transpose(1, 2)
 
@@ -98,26 +93,20 @@ class RegressNet(nn.Module):
     def __init__(self, emb_net, mod_channel_num, output_dim):
         super(RegressNet, self).__init__()
         self.emb_net = emb_net
-        self.emb_output_dim = 48       # !!! 101
+        self.emb_output_dim = emb_net.x_dim
         self.output_dim = output_dim
 
         self.linear = nn.Linear(self.emb_output_dim, output_dim)
 
-        # self.linear = nn.Linear(self.emb_output_dim*128, output_dim*128)
-
     def forward(self, x, lens):
         batch_size, _, seq_len = x[0].shape
         mod_all = torch.concat(x, dim=1)
+        # mod_all = mod_all[:, 24:]            # !!!
         mod_outputs, _, _ = self.emb_net(mod_all, lens)
 
         output = mod_outputs.transpose(1, 2)
         output = self.linear(output)
         output = output.transpose(1, 2)
-
-        # output = torch.flatten(mod_outputs, start_dim=1)
-        # output = self.linear(output)
-        # output = output.view([batch_size, -1, seq_len])
-
         return output, mod_outputs
 
 
@@ -159,31 +148,28 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerBase(nn.Module):
-    def __init__(self, x_dim, output_dim, mask_patch_num, nlayers, nhead, patch_len, patch_step_len, device='cuda'):
+    def __init__(self, x_dim, output_dim, mask_patch_num, nlayers, nhead, dim_feedforward, patch_len, patch_step_len, device='cuda'):
         super().__init__()
         self.patch_len = patch_len
         self.patch_step_len = patch_step_len
         self.pad_len = 0
-        self.common_space_dim = 48     # !!!
-        self.linear_expansion = nn.Linear(x_dim, self.common_space_dim)
-        self.d_model = int(self.common_space_dim * patch_len)
-        encoder_layers = TransformerEncoderLayer(self.d_model, nhead, batch_first=True)
+        self.x_dim = x_dim
+        self.d_model = int(self.x_dim * patch_len)
+        encoder_layers = TransformerEncoderLayer(self.d_model, nhead, dim_feedforward, batch_first=True)
+
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.output_dim = output_dim
         self.device = device
         self.mask_patch_num = mask_patch_num
         self.mask_emb = nn.Parameter(torch.zeros([x_dim, patch_len]).uniform_() - 0.5)
-        self.patch_num = int(128 / self.patch_len)
+        self.patch_num = int(128 / self.patch_len)      # 300
         self.pos_encoding = PositionalEncoding(x_dim * patch_len, patch_num=self.patch_num)
 
     def forward(self, sequence, lens):
         sequence, mask_indices = self.apply_mask(sequence)
-        # sequence = self.linear_expansion(sequence.transpose(1, 2)).transpose(1, 2)
         sequence_patch = self.divide_into_patches(sequence)
         sequence_patch = self.pos_encoding(sequence_patch)
         sequence_patch = self.transformer_encoder(sequence_patch)
-
-        temp = mask_indices.detach().cpu().numpy()
 
         output = self.flat_patches(sequence_patch)
         return output, mask_indices, sequence
@@ -212,11 +198,6 @@ class TransformerBase(nn.Module):
             bs, patch_emb, length = seq.shape
             mask_indices_np = np.full((bs, length), False)
             for i_row in range(mask_indices_np.shape[0]):
-                # len_to_mask = [int(0.5*self.mask_patch_num), int(0.5*self.mask_patch_num)]     # [self.mask_patch_num]   [int(0.5*self.mask_patch_num), int(0.5*self.mask_patch_num)]
-                # len_total = np.sum(len_to_mask)
-                # for len_ in len_to_mask:
-                #     masked_loc = random.sample(range(self.patch_num - len_ + 1), 1)[0]
-                #     mask_indices_np[i_row, masked_loc*self.patch_len:(masked_loc+len_)*self.patch_len] = True
                 len_to_mask = [self.mask_patch_num]     # [self.mask_patch_num]   [int(0.5*self.mask_patch_num), int(0.5*self.mask_patch_num)]
                 for len_ in len_to_mask:
                     masked_loc = random.sample(range(self.patch_num - len_ + 1), 1)[0]
@@ -232,7 +213,8 @@ class TransformerBase(nn.Module):
 
 
 def transformer(x_dim, output_dim, mask_patch_num, patch_len):
-    return TransformerBase(x_dim, output_dim, mask_patch_num=mask_patch_num, nlayers=6, nhead=8, patch_len=patch_len, patch_step_len=patch_len)
+    return TransformerBase(x_dim, output_dim, mask_patch_num=mask_patch_num, nlayers=6, nhead=8, dim_feedforward=512,      # TO_TEST
+                           patch_len=patch_len, patch_step_len=patch_len)
 
 
 class RestNetBasicBlock(nn.Module):
@@ -268,7 +250,7 @@ class RestNetDownBlock(nn.Module):
     def forward(self, x):
         extra_x = self.extra(x)
         output = self.conv1(x)
-        out = F.relu(self.ln1(output))        # !!!
+        out = F.relu(self.ln1(output))
 
         out = self.conv2(out)
         out = self.ln2(out)
@@ -282,7 +264,7 @@ class ResNetBase(nn.Module):
         kernel_depths = [16, 32, 64, output_dim]
         out_lengths = [64, 32, 16, 8, 4]
         self.conv1 = nn.Conv1d(x_dim, gate_size, kernel_size=49, stride=2, padding=24)
-        self.ln1 = nn.LayerNorm(out_lengths[0])     # !!!
+        self.ln1 = nn.LayerNorm(out_lengths[0])
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
         self.output_dim = output_dim

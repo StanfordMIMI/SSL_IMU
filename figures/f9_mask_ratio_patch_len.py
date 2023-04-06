@@ -1,7 +1,7 @@
 import numpy as np
 from ssl_main.const import FONT_DICT, LINE_WIDTH_THICK
 import matplotlib.pyplot as plt
-from matplotlib import rc
+from matplotlib import rc, colormaps
 from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd_profiles
 
 
@@ -30,7 +30,7 @@ def plot_map_with_number_all_four(data_all, x_ticks, y_ticks, title_list):
     min_val, max_val = np.min(data_all), np.max(data_all)
     for i_subplot, (ax, data_, title_) in enumerate(zip(axes.flatten(), data_all, title_list)):
         data_ = data_.T
-        cmap = plt.cm.get_cmap('RdBu')
+        cmap = colormaps.get_cmap('RdBu')
         if 'no SSL' in title_:
             data_ = data_[:1]
             y_ticks = ['']
@@ -66,13 +66,13 @@ def finalize_fig(fig, ax, im):
     # save_fig('f9')
 
 
-data_path = './results/2023-03-31 17_36_42'
+data_path = 'results/6_layer_8_head_2048_hidden'
 test_name = '/walking_knee_moment_output'     # hw_running_VALR   walking_knee_moment_output  Carmargo_output
 rc('font', family='Arial')
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 
 if __name__ == "__main__":
-    metric = 'correlation'
+    metric = 'r2'
     results_task = load_da_data(data_path + test_name + '.h5')
 
     result_df = results_dict_to_pd_profiles(results_task, 1)

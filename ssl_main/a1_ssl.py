@@ -412,7 +412,12 @@ class FrameworkSSL:
             self.ssl_columns = json.loads(hf.attrs['columns'])
         os.makedirs(os.path.join(self.config.result_dir), exist_ok=True)
 
+        if 'walking_knee_moment' == ssl_task['ssl_file_name']:
+            self.ssl_data = {sub_: data_.transpose([0, 2, 1]) for sub_, data_ in self.ssl_data.items()}
+            """ [step, feature, time] """
+
         self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.emb_output_dim, self.config.mask_patch_num, self.config.patch_len)
+        logging.info('# of trainable parameters: {}'.format(sum(p.numel() for p in self.emb_net.transformer_encoder.parameters() if p.requires_grad)))
         self._data_scalar = {'base_scalar': StandardScaler}
         fix_seed()
 
@@ -477,7 +482,7 @@ class FrameworkSSL:
         train_data, vali_data = self.train_data_ssl, self.vali_data_ssl
         train_step_lens = get_step_len(train_data[_mods[0]])
         vali_step_lens = get_step_len(vali_data[_mods[0]])
-        model = SslReconstructNet(self.emb_net, self.config.common_space_dim, config['ssl_loss_fn'])
+        model = SslReconstructNet(self.emb_net, config['ssl_loss_fn'])
         if self.config.log_with_wandb:
             wandb.watch(model, config['ssl_loss_fn'], log='all', log_freq=20)
 
@@ -559,7 +564,7 @@ def parse_config(config):
     return config
 
 
-def run_ssl(ssl_task, mask_patch_num, patch_len):
+def run_ssl(ssl_task):
     ssl_framework = FrameworkSSL(config, ssl_task)
     if 'MoVi' in ssl_task['ssl_file_name']:
         ssl_framework.preprocess(train_sub_movi, test_sub_movi, test_sub_movi)
@@ -604,7 +609,7 @@ DOWNSTREAM_TASK_1 = {'_mods': _mods, 'remove_trial_type': ['LevelGround', 'Stair
 DOWNSTREAM_TASK_2 = {'_mods': _mods, 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo', 'output_columns': ['fx', 'fy', 'fz'],
                      'imu_segments': ['trunk', 'shank'], 'ssl_model': 'Combined_'}
 DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['KFM', 'KAM', 'EXT_KM_Z'],
-                     'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': 'Combined_'}
+                     'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': ''}
 DOWNSTREAM_TASK_4 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_FOOT', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi_'}
 DOWNSTREAM_TASK_5 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
@@ -618,20 +623,20 @@ ssl_task_Carmargo = {'ssl_file_name': 'Combined_Carmargo', 'imu_segments': ['R_S
 ssl_task_sun_drop_jump = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_sun_drop_jump.update({'ssl_file_name': 'MoVi_sun_drop_jump'})
 ssl_task_kam = copy.deepcopy(ssl_task_Carmargo)
-ssl_task_kam.update({'ssl_file_name': 'Combined_walking_knee_moment', 'imu_segments': [
+ssl_task_kam.update({'ssl_file_name': 'walking_knee_moment', 'imu_segments': [
     'R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']})
 ssl_task_hw_running = copy.deepcopy(ssl_task_Carmargo)
 ssl_task_hw_running.update({'ssl_file_name': 'MoVi_hw_running'})
 
-config = {'num_gradient_de_ssl': 2e3, 'num_gradient_de_da': 1e3, 'ssl_use_ratio': 1, 'log_with_wandb': True,
+config = {'num_gradient_de_ssl': 2e3, 'num_gradient_de_da': 5e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
 # config = {'num_gradient_de_ssl': 1e2, 'num_gradient_de_da': 1e1, 'ssl_use_ratio': 0.02, 'log_with_wandb': False,
           'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 1e-3, 'emb_output_dim': 16,
-          'common_space_dim': 48, 'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': False,
+          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': False,
           'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 config = parse_config(config)
 
 if config['log_with_wandb']:
-    wandb.init(project="IMU_SSL", config=config, name='Divide mask into two halves')
+    wandb.init(project="IMU_SSL", config=config, name='nlayers=6, nhead=8, dim_feedforward=512')
 train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
 test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
 train_sub_combined_dataset = ['except test']        # except test
@@ -639,9 +644,19 @@ test_sub_combined_dataset = ['dset0'] + ['dset' + str(i) for i in range(6, 9)]
 
 
 """
-TODO:
-1. Compare against 1000+ rand init
-2. Use joint contact force as downstream application, since AddBiom cannot provide this
+[Insights]
+1. Transformer complexity matters. Longer patch length corresponds to larger models. Improvements might be from larger complexity.
+
+[TODO]
+0. Create a dataset of 17/21 IMUs with 3s windows
+1. Load data dynamically
+
+[TOTEST]
+2. Robustness as a downstream task
+3. Upload testing set to google drive
+
+3. Compare against 1000+ rand init
+4. Use joint contact force as downstream application, since AddBiom cannot provide this
 """
 
 
@@ -651,7 +666,6 @@ if __name__ == '__main__':
     logging.info(config)
 
     patch_len_and_mask_patch_num = {1: [16, 32, 48, 64, 80, 96], 2: [8, 16, 24, 32, 40, 48], 4: [4, 8, 12, 16, 20, 24], 8: [2, 4, 6, 8, 10, 12]}
-    # patch_len_and_mask_patch_num = {1: [16, 32, 64], 2: [8, 16, 32], 4: [4, 8, 16], 8: [2, 4, 8], 16: [1, 2, 4]}
     for patch_len, mask_patch_num_list in patch_len_and_mask_patch_num.items():
         for mask_patch_num in mask_patch_num_list:
             config['mask_patch_num'] = mask_patch_num
@@ -662,7 +676,7 @@ if __name__ == '__main__':
 
             # run_ssl(ssl_task_hw_running)
             # run_ssl(ssl_task_Carmargo, mask_patch_num)
-            run_ssl(ssl_task_kam, mask_patch_num, patch_len)
+            run_ssl(ssl_task_kam)
 
             # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_6)
             # run_cross_vali(da_framework, da_use_ratios=[1])
@@ -672,7 +686,7 @@ if __name__ == '__main__':
 
             # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
             da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
-            run_cross_vali(da_framework, da_use_ratios=[1], fold_num=5)
+            run_cross_vali(da_framework, da_use_ratios=[0.1], fold_num=5)
 
             plt.show()
             plt.close("all")
