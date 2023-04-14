@@ -258,6 +258,8 @@ class BaseSegmentation:
 
     def export(self, columns, dataset_name):
         all_data = self.data_struct.get_all_data()
+        if all_data.shape[0] == 0:
+            return
         with h5py.File(DATA_PATH + self.name + '.h5', 'a') as hf:
             try: del hf[dataset_name]
             except KeyError: pass

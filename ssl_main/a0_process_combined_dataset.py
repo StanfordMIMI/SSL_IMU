@@ -15,8 +15,12 @@ class CombinedDatasetSegmentation(BaseSegmentation):
 
     @staticmethod
     def is_window_healthy(data_):
-        if np.max(np.abs(data_[1:] - data_[:-1])) > 10:
-            return False
+        for i_axis in range(data_.shape[1]):
+            diff_std = np.std(data_[1:, i_axis] - data_[:-1, i_axis])
+            if np.max(np.abs(data_[1:, i_axis] - data_[:-1, i_axis])) > 6 * diff_std:
+                return False
+            if np.max(np.abs(data_[1:-1, i_axis] - 0.5 * data_[:-2, i_axis] - 0.5 * data_[2:, i_axis])) > 6 * diff_std:
+                return False
         return True
 
     def start_segment(self, trial_data):
@@ -51,13 +55,14 @@ class CombinedDatasetLoader:
         for (dirpath, dirnames, trial_names) in os.walk(data_loc):
             for trial in trial_names:
                 dataset_name, sub_name = dirpath.replace('\\', '/').split('/')[-2:]
+                # if '0' not in sub_name:
+                #     continue        # !!!
                 i_dataset = int(dataset_name.split('dataset')[-1])
                 with h5py.File(dirpath + '/' + trial, 'r') as hf:
                     trial_data = hf['data/block0_values'][:]
                     trial_data = self.resample_to_target_fre(trial_data=trial_data, target_fre=target_fre, ori_fre=dataset_frequencies[i_dataset])
                     if len(self.columns) == 0:
                         self.columns = [item.decode("utf-8") for item in hf['data/axis0']]
-                    # trial_data = self.add_additional_info(trial_data, i_dataset, i_subject, i_trial)
                     if i_dataset not in self.data_contin.keys():
                         self.data_contin[i_dataset] = {}
                     if sub_name not in self.data_contin[i_dataset].keys():
@@ -66,6 +71,7 @@ class CombinedDatasetLoader:
 
     def loop_all_the_trials(self, segment_methods):
         for i_dataset, dataset_data in self.data_contin.items():
+            print('Looping dataset: ', i_dataset)
             [method.set_data_struct(DataStruct(len(self.columns), method.win_len)) for method in segment_methods]
             for subject, data_trials in dataset_data.items():
                 for data_current_trial in data_trials:
@@ -74,9 +80,8 @@ class CombinedDatasetLoader:
             [method.export(self.columns, f'dset{i_dataset}') for method in segment_methods]
 
 
-
 if __name__ == '__main__':
-    data_loc = 'D:/Data/DataAntoine/imu_in_h5/'
+    data_loc = 'D:/Local/Data/DataAntoine/imu_in_h5/'
     data_reader = CombinedDatasetLoader(data_loc, 100)
     data_reader.loop_all_the_trials([CombinedDatasetSegmentation(128, 'Combined_walking_knee_moment', 8)])
 

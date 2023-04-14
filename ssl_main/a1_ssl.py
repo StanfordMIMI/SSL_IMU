@@ -1,5 +1,4 @@
 import argparse
-import configparser
 import copy
 import os
 import h5py
@@ -11,9 +10,7 @@ from customized_logger import logger as logging, add_file_handler
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
-from model import resnet18, SslContrastiveNet, \
-    SslContrastiveNet, RegressNet, resnet50, transformer, SslReconstructNet, \
-    mse_loss_masked, mse_loss
+from model import RegressNet, transformer, SslReconstructNet, mse_loss_masked, mse_loss_masked_weight_acc_gyr
 import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
@@ -58,7 +55,7 @@ class FrameworkDownstream:
             self.load_and_process_hw_running(train_sub_ids, validate_sub_ids, test_sub_ids)
         elif 'Carmargo' in test_name:
             self.load_and_process_camargo(train_sub_ids, validate_sub_ids, test_sub_ids)
-        elif test_name == 'walking_knee_moment':
+        elif test_name in ['walking_knee_moment', 'filtered_walking_knee_moment']:
             self.load_and_process_kam(train_sub_ids, validate_sub_ids, test_sub_ids)
 
     def load_and_process_camargo(self, train_sub_ids: List[str], validate_sub_ids: List[str],
@@ -92,7 +89,7 @@ class FrameworkDownstream:
         with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
-                current_set_data_list = [hf[sub_][:, :128] for sub_ in set_sub_ids]     # only keep 128 time steps
+                current_set_data_list = [hf[sub_] for sub_ in set_sub_ids]
                 current_set_data = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
                 """ [step, feature, time] """
                 self.set_data[data_name] = current_set_data
@@ -163,14 +160,6 @@ class FrameworkDownstream:
             else:
                 data_ds['trial_type_id'] = np.zeros([sampled_data.shape[0]])
             self.da_task[data_name] = data_ds
-
-    # def norm_output_by_subject_weight(self, sampled_data):
-    #     output_data = sampled_data[:, [self.data_columns.index(x) for x in self.output_columns.keys()]]
-    #     for i_output, (output_name, output_norm_col) in enumerate(self.output_columns.items()):
-    #         if output_norm_col is not None:
-    #             weight_data = sampled_data[:, self.data_columns.index(output_norm_col)]
-    #             output_data[:, i_output] = np.divide(output_data[:, i_output], weight_data, out=np.zeros_like(output_data[:, i_output]), where=weight_data!=0)
-    #     return output_data
 
     def inverse_normalize_output(self, y_true, y_pred):
         y_true = normalize_data(self._data_scalar, y_true, 'output', 'inverse_transform', 'by_each_column')
@@ -412,7 +401,7 @@ class FrameworkSSL:
             self.ssl_columns = json.loads(hf.attrs['columns'])
         os.makedirs(os.path.join(self.config.result_dir), exist_ok=True)
 
-        if 'walking_knee_moment' == ssl_task['ssl_file_name']:
+        if ssl_task['ssl_file_name'] in ['walking_knee_moment', 'filtered_walking_knee_moment']:
             self.ssl_data = {sub_: data_.transpose([0, 2, 1]) for sub_, data_ in self.ssl_data.items()}
             """ [step, feature, time] """
 
@@ -553,9 +542,6 @@ class FrameworkSSL:
         save_path = os.path.join(ssl_general_model_path, model_name + '.pth')
         torch.save(model, save_path)
 
-    def hyperparam_tuning(self, model, x_test):
-        raise RuntimeError('Method not implemented')
-
 
 def parse_config(config):
     parser = argparse.ArgumentParser(description='TODO', argument_default=argparse.SUPPRESS)
@@ -570,7 +556,7 @@ def run_ssl(ssl_task):
         ssl_framework.preprocess(train_sub_movi, test_sub_movi, test_sub_movi)
     elif ssl_task['ssl_file_name'] == 'Carmargo':
         ssl_framework.preprocess(train_sub_carmargo+test_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
-    elif ssl_task['ssl_file_name'] == 'walking_knee_moment':
+    elif ssl_task['ssl_file_name'] in ['walking_knee_moment', 'filtered_walking_knee_moment']:
         ssl_framework.preprocess(train_sub_kam+test_sub_kam, test_sub_kam, test_sub_kam)
     elif ssl_task['ssl_file_name'] == 'hw_running':
         ssl_framework.preprocess(train_sub_hw+test_sub_hw, test_sub_hw, test_sub_hw)
@@ -602,45 +588,26 @@ def run_cross_vali(da_framework, da_use_ratios, fold_num=5, only_test_one_fold=F
         run_da(da_framework, da_use_ratios)
 
 
-DOWNSTREAM_TASK_0 = {'_mods': _mods, 'remove_trial_type': ['Treadmill', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
-                     'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_1 = {'_mods': _mods, 'remove_trial_type': ['LevelGround', 'Stair', 'Ramp'], 'dataset': 'Carmargo',
-                     'imu_segments': ['trunk', 'shank'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_2 = {'_mods': _mods, 'remove_trial_type': ['Treadmill'], 'dataset': 'Carmargo', 'output_columns': ['fx', 'fy', 'fz'],
-                     'imu_segments': ['trunk', 'shank'], 'ssl_model': 'Combined_'}
 DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['KFM', 'KAM', 'EXT_KM_Z'],
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': ''}
-DOWNSTREAM_TASK_4 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
-                     'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_FOOT', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_5 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump',
-                     'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'WAIST', 'CHEST', 'L_FOOT', 'L_SHANK', 'L_THIGH'], 'ssl_model': 'MoVi_'}
-DOWNSTREAM_TASK_6 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'hw_running',
-                     'imu_segments': ['l_shank'], 'max_pooling_to_downsample': True, 'ssl_model': 'MoVi_'}
 
-ssl_task_Carmargo = {'ssl_file_name': 'Combined_Carmargo', 'imu_segments': ['R_SHANK', 'R_THIGH']}
-    # 'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'Head',
-    # 'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand']}
-ssl_task_sun_drop_jump = copy.deepcopy(ssl_task_Carmargo)
-ssl_task_sun_drop_jump.update({'ssl_file_name': 'MoVi_sun_drop_jump'})
-ssl_task_kam = copy.deepcopy(ssl_task_Carmargo)
-ssl_task_kam.update({'ssl_file_name': 'walking_knee_moment', 'imu_segments': [
-    'R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']})
-ssl_task_hw_running = copy.deepcopy(ssl_task_Carmargo)
-ssl_task_hw_running.update({'ssl_file_name': 'MoVi_hw_running'})
+ssl_task_kam = {'ssl_file_name': 'walking_knee_moment', 'imu_segments': [
+    'R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']}
 
-config = {'num_gradient_de_ssl': 2e3, 'num_gradient_de_da': 5e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
-# config = {'num_gradient_de_ssl': 1e2, 'num_gradient_de_da': 1e1, 'ssl_use_ratio': 0.02, 'log_with_wandb': False,
-          'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 1e-3, 'emb_output_dim': 16,
+config = {'num_gradient_de_ssl': 3e4, 'num_gradient_de_da': 5e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
+# config = {'num_gradient_de_ssl': 1e1, 'num_gradient_de_da': 1e1, 'ssl_use_ratio': 0.02, 'log_with_wandb': False,
+          'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 3e-4, 'emb_output_dim': 16,
           'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': False,
-          'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
+          'ssl_loss_fn': mse_loss_masked_weight_acc_gyr, 'emb_net': transformer}
 config = parse_config(config)
 
+test_name = 'num_gradient_de_ssl 3e4, dim_feedforward=512, nhead 48, Acc * 0.05 + gyr * 0.95'
 if config['log_with_wandb']:
-    wandb.init(project="IMU_SSL", config=config, name='nlayers=6, nhead=8, dim_feedforward=512')
+    wandb.init(project="IMU_SSL", config=config, name=test_name)
 train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
 test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
 train_sub_combined_dataset = ['except test']        # except test
-test_sub_combined_dataset = ['dset0'] + ['dset' + str(i) for i in range(6, 9)]
+test_sub_combined_dataset = ['dset' + str(i) for i in range(6, 9)]
 
 
 """
@@ -648,7 +615,9 @@ test_sub_combined_dataset = ['dset0'] + ['dset' + str(i) for i in range(6, 9)]
 1. Transformer complexity matters. Longer patch length corresponds to larger models. Improvements might be from larger complexity.
 
 [TODO]
-0. Create a dataset of 17/21 IMUs with 3s windows
+0. Run inference on server
+0. More downstream tasks
+0. flash attention
 1. Load data dynamically
 
 [TOTEST]
@@ -663,9 +632,12 @@ test_sub_combined_dataset = ['dset0'] + ['dset' + str(i) for i in range(6, 9)]
 if __name__ == '__main__':
     os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
     add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
+    logging.info(test_name)
     logging.info(config)
 
-    patch_len_and_mask_patch_num = {1: [16, 32, 48, 64, 80, 96], 2: [8, 16, 24, 32, 40, 48], 4: [4, 8, 12, 16, 20, 24], 8: [2, 4, 6, 8, 10, 12]}
+    # patch_len_and_mask_patch_num = {1: [16, 32, 48, 64, 80, 96], 2: [8, 16, 24, 32, 40, 48], 4: [4, 8, 12, 16, 20, 24], 8: [2, 4, 6, 8, 10, 12]}
+    # patch_len_and_mask_patch_num = {4: [8, 12, 16], 8: [4, 6, 8]}
+    patch_len_and_mask_patch_num = {8: [6]}
     for patch_len, mask_patch_num_list in patch_len_and_mask_patch_num.items():
         for mask_patch_num in mask_patch_num_list:
             config['mask_patch_num'] = mask_patch_num
@@ -674,19 +646,11 @@ if __name__ == '__main__':
 
             logging.info(f"Masking patch number: {mask_patch_num}; patch len {patch_len}")
 
-            # run_ssl(ssl_task_hw_running)
-            # run_ssl(ssl_task_Carmargo, mask_patch_num)
             run_ssl(ssl_task_kam)
-
-            # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_6)
-            # run_cross_vali(da_framework, da_use_ratios=[1])
-
-            # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_2)
-            # run_cross_vali(da_framework, da_use_ratios=[1])
 
             # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
             da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
-            run_cross_vali(da_framework, da_use_ratios=[0.1], fold_num=5)
+            run_cross_vali(da_framework, da_use_ratios=[.25], fold_num=5)
 
             plt.show()
             plt.close("all")

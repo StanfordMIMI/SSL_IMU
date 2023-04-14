@@ -20,6 +20,16 @@ def mse_loss_masked(mod_outputs, mods, mask_indices):
     return loss.mean()
 
 
+def mse_loss_masked_weight_acc_gyr(mod_outputs, mods, mask_indices):
+    loss_mods = []
+    for i_mod in range(2):
+        loss_mod = torch.square(mod_outputs[:, 24*i_mod:24*(i_mod+1)][mask_indices[:, 24*i_mod:24*(i_mod+1)]] -
+                            mods[:, 24*i_mod:24*(i_mod+1)][mask_indices[:, 24*i_mod:24*(i_mod+1)]])
+        loss_mods.append(loss_mod.mean())
+    loss = 0.05 * loss_mods[0] + 0.95 * loss_mods[1]
+    return loss
+
+
 def mse_loss(mod_outputs, mods, _):
     loss = torch.square(mod_outputs - mods)
     return loss.mean()
@@ -162,7 +172,7 @@ class TransformerBase(nn.Module):
         self.device = device
         self.mask_patch_num = mask_patch_num
         self.mask_emb = nn.Parameter(torch.zeros([x_dim, patch_len]).uniform_() - 0.5)
-        self.patch_num = int(128 / self.patch_len)      # 300
+        self.patch_num = int(128 / self.patch_len)
         self.pos_encoding = PositionalEncoding(x_dim * patch_len, patch_num=self.patch_num)
 
     def forward(self, sequence, lens):
@@ -213,7 +223,7 @@ class TransformerBase(nn.Module):
 
 
 def transformer(x_dim, output_dim, mask_patch_num, patch_len):
-    return TransformerBase(x_dim, output_dim, mask_patch_num=mask_patch_num, nlayers=6, nhead=8, dim_feedforward=512,      # TO_TEST
+    return TransformerBase(x_dim, output_dim, mask_patch_num=mask_patch_num, nlayers=6, nhead=48, dim_feedforward=512,
                            patch_len=patch_len, patch_step_len=patch_len)
 
 

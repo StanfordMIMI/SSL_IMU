@@ -66,7 +66,7 @@ def finalize_fig(fig, ax, im):
     # save_fig('f9')
 
 
-data_path = 'results/6_layer_8_head_2048_hidden'
+data_path = 'results/t01_acc0.95'
 test_name = '/walking_knee_moment_output'     # hw_running_VALR   walking_knee_moment_output  Carmargo_output
 rc('font', family='Arial')
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
@@ -95,18 +95,17 @@ if __name__ == "__main__":
             data_cond_3 = data_cond[data_cond['only_linear']&~data_cond['use_ssl']]
             result_mean_map[3, i_patch, i_percent] = np.mean(data_cond_3[metric])
 
+    title = data_path.split('_')[1]
     plot_map_with_number_all_four(result_mean_map, patch_len_list, percent_of_masking_list_str,
                                   ['SSL - Fine-tuning', 'SSL - Linear', 'no SSL - Fine-tuning', 'no SSL - Linear'])
+    plt.title(title)
 
-    fig, ax = init_fig()
-    im = plot_map_with_number(ax, result_mean_map[0] - result_mean_map[2], patch_len_list, percent_of_masking_list_str, 'fine tuning')
-    finalize_fig(fig, ax, im)
-    fig, ax = init_fig()
-    plot_map_with_number(ax, result_mean_map[1] - result_mean_map[3], patch_len_list, percent_of_masking_list_str, 'linear prob')
-    finalize_fig(fig, ax, im)
+    # fig, ax = init_fig()
+    # im = plot_map_with_number(ax, result_mean_map[0] - result_mean_map[2], patch_len_list, percent_of_masking_list_str, 'fine tuning')
+    # finalize_fig(fig, ax, im)
+    # fig, ax = init_fig()
+    # plot_map_with_number(ax, result_mean_map[1] - result_mean_map[3], patch_len_list, percent_of_masking_list_str, 'linear prob')
+    # finalize_fig(fig, ax, im)
 
-    # plot_map_with_number(result_mean_map[1] - result_mean_map[3], patch_len_list, percent_of_masking_list, 'linear prob')
-    # fig = init_fig()
-    # finalize_fig()
     plt.show()
 
