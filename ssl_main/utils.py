@@ -110,7 +110,7 @@ def get_non_zero_max(data_):
 
 def result_folder():
     folder_name = str(datetime.datetime.now())[:-7]
-    for item in ['.', ':']:
+    for item in ['.', ':', '-', ' ']:
         folder_name = folder_name.replace(item, '_')
     return folder_name
 

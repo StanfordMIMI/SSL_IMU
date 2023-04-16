@@ -144,21 +144,12 @@ class PositionalEncoding(nn.Module):
         Args:
             x: Tensor, shape [batch_size, seq_len, embedding_dim]
         """
-        # plt.figure()
-        # plt.imshow(x.detach().cpu().numpy()[0])
-        # plt.figure()
-        # plt.imshow(self.pe.detach().cpu().numpy()[0])
-
         x = x + self.pe     # [:, :x.shape[1], :]
-
-        # plt.figure()
-        # plt.imshow(x.detach().cpu().numpy()[0])
-        # plt.show()
         return self.dropout(x)
 
 
 class TransformerBase(nn.Module):
-    def __init__(self, x_dim, output_dim, mask_patch_num, nlayers, nhead, dim_feedforward, patch_len, patch_step_len, device='cuda'):
+    def __init__(self, x_dim, mask_patch_num, nlayers, nhead, dim_feedforward, patch_len, patch_step_len, device='cuda'):
         super().__init__()
         self.patch_len = patch_len
         self.patch_step_len = patch_step_len
@@ -168,7 +159,6 @@ class TransformerBase(nn.Module):
         encoder_layers = TransformerEncoderLayer(self.d_model, nhead, dim_feedforward, batch_first=True)
 
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
-        self.output_dim = output_dim
         self.device = device
         self.mask_patch_num = mask_patch_num
         self.mask_emb = nn.Parameter(torch.zeros([x_dim, patch_len]).uniform_() - 0.5)
@@ -222,8 +212,8 @@ class TransformerBase(nn.Module):
         return tensor, mask_indices
 
 
-def transformer(x_dim, output_dim, mask_patch_num, patch_len):
-    return TransformerBase(x_dim, output_dim, mask_patch_num=mask_patch_num, nlayers=6, nhead=48, dim_feedforward=512,
+def transformer(x_dim, nhead, dim_feedforward, mask_patch_num, patch_len):
+    return TransformerBase(x_dim, mask_patch_num=mask_patch_num, nlayers=6, nhead=nhead, dim_feedforward=dim_feedforward,
                            patch_len=patch_len, patch_step_len=patch_len)
 
 

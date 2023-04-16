@@ -101,7 +101,7 @@ SUB_ID_ALL_DATASETS = {
 DICT_SUBJECT_ID = {subject: i for i, subject in enumerate(SUB_ID_ALL_DATASETS['Carmargo'])}
 
 test_sub_kam = ['subject_17']
-train_sub_kam = SUB_ID_ALL_DATASETS['walking_knee_moment']
+train_sub_kam = [element for element in SUB_ID_ALL_DATASETS['walking_knee_moment'] if element not in test_sub_kam]
 
 test_sub_carmargo = ['AB06', 'AB07', 'AB08', 'AB09', 'AB10']
 train_sub_carmargo = [id for id in SUB_ID_ALL_DATASETS['Carmargo'] if id not in test_sub_carmargo]

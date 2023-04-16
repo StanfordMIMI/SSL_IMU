@@ -1,8 +1,14 @@
+import os, sys
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.dirname(SCRIPT_DIR))
+import tempfile
+os.environ['MPLCONFIGDIR'] = tempfile.mkdtemp()
 import numpy as np
-from ssl_main.const import FONT_DICT, LINE_WIDTH_THICK
 import matplotlib.pyplot as plt
 from matplotlib import rc, colormaps
 from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd_profiles
+from ssl_main.config import RESULTS_PATH
+from matplotlib.backends.backend_pdf import PdfPages
 
 
 def plot_map_with_number(ax, data_, x_ticks, y_ticks, title):
@@ -53,6 +59,8 @@ def plot_map_with_number_all_four(data_all, x_ticks, y_ticks, title_list):
     cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
     fig.colorbar(im, cax=cbar_ax)
     # plt.tight_layout(rect=[0., 0., 1., 1.])
+    # plt.title(title)
+    pdf.savefig()
 
 
 def init_fig():
@@ -62,50 +70,52 @@ def init_fig():
 
 def finalize_fig(fig, ax, im):
     fig.colorbar(im, ax=ax)
+    pdf.savefig()
+
     # plt.tight_layout(rect=[0., 0., 1., 1.])
     # save_fig('f9')
 
 
-data_path = 'results/t01_acc0.95'
+data_path = RESULTS_PATH + '2023_04_15_11_56_40_ssl_step'
 test_name = '/walking_knee_moment_output'     # hw_running_VALR   walking_knee_moment_output  Carmargo_output
-rc('font', family='Arial')
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
+
 
 if __name__ == "__main__":
     metric = 'r2'
     results_task = load_da_data(data_path + test_name + '.h5')
 
     result_df = results_dict_to_pd_profiles(results_task, 1)
-    result_df['percent_of_masking'] = result_df['mask_patch_num'] / (128 / result_df['patch_len'])
+    result_df['PercentOfMasking'] = result_df['MaskPatchNum'] / (128 / result_df['PatchLen'])
 
-    patch_len_list = np.sort(list(set(result_df['patch_len'])))
-    percent_of_masking_list = np.sort(list(set(result_df['percent_of_masking'])))
+    patch_len_list = np.sort(list(set(result_df['PatchLen'])))
+    percent_of_masking_list = np.sort(list(set(result_df['PercentOfMasking'])))
     percent_of_masking_list_str = [str(round(i * 100, 1)) + '%' for i in percent_of_masking_list]
     print(patch_len_list)
     result_mean_map = np.zeros([4, len(patch_len_list), len(percent_of_masking_list)])
     for i_patch, patch_len in enumerate(patch_len_list):
         for i_percent, percent_of_masking in enumerate(percent_of_masking_list):
-            data_cond = result_df[(result_df['patch_len'] == patch_len) & (result_df['percent_of_masking'] == percent_of_masking)]
-            data_cond_0 = data_cond[~data_cond['only_linear']&data_cond['use_ssl']]
+            data_cond = result_df[(result_df['PatchLen'] == patch_len) & (result_df['PercentOfMasking'] == percent_of_masking) & (result_df['NumGradDeSsl'] == 200)]
+            data_cond_0 = data_cond[~data_cond['LinearProb']&data_cond['UseSsl']]
             result_mean_map[0, i_patch, i_percent] = np.mean(data_cond_0[metric])
-            data_cond_1 = data_cond[data_cond['only_linear']&data_cond['use_ssl']]
+            data_cond_1 = data_cond[data_cond['LinearProb']&data_cond['UseSsl']]
             result_mean_map[1, i_patch, i_percent] = np.mean(data_cond_1[metric])
-            data_cond_2 = data_cond[~data_cond['only_linear']&~data_cond['use_ssl']]
+            data_cond_2 = data_cond[~data_cond['LinearProb']&~data_cond['UseSsl']]
             result_mean_map[2, i_patch, i_percent] = np.mean(data_cond_2[metric])
-            data_cond_3 = data_cond[data_cond['only_linear']&~data_cond['use_ssl']]
+            data_cond_3 = data_cond[data_cond['LinearProb']&~data_cond['UseSsl']]
             result_mean_map[3, i_patch, i_percent] = np.mean(data_cond_3[metric])
 
-    title = data_path.split('_')[1]
-    plot_map_with_number_all_four(result_mean_map, patch_len_list, percent_of_masking_list_str,
-                                  ['SSL - Fine-tuning', 'SSL - Linear', 'no SSL - Fine-tuning', 'no SSL - Linear'])
-    plt.title(title)
+    with PdfPages(data_path + '/f9_.pdf') as pdf:
+        plot_map_with_number_all_four(result_mean_map, patch_len_list, percent_of_masking_list_str,
+                                      ['SSL - Fine-tuning', 'SSL - Linear', 'no SSL - Fine-tuning', 'no SSL - Linear'])
 
-    # fig, ax = init_fig()
-    # im = plot_map_with_number(ax, result_mean_map[0] - result_mean_map[2], patch_len_list, percent_of_masking_list_str, 'fine tuning')
-    # finalize_fig(fig, ax, im)
-    # fig, ax = init_fig()
-    # plot_map_with_number(ax, result_mean_map[1] - result_mean_map[3], patch_len_list, percent_of_masking_list_str, 'linear prob')
-    # finalize_fig(fig, ax, im)
+        fig, ax = init_fig()
+        im = plot_map_with_number(ax, result_mean_map[0] - result_mean_map[2], patch_len_list, percent_of_masking_list_str, 'fine tuning')
+        finalize_fig(fig, ax, im)
 
-    plt.show()
+        fig, ax = init_fig()
+        plot_map_with_number(ax, result_mean_map[1] - result_mean_map[3], patch_len_list, percent_of_masking_list_str, 'linear prob')
+        finalize_fig(fig, ax, im)
+
+
 

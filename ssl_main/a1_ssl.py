@@ -33,7 +33,7 @@ class FrameworkDownstream:
         self.da_task = da_task
         fix_seed()
 
-        self.emb_net = self.config.emb_net(len(da_task['imu_segments'])*6, self.config.emb_output_dim, mask_patch_num=0, patch_len=self.config.patch_len)
+        self.emb_net = self.config.emb_net(len(da_task['imu_segments'])*6, self.config.nhead, self.config.FeedForwardDim, mask_patch_num=0, patch_len=self.config.PatchLen)
         self.regress_net = RegressNet(self.emb_net, len(define_channel_names(da_task)['acc'])+len(define_channel_names(da_task)['gyr']), len(self.output_columns))
         _, self.regress_net = set_dtype_and_model(self.config.device, self.regress_net)
         self.regress_net_init_state = copy.deepcopy(self.regress_net.state_dict())
@@ -144,11 +144,8 @@ class FrameworkDownstream:
     def sample_and_normalize_data(self):
         for data_name, norm_method in zip(['train', 'vali', 'test'], ['fit_transform', 'transform', 'transform']):
             current_set_data = self.set_data[data_name]
-            if data_name == 'train':
-                sampled_rows = np.sort(random.sample(range(current_set_data.shape[0]), int(self.config.da_use_ratio*current_set_data.shape[0])))
-                sampled_data = copy.deepcopy(current_set_data[sampled_rows])
-            else:
-                sampled_data = copy.deepcopy(current_set_data)
+            sampled_rows = np.sort(random.sample(range(current_set_data.shape[0]), int(self.config.da_use_ratio*current_set_data.shape[0])))
+            sampled_data = copy.deepcopy(current_set_data[sampled_rows])
             logging.info('Downstream {}. Number of steps: {}'.format(data_name, sampled_data.shape[0]))
             data_ds = preprocess_modality(self.data_columns, self._data_scalar, sampled_data, define_channel_names(self.da_task), norm_method)
             output_data = sampled_data[:, [self.data_columns.index(x) for x in self.output_columns]]
@@ -184,42 +181,6 @@ class FrameworkDownstream:
         selected_rows = np.where(vals != 0)[0]
         return data[selected_rows]
 
-    def save_embeddings(self, model, test_dl, embedding_name):
-        dtype, model = set_dtype_and_model(self.config.device, model)
-        mod_output_all, sub_id_all, trial_id_all = [], [], []
-        model.eval()
-        with torch.no_grad():
-            for i_batch, batch_data in enumerate(test_dl):
-                xb = [data_.float().type(dtype) for data_ in batch_data[:2]]
-                lens = batch_data[3].float()
-                _, mod_outputs_batch = model(xb, lens)
-                mod_output_all.append(mod_outputs_batch)
-                sub_ids = batch_data[4].int()
-                sub_id_all.append(sub_ids)
-                trial_ids = batch_data[5].int()
-                trial_id_all.append(trial_ids)
-
-        ssl_general_model_path = os.path.join(self.config.result_dir, 'embedding_similarity_between_segments')
-        os.makedirs(ssl_general_model_path, exist_ok=True)
-        mod_acc, mod_gyr = [], []
-        for mod_outputs in mod_output_all:
-            mod_acc.append(mod_outputs[0])
-            mod_gyr.append(mod_outputs[1])
-        mod_acc, mod_gyr = torch.concat(mod_acc, dim=0), torch.concat(mod_gyr, dim=0)
-        with h5py.File(os.path.join(ssl_general_model_path, self.da_task['dataset'] + '.h5'), 'a') as hf:
-            grp = hf.require_group(embedding_name)
-            grp_acc, grp_gyr, grp_info = grp.require_group('mod_acc'), grp.require_group('mod_gyr'), grp.require_group('info')
-            mod_acc, mod_gyr = mod_acc.detach().cpu().numpy(), mod_gyr.detach().cpu().numpy()
-            sub_id_all = torch.concat(sub_id_all, dim=0).cpu().numpy()
-            trial_id_all = torch.concat(trial_id_all, dim=0).cpu().numpy()
-            subject_id_set = list(set(sub_id_all))
-            for i_sub in subject_id_set:
-                sub_data_loc = np.where(sub_id_all == i_sub)[0]
-                mod_acc_sub, mod_gyr_sub, trial_id_sub = mod_acc[sub_data_loc], mod_gyr[sub_data_loc], trial_id_all[sub_data_loc]
-                grp_acc.require_dataset('sub_'+str(i_sub), shape=mod_acc_sub.shape, data=mod_acc_sub, dtype='float32')
-                grp_gyr.require_dataset('sub_'+str(i_sub), shape=mod_gyr_sub.shape, data=mod_gyr_sub, dtype='float32')
-                grp_info.require_dataset('sub_'+str(i_sub), shape=trial_id_sub.shape, data=trial_id_sub, dtype='float32')
-
     def save_model_and_results(self, test_name, y_true, y_pred, sub_ids, model):
         os.makedirs(os.path.join(self.config.result_dir, 'test_models', self.da_task['dataset']), exist_ok=True)
         copied_model = copy.deepcopy(model)
@@ -238,7 +199,7 @@ class FrameworkDownstream:
                 grp.attrs['columns'] = json.dumps(columns)
 
     def set_regress_net_to_post_linear_init_head_first(self, use_ssl):
-        model_name = 'linear_protocol_True, use_ssl_' + str(use_ssl) + ', ratio_' + str(self.config.da_use_ratio) + self.config.file_name_appendix
+        model_name = 'LinearProb_True, UseSsl_' + str(use_ssl) + ', ratio_' + str(self.config.da_use_ratio) + self.config.FileNameAppendix
         regress_net_post_linear_head_init = torch.load(os.path.join(
             self.config.result_dir, 'test_models', self.da_task['dataset'], model_name + '.pth'))
         self.regress_net.load_state_dict(regress_net_post_linear_head_init)
@@ -302,13 +263,13 @@ class FrameworkDownstream:
         def record_intermediate_results(i_optimize):
             y_true, y_pred = evaluate_after_training(test_dl)
             y_true, y_pred = self.inverse_normalize_output(y_true, y_pred)
-            intermediate_result_name = 'linear_protocol_' + str(linear_protocol) + ', use_ssl_' + str(use_ssl) + \
+            intermediate_result_name = 'LinearProb_' + str(linear_protocol) + ', UseSsl_' + str(use_ssl) + \
                                        ', ratio_' + str(self.config.da_use_ratio) + ', i_optimize_' + str(i_optimize)
             self.save_results(intermediate_result_name, y_true, y_pred, test_data['sub_id'])
 
         self.config = SimpleNamespace(**config)
-        test_name = 'linear_protocol_' + str(linear_protocol) + ', use_ssl_' + str(use_ssl) + \
-                    ', ratio_' + str(self.config.da_use_ratio) + self.config.file_name_appendix
+        test_name = 'LinearProb_' + str(linear_protocol) + ', UseSsl_' + str(use_ssl) + \
+                    ', ratio_' + str(self.config.da_use_ratio) + self.config.FileNameAppendix
         logging.info('Regressing, ' + test_name)
         if linear_protocol:
             if use_ssl:
@@ -339,10 +300,10 @@ class FrameworkDownstream:
 
         optimizer = torch.optim.AdamW(param_to_train, lr_, weight_decay=1e-5)
         epoch_end_time = time.time()
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.num_gradient_de_da)
-        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.num_gradient_de_da/5))
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.NumGradDeDa)
+        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.NumGradDeDa/5))
 
-        epoch = int(np.ceil(self.config.num_gradient_de_da / len(train_dl)))
+        epoch = int(np.ceil(self.config.NumGradDeDa / len(train_dl)))
         i_optimize = 0
         for i_epoch in range(epoch):
             if verbose:
@@ -350,8 +311,9 @@ class FrameworkDownstream:
                 test_loss = eval_during_training(model, test_dl, torch.nn.MSELoss())
                 if self.config.log_with_wandb:
                     wandb.log({'linear train loss': train_loss, 'linear test loss': test_loss})
-                logging.info(f'| Regressibility | epoch{i_epoch:3d}/{epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s |'
-                             f' train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
+                if epoch < 5 or i_epoch % int(epoch / 5) == 0 or i_epoch == epoch - 1:
+                    logging.info(f'| Regressibility | epoch{i_epoch:3d}/{epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s |'
+                                 f' train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
                 epoch_end_time = time.time()
             i_optimize = train_batch(model, train_dl, optimizer, torch.nn.MSELoss(), i_optimize)
 
@@ -372,24 +334,6 @@ class FrameworkDownstream:
 
         return y_pred, model
 
-    def load_data_and_save_ssl_embedding(self, da_use_ratios):
-        config['da_use_ratio'] = da_use_ratios[0]
-        self.config = SimpleNamespace(**config)
-        self.sample_and_normalize_data()
-
-        test_data = self.da_task['test']
-        test_input_data = [test_data[mod] for mod in self.da_task['_mods']]
-        test_output_data = test_data['output']
-        test_step_lens = get_step_len(test_input_data[0])
-        test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens, test_data['sub_id'],
-                              test_data['trial_type_id']], 1024, shuffle=False)
-
-        self.set_regress_net_to_post_ssl_state()
-        self.save_embeddings(copy.deepcopy(self.regress_net), test_dl, 'use_ssl')
-
-        self.set_regress_net_to_init_state()
-        self.save_embeddings(copy.deepcopy(self.regress_net), test_dl, 'no_ssl')
-
 
 class FrameworkSSL:
     def __init__(self, config, ssl_task):
@@ -405,7 +349,7 @@ class FrameworkSSL:
             self.ssl_data = {sub_: data_.transpose([0, 2, 1]) for sub_, data_ in self.ssl_data.items()}
             """ [step, feature, time] """
 
-        self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.emb_output_dim, self.config.mask_patch_num, self.config.patch_len)
+        self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.nhead, self.config.FeedForwardDim, self.config.MaskPatchNum, self.config.PatchLen)
         logging.info('# of trainable parameters: {}'.format(sum(p.numel() for p in self.emb_net.transformer_encoder.parameters() if p.requires_grad)))
         self._data_scalar = {'base_scalar': StandardScaler}
         fix_seed()
@@ -479,13 +423,12 @@ class FrameworkSSL:
         vali_dl = prepare_dl([vali_data[mod] for mod in _mods] + [vali_step_lens], int(self.config.batch_size_ssl), shuffle=False, drop_last=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.lr_ssl, weight_decay=1e-5)
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.num_gradient_de_ssl)
-        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.num_gradient_de_ssl/5))
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.NumGradDeSsl)
+        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.NumGradDeSsl/5))
         dtype, model = set_dtype_and_model(self.config.device, model)
         epoch_end_time = time.time()
-        epoch = int(np.ceil(self.config.num_gradient_de_ssl / len(train_dl)))
+        epoch = int(np.ceil(self.config.NumGradDeSsl / len(train_dl)))
         _, mod_output_all = eval_during_training(model, vali_dl, np.nan)
-        if self.config.save_emb: self.save_embeddings(mod_output_all, 'no_ssl')
         for i_epoch in range(epoch):
             train_loss, _ = eval_during_training(model, train_dl)
             test_loss, _ = eval_during_training(model, vali_dl)
@@ -501,40 +444,17 @@ class FrameworkSSL:
                 if i_epoch in [0, epoch-1]:
                     model.eval()
                     with torch.no_grad():
-                        # x = list(enumerate(train_dl))[i_fig_num]
-                        # xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[1][:-1]]
-                        # model.show_reconstructed_signal(xb_mods, None, f'Train_{i_epoch}')
 
                         x = list(enumerate(vali_dl))[0]
                         xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[1][:-1]]
-                        model.show_reconstructed_signal(xb_mods, None, self.config.file_name_appendix)
+                        model.show_reconstructed_signal(xb_mods, None, self.config.FileNameAppendix)
         self.save_emb_net_post_ssl(model)
-        if self.config.save_emb:
-            _, mod_output_all = eval_during_training(model, vali_dl, np.nan)
-            self.save_embeddings(mod_output_all, 'use_ssl')
         return {'model': model}
 
     def save_emb_net_post_ssl(self, model):
         emb_net_post_ssl_state = model.emb_net.state_dict()
         save_path = os.path.join(RESULTS_PATH, self.ssl_task['ssl_file_name'] + '_' + self.config.emb_net.__name__ + '.pth')
         torch.save(emb_net_post_ssl_state, save_path)
-
-    def save_embeddings(self, mod_output_all, embedding_name):
-        ssl_general_model_path = os.path.join(self.config.result_dir, 'embedding_similarity_between_segments')
-        os.makedirs(ssl_general_model_path, exist_ok=True)
-        mod_acc, mod_gyr = [], []
-        for mod_outputs in mod_output_all:
-            mod_acc.append(mod_outputs[0])
-            mod_gyr.append(mod_outputs[1])
-        mod_acc, mod_gyr = torch.concat(mod_acc, dim=0), torch.concat(mod_gyr, dim=0)
-        with h5py.File(os.path.join(ssl_general_model_path, self.ssl_task['ssl_file_name'] + '.h5'), 'a') as hf:
-            grp = hf.require_group(embedding_name)
-            mod_acc, mod_gyr = mod_acc.cpu().numpy(), mod_gyr.cpu().numpy()
-            num_of_sensors = len(ssl_task_Carmargo['imu_segments'])
-            mod_acc, mod_gyr = np.reshape(mod_acc, [-1, num_of_sensors*mod_acc.shape[1]]), np.reshape(mod_gyr, [-1, num_of_sensors*mod_acc.shape[1]])
-            grp_acc, grp_gyr = grp.require_group('mod_acc'), grp.require_group('mod_gyr')
-            grp_acc.require_dataset('sub_0', shape=mod_acc.shape, data=mod_acc, dtype='float32')
-            grp_gyr.require_dataset('sub_0', shape=mod_gyr.shape, data=mod_gyr, dtype='float32')
 
     def save_ssl_general_net(self, model, model_name):
         ssl_general_model_path = os.path.join(RESULTS_PATH, 'embedding_similarity_between_segments', self.ssl_task['ssl_file_name'])
@@ -545,7 +465,7 @@ class FrameworkSSL:
 
 def parse_config(config):
     parser = argparse.ArgumentParser(description='TODO', argument_default=argparse.SUPPRESS)
-    parser.add_argument('--num_gradient_de_ssl', type=int)
+    parser.add_argument('--NumGradDeSsl', type=int)
     config.update(vars(parser.parse_args()))
     return config
 
@@ -584,24 +504,24 @@ def run_cross_vali(da_framework, da_use_ratios, fold_num=5, only_test_one_fold=F
         train_set = [id for id in sub_ids if id not in test_set]
         logging.info(dataset_name + ', cross validation fold {}'.format(i_fold))
         da_framework.load_and_process(dataset_name, train_set, test_set, test_set)
-        if config['save_emb']: da_framework.load_data_and_save_ssl_embedding(da_use_ratios)
         run_da(da_framework, da_use_ratios)
 
 
-DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['KFM', 'KAM', 'EXT_KM_Z'],
+DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['KFM', 'KAM'],
                      'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': ''}
 
 ssl_task_kam = {'ssl_file_name': 'walking_knee_moment', 'imu_segments': [
     'R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']}
 
-config = {'num_gradient_de_ssl': 3e4, 'num_gradient_de_da': 5e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
-# config = {'num_gradient_de_ssl': 1e1, 'num_gradient_de_da': 1e1, 'ssl_use_ratio': 0.02, 'log_with_wandb': False,
-          'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 3e-4, 'emb_output_dim': 16,
-          'device': 'cuda', 'result_dir': os.path.join(RESULTS_PATH, result_folder()), 'save_emb': False,
-          'ssl_loss_fn': mse_loss_masked_weight_acc_gyr, 'emb_net': transformer}
+config = {'NumGradDeSsl': 3e4, 'NumGradDeDa': 5e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
+# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.02, 'log_with_wandb': False,
+          'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 3e-4, 'FeedForwardDim': 512, 'nhead': 48,
+          'device': 'cuda', 'ssl_loss_fn': mse_loss_masked_weight_acc_gyr, 'emb_net': transformer}
+test_name = 'ssl_step'
+config['result_dir'] = os.path.join(RESULTS_PATH, result_folder() + "_" + test_name)
 config = parse_config(config)
 
-test_name = 'num_gradient_de_ssl 3e4, dim_feedforward=512, nhead 48, Acc * 0.05 + gyr * 0.95'
+test_info = 'dim_feedforward=512, nhead=48, Acc * 0.05 + gyr * 0.95'
 if config['log_with_wandb']:
     wandb.init(project="IMU_SSL", config=config, name=test_name)
 train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
@@ -609,49 +529,46 @@ test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
 train_sub_combined_dataset = ['except test']        # except test
 test_sub_combined_dataset = ['dset' + str(i) for i in range(6, 9)]
 
+if __name__ == '__main__':
+    os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
+    add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
+    # logging.info(test_info)
+
+    independent_hyper = ('NumGradDeSsl', [1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6, 3e6])
+    # {1: [16, 32, 48, 64, 80, 96], 2: [8, 16, 24, 32, 40, 48], 4: [4, 8, 12, 16, 20, 24], 8: [2, 4, 6, 8, 10, 12]}
+    coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {4: [6]})
+
+    for indep_hyper_val in independent_hyper[1]:
+        for coupled_hyper_val_1, coupled_hyper_val_list_2 in coupled_hypers[1].items():
+            for coupled_hyper_val_2 in coupled_hyper_val_list_2:
+                config[independent_hyper[0]] = indep_hyper_val
+                config[coupled_hypers[0][0]] = coupled_hyper_val_1
+                config[coupled_hypers[0][1]] = coupled_hyper_val_2
+                config['FileNameAppendix'] = f', {independent_hyper[0]}_{indep_hyper_val}, {coupled_hypers[0][0]}_{coupled_hyper_val_1}, {coupled_hypers[0][1]}_{coupled_hyper_val_2}'
+                logging.info(config['FileNameAppendix'])
+                logging.info(config)
+
+                run_ssl(ssl_task_kam)
+                # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
+                da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
+                run_cross_vali(da_framework, da_use_ratios=[.25], fold_num=5)
+
+                plt.show()
+                plt.close("all")
+
 
 """
 [Insights]
 1. Transformer complexity matters. Longer patch length corresponds to larger models. Improvements might be from larger complexity.
 
 [TODO]
-0. Run inference on server
 0. More downstream tasks
 0. flash attention
 1. Load data dynamically
-
-[TOTEST]
 2. Robustness as a downstream task
-3. Upload testing set to google drive
-
-3. Compare against 1000+ rand init
-4. Use joint contact force as downstream application, since AddBiom cannot provide this
+3. 
+4.
+5. Compare against 1000+ rand init
+6. Use joint contact force as downstream application, since AddBiom cannot provide this
 """
-
-
-if __name__ == '__main__':
-    os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
-    add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
-    logging.info(test_name)
-    logging.info(config)
-
-    # patch_len_and_mask_patch_num = {1: [16, 32, 48, 64, 80, 96], 2: [8, 16, 24, 32, 40, 48], 4: [4, 8, 12, 16, 20, 24], 8: [2, 4, 6, 8, 10, 12]}
-    # patch_len_and_mask_patch_num = {4: [8, 12, 16], 8: [4, 6, 8]}
-    patch_len_and_mask_patch_num = {8: [6]}
-    for patch_len, mask_patch_num_list in patch_len_and_mask_patch_num.items():
-        for mask_patch_num in mask_patch_num_list:
-            config['mask_patch_num'] = mask_patch_num
-            config['patch_len'] = patch_len
-            config['file_name_appendix'] = f', masking_{mask_patch_num}, patchlen_{patch_len}'
-
-            logging.info(f"Masking patch number: {mask_patch_num}; patch len {patch_len}")
-
-            run_ssl(ssl_task_kam)
-
-            # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
-            da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
-            run_cross_vali(da_framework, da_use_ratios=[.25], fold_num=5)
-
-            plt.show()
-            plt.close("all")
 

@@ -2,7 +2,7 @@ import numpy as np
 from ssl_main.const import FONT_DICT, LINE_WIDTH_THICK
 import matplotlib.pyplot as plt
 from matplotlib import rc
-from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd_profiles, format_axis
+from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd_profiles_masking_patchlen, format_axis
 
 
 def init_fig():
@@ -52,7 +52,7 @@ if __name__ == "__main__":
     metric = 'correlation'
     results_task = load_da_data(data_path + test_name + '.h5')
 
-    result_df = results_dict_to_pd_profiles(results_task, 1)
+    result_df = results_dict_to_pd_profiles_masking_patchlen(results_task, 1)
     result_df['percent_of_masking'] = result_df['mask_patch_num'] / (128 / result_df['patch_len'])
 
     result_df = result_df[result_df['patch_len'] == 16]      # !!! remove for all the data
