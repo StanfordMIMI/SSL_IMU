@@ -8,10 +8,12 @@ DICT_TRIAL_MOVI = {index: i for i, index in enumerate(['I1', 'I2', 'S1', 'S2'])}
 
 CODE_PATH = os.path.dirname(os.path.abspath(__file__))
 
+STANDARD_IMU_SEQUENCE = ['CHEST', 'WAIST', 'R_THIGH', 'L_THIGH', 'R_SHANK', 'L_SHANK', 'R_FOOT', 'L_FOOT']
+
 DATA_PATH_CAMARGO_WIN = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/camargo/data_processed/'
 RESULTS_PATH = '../../results/'
 TRIAL_TYPES = ['LevelGround', 'Treadmill', 'Stair', 'Ramp']
-IMU_CARMARGO_SEGMENT_LIST = ['foot', 'shank', 'thigh', 'trunk']
+IMU_CAMARGO_SEGMENT_LIST = ['CHEST', 'R_THIGH', 'R_SHANK', 'R_FOOT']
 
 DICT_TRIAL_TYPE_ID = {type: i for i, type in enumerate(TRIAL_TYPES)}
 DICT_LABEL = {'treadmill_walking': -1, 'walk': 0, 'idle': 1, 'stand-walk': 2, 'turn': 3, 'rampascent': 4, 'rampdescent': 5,
@@ -21,8 +23,8 @@ DICT_AXIS_DIRECTION = {'x': 'medio-lateral', 'y': 'vertical', 'z': 'anterior-pos
 GRAVITY = 9.81
 STANCE_V_GRF_THD = 10.
 STEP_TYPES = STANCE, STANCE_SWING = range(2)
-IMU_CARMARGO_SAMPLE_RATE = 200
-GRF_CARMARGO_SAMPLE_RATE = EMG_CARMARGO_SAMPLE_RATE = 1000
+IMU_CAMARGO_SAMPLE_RATE = 200
+GRF_CAMARGO_SAMPLE_RATE = EMG_CAMARGO_SAMPLE_RATE = 1000
 
 FONT_SIZE_LARGE = 15
 FONT_SIZE = 13
@@ -88,23 +90,23 @@ CAMARGO_SUB_HEIGHT_WEIGHT = {
 
 SUB_ID_ALL_DATASETS = {
     'hw_running': ['subject_' + str(i) for i in range(15)],
-    'Carmargo': list(CAMARGO_SUB_HEIGHT_WEIGHT.keys()),
-    'CarmargoStepWin': ['AB06', 'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
+    'Camargo': list(CAMARGO_SUB_HEIGHT_WEIGHT.keys()),
+    'CamargoStepWin': ['AB06', 'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
                         'AB18', 'AB19', 'AB20', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30'],
     'walking_knee_moment': ['subject_' + ('0' + str(i))[-2:] for i in range(1, 18)],
     'sun_drop_jump': ['P_08_zhangboyuan', 'P_09_libang', 'P_10_dongxuan', 'P_11_liuchunyu', 'P_12_fuzijun',
-                      'P_13_xulibang''P_14_hunan', 'P_15_liuzhaoyu', 'P_16_zhangjinduo', 'P_17_congyuanqi',
+                      'P_13_xulibang', 'P_14_hunan', 'P_15_liuzhaoyu', 'P_16_zhangjinduo', 'P_17_congyuanqi',
                       'P_18_hezhonghai', 'P_19_xiongyihui', 'P_20_xuanweicheng', 'P_21_wujianing',
                       'P_22_zhangning', 'P_23_wangjinhong', 'P_24_liziqing']
 }
 
-DICT_SUBJECT_ID = {subject: i for i, subject in enumerate(SUB_ID_ALL_DATASETS['Carmargo'])}
+DICT_SUBJECT_ID = {subject: i for i, subject in enumerate(SUB_ID_ALL_DATASETS['Camargo'])}
 
 test_sub_kam = ['subject_17']
 train_sub_kam = [element for element in SUB_ID_ALL_DATASETS['walking_knee_moment'] if element not in test_sub_kam]
 
-test_sub_carmargo = ['AB06', 'AB07', 'AB08', 'AB09', 'AB10']
-train_sub_carmargo = [id for id in SUB_ID_ALL_DATASETS['Carmargo'] if id not in test_sub_carmargo]
+test_sub_Camargo = ['AB06', 'AB07', 'AB08', 'AB09', 'AB10']
+train_sub_Camargo = [id for id in SUB_ID_ALL_DATASETS['Camargo'] if id not in test_sub_Camargo]
 
 test_sub_hw = ['subject_' + str(i) for i in range(5)]
 train_sub_hw = [id for id in SUB_ID_ALL_DATASETS['hw_running'] if id not in test_sub_hw]

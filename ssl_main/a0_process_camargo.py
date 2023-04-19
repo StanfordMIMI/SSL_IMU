@@ -1,13 +1,12 @@
 import json
-
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import ast
 from scipy.signal import medfilt
 from utils import get_data_by_merging_data_struct, find_peak_max, data_filter
-from const import DATA_PATH_CAMARGO_WIN, TRIAL_TYPES, GRAVITY, IMU_CARMARGO_SAMPLE_RATE, EMG_CARMARGO_SAMPLE_RATE, GRF_CARMARGO_SAMPLE_RATE, \
-    IMU_CARMARGO_SEGMENT_LIST, DICT_LABEL, STANCE_V_GRF_THD
+from const import DATA_PATH_CAMARGO_WIN, TRIAL_TYPES, GRAVITY, IMU_CAMARGO_SAMPLE_RATE, EMG_CAMARGO_SAMPLE_RATE,\
+    GRF_CAMARGO_SAMPLE_RATE, IMU_CAMARGO_SEGMENT_LIST, DICT_LABEL, STANCE_V_GRF_THD
 from config import DATA_PATH
 from const import DICT_SUBJECT_ID, DICT_TRIAL_TYPE_ID
 
@@ -73,10 +72,12 @@ def add_clinical_metrics(data, trial, columns):
 
 class ContinuousDatasetLoader:
     def __init__(self, subject_list):
-        self.sample_rate = IMU_CARMARGO_SAMPLE_RATE
+        self.sample_rate = IMU_CAMARGO_SAMPLE_RATE
         self.columns_raw = self.load_columns()
+        for key_ in self.columns_raw.keys():
+            self.columns_raw[key_]['200'] = self.update_column_names(self.columns_raw[key_]['200'])
         self.col_200 = INFO_LIST + IMU_LIST
-        self.col_1000 = EMG_LIST + FORCE_LIST
+        self.col_1000 = FORCE_LIST
         self.subject_list = subject_list
         self.data_contin_merged = {}
         for subject in subject_list:
@@ -88,11 +89,20 @@ class ContinuousDatasetLoader:
 
                 data_trials = self.add_additional_info(data_trials, subject)
                 data_trials = self.process_grf(data_trials)
-                data_trials = self.process_emg(data_trials)
                 data_trial_merged, columns = self.merge_1000_to_200(data_trials)
                 self.data_contin_merged[subject] = data_trial_merged
+        columns = self.update_column_names(columns)
         self.columns = columns
         self.trials = list(data_trials.keys())
+
+    @staticmethod
+    def update_column_names(columns):
+        column_name_map = {'trunk': 'CHEST', 'thigh': 'R_THIGH', 'shank': 'R_SHANK', 'foot': 'R_FOOT'}
+        for key in column_name_map.keys():
+            for column in columns:
+                if key in column:
+                    columns[columns.index(column)] = column.replace(key, column_name_map[key])
+        return columns
 
     def add_additional_info(self, data_trials, subject):
         for trial, trial_data in data_trials.items():
@@ -152,7 +162,7 @@ class ContinuousDatasetLoader:
                 data_combined = np.zeros([data_.shape[0], 3])
                 for i in range(0, data_.shape[1], 3):
                     data_combined += data_[:, i:i+3]
-                data_combined = data_filter(data_combined, 15, GRF_CARMARGO_SAMPLE_RATE)
+                data_combined = data_filter(data_combined, 15, GRF_CAMARGO_SAMPLE_RATE)
 
                 trial_data[1] = np.column_stack([trial_data[1], data_combined])
                 data_trials[trial] = trial_data
@@ -165,7 +175,7 @@ class ContinuousDatasetLoader:
             condition = trial.split('_')[0]
             emg_col_loc = [self.columns_raw[condition]['1000'].index(x) for x in EMG_LIST]
             emg_data = trial_data[1][:, emg_col_loc]
-            emg_data = data_filter(np.abs(emg_data), 20, EMG_CARMARGO_SAMPLE_RATE)
+            emg_data = data_filter(np.abs(emg_data), 20, EMG_CAMARGO_SAMPLE_RATE)
             trial_data[1][:, emg_col_loc] = emg_data
         return data_trials
 
@@ -213,8 +223,19 @@ class ContinuousDatasetLoader:
                     continue
                 self.data_contin_merged[subject][trial], new_cols = add_clinical_metrics(
                     self.data_contin_merged[subject][trial], trial, self.columns)
-                # self.data_contin_merged[subject][trial] = self.resample_200_to_100(self.data_contin_merged[subject][trial])
         if new_cols[0] not in self.columns: self.columns.extend(new_cols)
+
+    def transform_imu_orientation(self, data, columns):
+        """ To follow the convention of z pointing skin surface norm, y pointing upwards  """
+        rot_mat = np.array([
+            [0, 1, 0],
+            [-1, 0, 0],
+            [0, 0, 1]
+        ])
+        imu_locs = [columns.index(col) for col in IMU_LIST]
+        for i_sensor in range(0, len(imu_locs), 3):
+            data[:, imu_locs[i_sensor:i_sensor+3]] = np.matmul(rot_mat, data[:, imu_locs[i_sensor:i_sensor+3]].T).T
+        return data
 
     def loop_all_the_trials(self, segment_methods):
         for subject in self.subject_list:
@@ -227,7 +248,8 @@ class ContinuousDatasetLoader:
                 trial_data = self.data_contin_merged[subject][trial]
                 if not self.are_kinematics_correct(trial_data, self.columns, (-180, 180)):
                     continue
-                trial_data = self.clean_imu_data(trial_data, self.columns)
+                # trial_data = self.clean_imu_data(trial_data, self.columns)
+                self.transform_imu_orientation(trial_data, self.columns)
                 for method in segment_methods:
                     method.start_segment(trial_data, self.columns)
             [method.export(self.columns, subject) for method in segment_methods]
@@ -268,10 +290,10 @@ class BaseSegmentation:
 
 
 class WindowSegmentation(BaseSegmentation):
-    def __init__(self, name='Carmargo'):
+    def __init__(self, name='Camargo'):
         self.win_len = self.data_len = 128
         self.name = name
-        self.win_step = int(self.win_len/4)
+        self.win_step = int(self.win_len/2)
 
     def start_segment(self, trial_data, columns):
         trial_len = trial_data.shape[0]
@@ -290,7 +312,7 @@ class WindowSegmentation(BaseSegmentation):
 
 
 class CenterSegmentation(BaseSegmentation):
-    def __init__(self, name='Carmargo'):
+    def __init__(self, name='Camargo'):
         self.win_len = self.data_len = 400
         self.half_win_len = int(self.win_len/2)
         self.name = name
@@ -311,7 +333,7 @@ class StepSegmentation(BaseSegmentation):
         self.data_len = 256
         self.name = name
         self.win_len, self.win_step = self.data_len, int(self.data_len/2)
-        self.step_len_max, self.step_len_min = int(256 * IMU_CARMARGO_SAMPLE_RATE / 200), int(40 * IMU_CARMARGO_SAMPLE_RATE / 200)
+        self.step_len_max, self.step_len_min = int(256 * IMU_CAMARGO_SAMPLE_RATE / 200), int(40 * IMU_CAMARGO_SAMPLE_RATE / 200)
 
     @staticmethod
     def strike_off_to_step_and_remove_incorrect_step(gyr_y, strike_list, off_list, step_len_max, step_len_min, from_strike_to_off=True):
@@ -339,7 +361,7 @@ class StepSegmentation(BaseSegmentation):
         gyr_all = np.deg2rad(data_df[['gyr_x', 'gyr_y', 'gyr_z']])
         gyr_magnitude = np.linalg.norm(gyr_all, axis=1)
 
-        imu_sample_rate = IMU_CARMARGO_SAMPLE_RATE
+        imu_sample_rate = IMU_CAMARGO_SAMPLE_RATE
         stance_phase_sample_thd_lower = 0.3 * imu_sample_rate
         stance_phase_sample_thd_higher = 1 * imu_sample_rate
         data_len = data_df.shape[0]
@@ -375,16 +397,16 @@ class StepSegmentation(BaseSegmentation):
         """ Reliable algorithm used in TNSRE first submission"""
         gyr_thd = 2.6
         acc_thd = 1.2 / GRAVITY
-        max_distance = IMU_CARMARGO_SAMPLE_RATE * 2  # distance from stationary phase should be smaller than 2 seconds
+        max_distance = IMU_CAMARGO_SAMPLE_RATE * 2  # distance from stationary phase should be smaller than 2 seconds
         acc_magnitude = np.linalg.norm(acc_data, axis=1)
         gyr_magnitude = np.linalg.norm(gyr_data, axis=1)
         gyr_y = gyr_data[:, 1]
         data_len = gyr_data.shape[0]
 
         if cut_off_fre_strike_off is not None:
-            acc_magnitude = data_filter(acc_magnitude, cut_off_fre_strike_off, IMU_CARMARGO_SAMPLE_RATE, filter_order=2)
-            gyr_magnitude = data_filter(gyr_magnitude, cut_off_fre_strike_off, IMU_CARMARGO_SAMPLE_RATE, filter_order=2)
-            gyr_y = data_filter(gyr_y, cut_off_fre_strike_off, IMU_CARMARGO_SAMPLE_RATE, filter_order=2)
+            acc_magnitude = data_filter(acc_magnitude, cut_off_fre_strike_off, IMU_CAMARGO_SAMPLE_RATE, filter_order=2)
+            gyr_magnitude = data_filter(gyr_magnitude, cut_off_fre_strike_off, IMU_CAMARGO_SAMPLE_RATE, filter_order=2)
+            gyr_y = data_filter(gyr_y, cut_off_fre_strike_off, IMU_CAMARGO_SAMPLE_RATE, filter_order=2)
 
         acc_magnitude = acc_magnitude - 1       # remove the gravity
 
@@ -441,7 +463,7 @@ class StepSegmentation(BaseSegmentation):
         Detected as a zero crossing if the value is lower than negative threshold.
         :return:
         """
-        max_search_range = IMU_CARMARGO_SAMPLE_RATE * 3  # search 3 second front data at most
+        max_search_range = IMU_CAMARGO_SAMPLE_RATE * 3  # search 3 second front data at most
         front_crossing, back_crossing = False, False
         for j_sample in range(i_sample, max(0, i_sample - max_search_range), -1):
             if gyr_x[j_sample] < - foot_stationary_gyr_thd:
@@ -465,7 +487,7 @@ class StepSegmentation(BaseSegmentation):
             self.data_struct.add_new_step(data_)
 
 
-IMU_LIST = [segment + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for segment in IMU_CARMARGO_SEGMENT_LIST for axis in ['X', 'Y', 'Z']]
+IMU_LIST = [segment + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for segment in IMU_CAMARGO_SEGMENT_LIST for axis in ['X', 'Y', 'Z']]
 INFO_LIST = ['sub_id', 'trial_type_id', 'label', 'treadmill_speed', 'ramp', 'heel_strike', 'toe_off',
              'hip_flexion_r', 'hip_adduction_r', 'hip_rotation_r', 'knee_angle_r', 'ankle_angle_r', 'knee_angle_r_moment']
 
@@ -484,11 +506,11 @@ PARAM_TO_STORE = []
 
 if __name__ == '__main__':
     sub_list = [
-        'AB06', 'AB07',
+        'AB06',
+        'AB07',
         'AB08', 'AB09', 'AB10',
         'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
-        'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28',
-        'AB30'
+        'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30'
     ]
     data_reader = ContinuousDatasetLoader(sub_list)
     data_reader.add_additional_columns()

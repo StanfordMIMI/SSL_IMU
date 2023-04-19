@@ -68,7 +68,7 @@ class SslReconstructNet(nn.Module):
             plt.fill_between(range(true_data.shape[0]), min_val, max_val, label='Masked', where=msk, facecolor='gray', alpha=0.3)
             plt.legend()
             plt.tight_layout()
-            wandb.log({"img":[wandb.Image(fig, caption=fig_title)]})
+            wandb.log({"img": [wandb.Image(fig, caption=fig_title)]})
 
 
 class SslContrastiveNet(nn.Module):
@@ -149,7 +149,8 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerBase(nn.Module):
-    def __init__(self, x_dim, mask_patch_num, nlayers, nhead, dim_feedforward, patch_len, patch_step_len, device='cuda'):
+    def __init__(self, x_dim, mask_input_channel, mask_patch_num, nlayers, nhead, dim_feedforward,
+                 patch_len, patch_step_len, device='cuda'):
         super().__init__()
         self.patch_len = patch_len
         self.patch_step_len = patch_step_len
@@ -161,12 +162,15 @@ class TransformerBase(nn.Module):
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.device = device
         self.mask_patch_num = mask_patch_num
-        self.mask_emb = nn.Parameter(torch.zeros([x_dim, patch_len]).uniform_() - 0.5)
+        self.ssl_mask_emb = nn.Parameter(torch.zeros([x_dim, patch_len]).uniform_() - 0.5)
+        self.reduced_imu_mask_emb = nn.Parameter(torch.zeros([48, 128]).uniform_() - 0.5)
+        self.mask_input_channel = mask_input_channel
         self.patch_num = int(128 / self.patch_len)
         self.pos_encoding = PositionalEncoding(x_dim * patch_len, patch_num=self.patch_num)
 
     def forward(self, sequence, lens):
-        sequence, mask_indices = self.apply_mask(sequence)
+        sequence = self.apply_reduced_imu_set_mask(sequence)
+        sequence, mask_indices = self.apply_ssl_mask(sequence)
         sequence_patch = self.divide_into_patches(sequence)
         sequence_patch = self.pos_encoding(sequence_patch)
         sequence_patch = self.transformer_encoder(sequence_patch)
@@ -185,35 +189,43 @@ class TransformerBase(nn.Module):
         sequence = sequence.transpose(1, 2).flatten(start_dim=2)
         return sequence
 
-    def apply_mask(self, seq, mask_type=1):
+    def apply_reduced_imu_set_mask(self, seq):
+        bs, patch_emb, length = seq.shape
+        mask_indices_np = np.full((bs, patch_emb), False)
+        for i_channel in range(8):
+            if self.mask_input_channel[i_channel]:
+                mask_indices_np[:, i_channel*3:(i_channel+1)*3] = True
+                mask_indices_np[:, i_channel*3+24:(i_channel+1)*3+24] = True
+        mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
+        mask_indices = mask_indices.unsqueeze(-1).expand_as(seq)
+        # mask_emb_repeated = self.reduced_imu_mask_emb.repeat(0, self.patch_num)
+        tensor = torch.mul(seq, ~mask_indices) + torch.mul(self.reduced_imu_mask_emb, mask_indices)
+        return tensor
+
+    def apply_ssl_mask(self, seq):
         """
 
         :param seq: [bs, embedding, time]
         :param mask_type: 0 for mask random samples, 1 for mask one entire patch, 2 for testing
         :return:
         """
-        if mask_type == 0:
-            pass
-        elif mask_type == 1:
-            bs, patch_emb, length = seq.shape
-            mask_indices_np = np.full((bs, length), False)
-            for i_row in range(mask_indices_np.shape[0]):
-                len_to_mask = [self.mask_patch_num]     # [self.mask_patch_num]   [int(0.5*self.mask_patch_num), int(0.5*self.mask_patch_num)]
-                for len_ in len_to_mask:
-                    masked_loc = random.sample(range(self.patch_num - len_ + 1), 1)[0]
-                    mask_indices_np[i_row, masked_loc*self.patch_len:(masked_loc+len_)*self.patch_len] = True
-            mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
-            mask_indices = mask_indices.unsqueeze(1).expand_as(seq)
-            mask_emb_repeated = self.mask_emb.repeat(1, self.patch_num)
-            tensor = torch.mul(seq, ~mask_indices) + torch.mul(mask_emb_repeated, mask_indices)
-
-        elif mask_type == 2:
-            pass
+        bs, patch_emb, length = seq.shape
+        mask_indices_np = np.full((bs, length), False)
+        for i_row in range(mask_indices_np.shape[0]):
+            len_to_mask = [self.mask_patch_num]     # [self.mask_patch_num]   [int(0.5*self.mask_patch_num), int(0.5*self.mask_patch_num)]
+            for len_ in len_to_mask:
+                masked_loc = random.sample(range(self.patch_num - len_ + 1), 1)[0]
+                mask_indices_np[i_row, masked_loc*self.patch_len:(masked_loc+len_)*self.patch_len] = True
+        mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
+        mask_indices = mask_indices.unsqueeze(1).expand_as(seq)
+        mask_emb_repeated = self.ssl_mask_emb.repeat(1, self.patch_num)
+        tensor = torch.mul(seq, ~mask_indices) + torch.mul(mask_emb_repeated, mask_indices)
         return tensor, mask_indices
 
 
-def transformer(x_dim, nhead, dim_feedforward, mask_patch_num, patch_len):
-    return TransformerBase(x_dim, mask_patch_num=mask_patch_num, nlayers=6, nhead=nhead, dim_feedforward=dim_feedforward,
+def transformer(x_dim, nlayers, nhead, dim_feedforward, mask_input_channel, mask_patch_num, patch_len):
+    return TransformerBase(x_dim, mask_input_channel=mask_input_channel,
+                           mask_patch_num=mask_patch_num, nlayers=nlayers, nhead=nhead, dim_feedforward=dim_feedforward,
                            patch_len=patch_len, patch_step_len=patch_len)
 
 

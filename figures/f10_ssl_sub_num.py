@@ -45,7 +45,7 @@ def finalize_fig():
 
 
 data_path = 'D:\ssl_training_results\\2022-11-09 09_13_30'
-test_name = '\\Carmargo_peak_fy'     # hw_running_VALR
+test_name = '\\Camargo_peak_fy'     # hw_running_VALR
 rc('font', family='Arial')
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 

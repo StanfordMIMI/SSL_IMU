@@ -3,7 +3,7 @@ from PaperFigures import load_da_data
 
 
 data_path = 'D:\ssl_training_results\\2022-10-24 16_30_35_all_test'
-test_name = '\\Carmargo_peak_fy'
+test_name = '\\Camargo_peak_fy'
 if __name__ == "__main__":
     # !!! 加一组线，KAM dataset for SSL
     metric = 'correlation'

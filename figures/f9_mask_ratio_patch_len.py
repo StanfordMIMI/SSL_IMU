@@ -55,11 +55,13 @@ def plot_map_with_number_all_four(data_all, x_ticks, y_ticks, title_list):
         # if i_subplot == 1:
         #     fig.colorbar(im, ax=ax)
 
+    plt.tight_layout(rect=[0., 0., 1., 1.], w_pad=6)
     fig.subplots_adjust(right=0.8)
     cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
     fig.colorbar(im, cax=cbar_ax)
-    # plt.tight_layout(rect=[0., 0., 1., 1.])
-    # plt.title(title)
+    with open(data_path + '/training_log.txt') as f:
+        first_line = f.readline()
+    plt.suptitle(first_line)
     pdf.savefig()
 
 
@@ -72,16 +74,15 @@ def finalize_fig(fig, ax, im):
     fig.colorbar(im, ax=ax)
     pdf.savefig()
 
-    # plt.tight_layout(rect=[0., 0., 1., 1.])
-    # save_fig('f9')
 
-
-data_path = RESULTS_PATH + '2023_04_15_11_56_40_ssl_step'
-test_name = '/walking_knee_moment_output'     # hw_running_VALR   walking_knee_moment_output  Carmargo_output
+# hw_running_VALR   walking_knee_moment_output  Camargo_output   sun_drop_jump_output
+test_name = '/walking_knee_moment_output'
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 
 
 if __name__ == "__main__":
+    test_folder = '2023_04_19_09_12_11_find_best_accuracy'      # 2023_04_19_09_11_37_find_best_accuracy    2023_04_19_09_12_11_find_best_accuracy
+    data_path = RESULTS_PATH + test_folder
     metric = 'r2'
     results_task = load_da_data(data_path + test_name + '.h5')
 
@@ -95,7 +96,7 @@ if __name__ == "__main__":
     result_mean_map = np.zeros([4, len(patch_len_list), len(percent_of_masking_list)])
     for i_patch, patch_len in enumerate(patch_len_list):
         for i_percent, percent_of_masking in enumerate(percent_of_masking_list):
-            data_cond = result_df[(result_df['PatchLen'] == patch_len) & (result_df['PercentOfMasking'] == percent_of_masking) & (result_df['NumGradDeSsl'] == 200)]
+            data_cond = result_df[(result_df['PatchLen'] == patch_len) & (result_df['PercentOfMasking'] == percent_of_masking) & (result_df['NumGradDeSsl'] == 30000)]
             data_cond_0 = data_cond[~data_cond['LinearProb']&data_cond['UseSsl']]
             result_mean_map[0, i_patch, i_percent] = np.mean(data_cond_0[metric])
             data_cond_1 = data_cond[data_cond['LinearProb']&data_cond['UseSsl']]
@@ -105,7 +106,7 @@ if __name__ == "__main__":
             data_cond_3 = data_cond[data_cond['LinearProb']&~data_cond['UseSsl']]
             result_mean_map[3, i_patch, i_percent] = np.mean(data_cond_3[metric])
 
-    with PdfPages(data_path + '/f9_.pdf') as pdf:
+    with PdfPages(data_path + f'/f9_{test_folder}.pdf') as pdf:
         plot_map_with_number_all_four(result_mean_map, patch_len_list, percent_of_masking_list_str,
                                       ['SSL - Fine-tuning', 'SSL - Linear', 'no SSL - Fine-tuning', 'no SSL - Linear'])
 

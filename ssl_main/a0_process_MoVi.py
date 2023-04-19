@@ -88,7 +88,7 @@ if __name__ == '__main__':
     data_reader.loop_all_the_trials([WindowSegmentation(64, 'MoVi_hw_running')])
 
     data_reader = ContinuousDatasetLoader(sub_list, 200)
-    data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi_Carmargo')])
+    data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi_Camargo')])
 
     data_reader = ContinuousDatasetLoader(sub_list, 100)
     data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi_walking_knee_moment')])

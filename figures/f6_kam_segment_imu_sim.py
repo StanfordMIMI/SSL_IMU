@@ -10,7 +10,7 @@ import umap
 DOWNSTREAM_TASK_3 = {'_mods': ['acc', 'gyr'], 'remove_trial_type': [], 'dataset': 'walking_knee_moment',
                      'output': 'KFM', 'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': 'MoVi_'}
 
-ssl_task_Carmargo = {'ssl_file_name': 'MoVi_Carmargo', 'imu_segments': [
+ssl_task_Camargo = {'ssl_file_name': 'MoVi_Camargo', 'imu_segments': [
     # 'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot']}
     'Hip', 'Spine1', 'RightUpLeg', 'RightLeg', 'RightFoot', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'Head',
     'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand']}
@@ -92,17 +92,17 @@ mod_to_process = 'mod_acc'
 
 
 # """ UMAP of subjects """
-# mod_data, num_of_category, rows_to_select = load_mod_data_random_from_each_subject('Carmargo', 'no_ssl', mod_to_process)
+# mod_data, num_of_category, rows_to_select = load_mod_data_random_from_each_subject('Camargo', 'no_ssl', mod_to_process)
 # draw_tsne(mod_data, num_of_category, range(num_of_category), 'no ssl')
-# mod_data, num_of_category, _ = load_mod_data_random_from_each_subject('Carmargo', 'use_ssl', mod_to_process)
+# mod_data, num_of_category, _ = load_mod_data_random_from_each_subject('Camargo', 'use_ssl', mod_to_process)
 # draw_tsne(mod_data, num_of_category, range(num_of_category), 'use ssl')
 
 # """ UMAP of ground conditions """
-# trial_id_data = load_mod_data('Carmargo', 'no_ssl', 'info')
-# mod_data = load_mod_data('Carmargo', 'no_ssl', mod_to_process)
+# trial_id_data = load_mod_data('Camargo', 'no_ssl', 'info')
+# mod_data = load_mod_data('Camargo', 'no_ssl', mod_to_process)
 # mod_data_reshaped, num_of_category, rows_to_select = random_select_categorize_to_trials(mod_data, trial_id_data)
 # draw_tsne(mod_data_reshaped, num_of_category, ['LevelGround', 'Stair', 'Ramp'], 'no ssl')
-# mod_data = load_mod_data('Carmargo', 'use_ssl', mod_to_process)
+# mod_data = load_mod_data('Camargo', 'use_ssl', mod_to_process)
 # mod_data_reshaped, num_of_category, _ = random_select_categorize_to_trials(mod_data, trial_id_data, rows_to_select=rows_to_select)
 # draw_tsne(mod_data_reshaped, num_of_category, ['LevelGround', 'Stair', 'Ramp'], 'use ssl')
 
@@ -117,10 +117,10 @@ draw_umap(mod_data_reshaped, num_of_segment, DOWNSTREAM_TASK_3['imu_segments'], 
 # """ TSNE of MoVi """
 # mod_data = load_mod_data('MoVi_walking_knee_moment', 'no_ssl', mod_to_process)
 # mod_data_reshaped, num_of_segment, rows_to_select = random_select_categorize_to_segments(mod_data)
-# draw_tsne(mod_data_reshaped, num_of_segment, ssl_task_Carmargo['imu_segments'], 'no ssl')
+# draw_tsne(mod_data_reshaped, num_of_segment, ssl_task_Camargo['imu_segments'], 'no ssl')
 # mod_data = load_mod_data('MoVi_walking_knee_moment', 'use_ssl', mod_to_process)
 # mod_data_reshaped, num_of_segment, _ = random_select_categorize_to_segments(mod_data, rows_to_select=rows_to_select)
-# draw_tsne(mod_data_reshaped, num_of_segment, ssl_task_Carmargo['imu_segments'], 'use ssl')
+# draw_tsne(mod_data_reshaped, num_of_segment, ssl_task_Camargo['imu_segments'], 'use ssl')
 
 plt.show()
 

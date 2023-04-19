@@ -15,10 +15,9 @@ import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
     preprocess_modality, get_scores, print_table, get_step_len, save_multi_image
-from const import DICT_TRIAL_TYPE_ID, RESULTS_PATH, \
-    CAMARGO_SUB_HEIGHT_WEIGHT, \
-    GRAVITY, train_sub_carmargo, test_sub_carmargo, test_sub_hw, train_sub_hw, train_sub_kam, test_sub_kam, \
-    SUB_ID_ALL_DATASETS, _mods
+from const import DICT_TRIAL_TYPE_ID, RESULTS_PATH, CAMARGO_SUB_HEIGHT_WEIGHT, \
+    GRAVITY, train_sub_Camargo, test_sub_Camargo, test_sub_hw, train_sub_hw, train_sub_kam, test_sub_kam, \
+    SUB_ID_ALL_DATASETS, _mods, STANDARD_IMU_SEQUENCE
 from config import DATA_PATH
 import json
 import pytorch_warmup as warmup
@@ -33,8 +32,10 @@ class FrameworkDownstream:
         self.da_task = da_task
         fix_seed()
 
-        self.emb_net = self.config.emb_net(len(da_task['imu_segments'])*6, self.config.nhead, self.config.FeedForwardDim, mask_patch_num=0, patch_len=self.config.PatchLen)
-        self.regress_net = RegressNet(self.emb_net, len(define_channel_names(da_task)['acc'])+len(define_channel_names(da_task)['gyr']), len(self.output_columns))
+        mask_input_channel = [False if imu in self.da_task['imu_segments'] else True for imu in STANDARD_IMU_SEQUENCE]
+        self.emb_net = self.config.emb_net(len(da_task['imu_segments'])*6, self.config.nlayers, self.config.nhead,
+                                           self.config.FeedForwardDim, mask_input_channel, mask_patch_num=0, patch_len=self.config.PatchLen)
+        self.regress_net = RegressNet(self.emb_net, len(STANDARD_IMU_SEQUENCE)+len(STANDARD_IMU_SEQUENCE), len(self.output_columns))
         _, self.regress_net = set_dtype_and_model(self.config.device, self.regress_net)
         self.regress_net_init_state = copy.deepcopy(self.regress_net.state_dict())
 
@@ -42,21 +43,19 @@ class FrameworkDownstream:
         self.regress_net.emb_net.load_state_dict(post_ssl_emb_net)
         self.regress_net_post_ssl_state = copy.deepcopy(self.regress_net.state_dict())
 
-        # num_params = sum(param.numel() for param in model.embnet_imu.rnn_layer.parameters())
-        # print(num_params)
-
     def load_post_ssl_emb_net(self):
-        emb_path = os.path.join(RESULTS_PATH, self.da_task['ssl_model'] + self.da_task['dataset'] + '_' +
-                                self.config.emb_net.__name__ + '.pth')
+        emb_path = os.path.join(self.config.result_dir, 'emb_' + self.config.FileNameAppendix[2:] + '.pth')
         return torch.load(emb_path)
 
     def load_and_process(self, test_name, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         if test_name == 'hw_running':
             self.load_and_process_hw_running(train_sub_ids, validate_sub_ids, test_sub_ids)
-        elif 'Carmargo' in test_name:
+        elif 'Camargo' in test_name:
             self.load_and_process_camargo(train_sub_ids, validate_sub_ids, test_sub_ids)
         elif test_name in ['walking_knee_moment', 'filtered_walking_knee_moment']:
             self.load_and_process_kam(train_sub_ids, validate_sub_ids, test_sub_ids)
+        elif test_name == 'sun_drop_jump':
+            self.load_and_process_sun(train_sub_ids, validate_sub_ids, test_sub_ids)
 
     def load_and_process_camargo(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                                  test_sub_ids: List[str]):
@@ -72,7 +71,7 @@ class FrameworkDownstream:
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
                 current_set_data_list = []
                 for sub_id in set_sub_ids:
-                    sub_data = hf[sub_id][::100, :, :]      #
+                    sub_data = hf[sub_id][:, :, :]
                     has_grf_index = np.where(np.max(sub_data[:, self.data_columns.index('fz')], axis=1) > 10)
                     sub_data = sub_data[has_grf_index]
                     sub_weight = CAMARGO_SUB_HEIGHT_WEIGHT[sub_id][1] * GRAVITY
@@ -81,7 +80,13 @@ class FrameworkDownstream:
                     current_set_data_list.append(sub_data)
                 current_set_data = np.concatenate(current_set_data_list, axis=0)
                 """ [step, feature, time] """
+                # use rand noise to replace reduced IMUs
+                rand_noise = np.random.normal(size=(current_set_data.shape[0], 6, current_set_data.shape[2]))
+                current_set_data = np.concatenate([current_set_data, rand_noise], axis=1)
+                # # Only keep grf > 0 rows if using overground walking data
+                # current_set_data_ = current_set_data[np.all(np.abs(current_set_data[:, self.data_columns.index('fz')]) > 0.01, axis=1)]
                 self.set_data[data_name] = current_set_data
+            self.data_columns.extend(['rand_noise' + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
 
     def load_and_process_kam(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
@@ -93,6 +98,7 @@ class FrameworkDownstream:
                 current_set_data = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
                 """ [step, feature, time] """
                 self.set_data[data_name] = current_set_data
+                self.check_dataset_imu_orientation(self.set_data[data_name], self.data_columns, self.da_task['imu_segments'])
 
     def load_and_process_sun(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
@@ -101,7 +107,6 @@ class FrameworkDownstream:
             self.data_columns = list(hf[train_sub_ids[0]].attrs['columns'])
             if 'sub_id' not in self.data_columns:
                 self.data_columns.append('sub_id')
-                self.data_columns.append('output_processed')
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
                 current_set_data_list = []
                 for sub_ in set_sub_ids:
@@ -110,19 +115,21 @@ class FrameworkDownstream:
                     current_sub_data = np.stack(current_sub_data_list, axis=0).transpose([0, 2, 1])
                     sub_id_np = np.full([current_sub_data.shape[0], 1, current_sub_data.shape[2]], int(sub_[2:4]))
                     current_set_data_list.append(np.concatenate([current_sub_data, sub_id_np], axis=1))
+                """ [step, feature, time] """
                 current_set_data = np.concatenate(current_set_data_list, axis=0)
-
-                step_lens = get_step_len(current_set_data)
-                output_selected = current_set_data[:, self.data_columns.index('output')]
-                output_loc = np.zeros([output_selected.shape[0]])
-                for i_step, step_len in enumerate(step_lens):
-                    output_loc[i_step] = np.argmax(output_selected[i_step, :int(.5 * step_len)])
-                output_loc = output_loc.astype(int)
-                output_ = np.array([output_selected[i_row, loc] for i_row, loc in enumerate(output_loc)]).reshape([-1, 1])
-                output_processed = np.repeat(output_[:, np.newaxis], current_set_data.shape[2], axis=1).reshape([-1, 1, current_set_data.shape[2]])
-
-                current_set_data = np.concatenate([current_set_data, output_processed], axis=1)
+                """ padding to 128 samples"""
+                current_set_data = np.concatenate([current_set_data, np.zeros([*current_set_data.shape[:2], 128-80])], axis=2)
                 self.set_data[data_name] = current_set_data
+                # self.check_dataset_imu_orientation(self.set_data[data_name], self.data_columns, self.da_task['imu_segments'])
+
+    @staticmethod
+    def check_dataset_imu_orientation(data_, columns_, imu_list):
+        for imu in imu_list:
+            plt.figure()
+            plt.title(imu)
+            col_loc = [columns_.index(imu + '_Accel_' + axis) for axis in ['X', 'Y', 'Z']]
+            plt.plot(data_[0, col_loc, :].T)
+        plt.show()
 
     def load_and_process_hw_running(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         self.set_data = {}
@@ -182,9 +189,9 @@ class FrameworkDownstream:
         return data[selected_rows]
 
     def save_model_and_results(self, test_name, y_true, y_pred, sub_ids, model):
-        os.makedirs(os.path.join(self.config.result_dir, 'test_models', self.da_task['dataset']), exist_ok=True)
+        os.makedirs(os.path.join(self.config.result_dir, 'da_models', self.da_task['dataset']), exist_ok=True)
         copied_model = copy.deepcopy(model)
-        torch.save(copied_model.state_dict(), os.path.join(self.config.result_dir, 'test_models', self.da_task['dataset'], test_name + '.pth'))
+        torch.save(copied_model.state_dict(), os.path.join(self.config.result_dir, 'da_models', self.da_task['dataset'], test_name + '.pth'))
         self.save_results(test_name, y_true, y_pred, sub_ids)
 
     def save_results(self, test_name, y_true, y_pred, sub_ids):
@@ -201,7 +208,7 @@ class FrameworkDownstream:
     def set_regress_net_to_post_linear_init_head_first(self, use_ssl):
         model_name = 'LinearProb_True, UseSsl_' + str(use_ssl) + ', ratio_' + str(self.config.da_use_ratio) + self.config.FileNameAppendix
         regress_net_post_linear_head_init = torch.load(os.path.join(
-            self.config.result_dir, 'test_models', self.da_task['dataset'], model_name + '.pth'))
+            self.config.result_dir, 'da_models', self.da_task['dataset'], model_name + '.pth'))
         self.regress_net.load_state_dict(regress_net_post_linear_head_init)
 
     def set_regress_net_to_init_state(self):
@@ -349,7 +356,8 @@ class FrameworkSSL:
             self.ssl_data = {sub_: data_.transpose([0, 2, 1]) for sub_, data_ in self.ssl_data.items()}
             """ [step, feature, time] """
 
-        self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.nhead, self.config.FeedForwardDim, self.config.MaskPatchNum, self.config.PatchLen)
+        self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.nlayers, self.config.nhead,
+                                           self.config.FeedForwardDim, [False for _ in range(8)], self.config.MaskPatchNum, self.config.PatchLen)
         logging.info('# of trainable parameters: {}'.format(sum(p.numel() for p in self.emb_net.transformer_encoder.parameters() if p.requires_grad)))
         self._data_scalar = {'base_scalar': StandardScaler}
         fix_seed()
@@ -433,8 +441,9 @@ class FrameworkSSL:
             train_loss, _ = eval_during_training(model, train_dl)
             test_loss, _ = eval_during_training(model, vali_dl)
 
-            logging.info(f'| SSL | epoch{i_epoch:3d}/{epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
-                         f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
+            if epoch < 5 or i_epoch % int(epoch / 5) == 0 or i_epoch == epoch - 1:
+                logging.info(f'| SSL | epoch{i_epoch:3d}/{epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
+                             f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
             epoch_end_time = time.time()
             train_batch(model, train_dl, optimizer)
             if self.config.log_with_wandb:
@@ -453,14 +462,8 @@ class FrameworkSSL:
 
     def save_emb_net_post_ssl(self, model):
         emb_net_post_ssl_state = model.emb_net.state_dict()
-        save_path = os.path.join(RESULTS_PATH, self.ssl_task['ssl_file_name'] + '_' + self.config.emb_net.__name__ + '.pth')
+        save_path = os.path.join(self.config.result_dir, 'emb_' + self.config.FileNameAppendix[2:] + '.pth')
         torch.save(emb_net_post_ssl_state, save_path)
-
-    def save_ssl_general_net(self, model, model_name):
-        ssl_general_model_path = os.path.join(RESULTS_PATH, 'embedding_similarity_between_segments', self.ssl_task['ssl_file_name'])
-        os.makedirs(ssl_general_model_path, exist_ok=True)
-        save_path = os.path.join(ssl_general_model_path, model_name + '.pth')
-        torch.save(model, save_path)
 
 
 def parse_config(config):
@@ -472,10 +475,8 @@ def parse_config(config):
 
 def run_ssl(ssl_task):
     ssl_framework = FrameworkSSL(config, ssl_task)
-    if 'MoVi' in ssl_task['ssl_file_name']:
-        ssl_framework.preprocess(train_sub_movi, test_sub_movi, test_sub_movi)
-    elif ssl_task['ssl_file_name'] == 'Carmargo':
-        ssl_framework.preprocess(train_sub_carmargo+test_sub_carmargo, test_sub_carmargo, test_sub_carmargo)
+    if ssl_task['ssl_file_name'] == 'Camargo':
+        ssl_framework.preprocess(train_sub_Camargo+test_sub_Camargo, test_sub_Camargo, test_sub_Camargo)
     elif ssl_task['ssl_file_name'] in ['walking_knee_moment', 'filtered_walking_knee_moment']:
         ssl_framework.preprocess(train_sub_kam+test_sub_kam, test_sub_kam, test_sub_kam)
     elif ssl_task['ssl_file_name'] == 'hw_running':
@@ -507,36 +508,41 @@ def run_cross_vali(da_framework, da_use_ratios, fold_num=5, only_test_one_fold=F
         run_da(da_framework, da_use_ratios)
 
 
-DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['KFM', 'KAM'],
-                     'imu_segments': ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST'], 'ssl_model': ''}
+train_sub_combined_dataset = ['except test']        # except test
+test_sub_combined_dataset = ['dset' + str(i) for i in range(6, 9)]
+ssl_task = {'ssl_file_name': 'filtered_walking_knee_moment', 'imu_segments': STANDARD_IMU_SEQUENCE}
 
-ssl_task_kam = {'ssl_file_name': 'walking_knee_moment', 'imu_segments': [
-    'R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']}
+DOWNSTREAM_TASK_0 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['KFM', 'KAM'],
+                     'imu_segments': STANDARD_IMU_SEQUENCE}
+DOWNSTREAM_TASK_1 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'Camargo', 'output_columns': ['fx', 'fy', 'fz'],
+                     'imu_segments': ['CHEST', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise', 'R_FOOT', 'rand_noise']}
+DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output_columns': ['R_KNEE_MOMENT_X', 'R_GRF_Z'],
+                     'imu_segments': STANDARD_IMU_SEQUENCE}
 
 config = {'NumGradDeSsl': 3e4, 'NumGradDeDa': 5e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
 # config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.02, 'log_with_wandb': False,
-          'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 3e-4, 'FeedForwardDim': 512, 'nhead': 48,
-          'device': 'cuda', 'ssl_loss_fn': mse_loss_masked_weight_acc_gyr, 'emb_net': transformer}
-test_name = 'ssl_step'
+          'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 1e-4, 'FeedForwardDim': 512, 'nlayers': 6, 'nhead': 48,
+          'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
+
+test_name = 'test_camargo'
+test_info = 'test_camargo, hidden 512, filtered, Acc * 0.5 + gyr * 0.5'
+
+# config['result_dir'] = os.path.join('../figures/results/2023_04_19_09_12_11_find_best_accuracy')
 config['result_dir'] = os.path.join(RESULTS_PATH, result_folder() + "_" + test_name)
 config = parse_config(config)
 
-test_info = 'dim_feedforward=512, nhead=48, Acc * 0.05 + gyr * 0.95'
 if config['log_with_wandb']:
     wandb.init(project="IMU_SSL", config=config, name=test_name)
-train_sub_movi = ['sub_' + str(i+1) for i in range(0, 80)]
-test_sub_movi = ['sub_' + str(i+1) for i in range(80, 88)]
-train_sub_combined_dataset = ['except test']        # except test
-test_sub_combined_dataset = ['dset' + str(i) for i in range(6, 9)]
 
 if __name__ == '__main__':
     os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
     add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
-    # logging.info(test_info)
 
-    independent_hyper = ('NumGradDeSsl', [1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6, 3e6])
+    # independent_hyper = ('nlayers', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    independent_hyper = ('NumGradDeSsl', [config['NumGradDeSsl']])
     # {1: [16, 32, 48, 64, 80, 96], 2: [8, 16, 24, 32, 40, 48], 4: [4, 8, 12, 16, 20, 24], 8: [2, 4, 6, 8, 10, 12]}
-    coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {4: [6]})
+    coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {4: [8, 12, 16], 8: [4, 6, 8]})
+    # coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {8: [6]})
 
     for indep_hyper_val in independent_hyper[1]:
         for coupled_hyper_val_1, coupled_hyper_val_list_2 in coupled_hypers[1].items():
@@ -544,14 +550,24 @@ if __name__ == '__main__':
                 config[independent_hyper[0]] = indep_hyper_val
                 config[coupled_hypers[0][0]] = coupled_hyper_val_1
                 config[coupled_hypers[0][1]] = coupled_hyper_val_2
-                config['FileNameAppendix'] = f', {independent_hyper[0]}_{indep_hyper_val}, {coupled_hypers[0][0]}_{coupled_hyper_val_1}, {coupled_hypers[0][1]}_{coupled_hyper_val_2}'
+                config['FileNameAppendix'] = f', {independent_hyper[0]}_{indep_hyper_val},' \
+                                             f' {coupled_hypers[0][0]}_{coupled_hyper_val_1},' \
+                                             f' {coupled_hypers[0][1]}_{coupled_hyper_val_2}'
+                logging.info(test_info)
                 logging.info(config['FileNameAppendix'])
                 logging.info(config)
 
-                run_ssl(ssl_task_kam)
+                run_ssl(ssl_task)
+
                 # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
-                da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
-                run_cross_vali(da_framework, da_use_ratios=[.25], fold_num=5)
+                # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_0)
+                # run_cross_vali(da_framework, da_use_ratios=[.25], fold_num=5)
+
+                da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_1)
+                run_cross_vali(da_framework, da_use_ratios=[0.05], fold_num=5)
+
+                # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
+                # run_cross_vali(da_framework, da_use_ratios=[1.], fold_num=5)
 
                 plt.show()
                 plt.close("all")
@@ -562,13 +578,15 @@ if __name__ == '__main__':
 1. Transformer complexity matters. Longer patch length corresponds to larger models. Improvements might be from larger complexity.
 
 [TODO]
-0. More downstream tasks
-0. flash attention
 1. Load data dynamically
 2. Robustness as a downstream task
-3. 
-4.
+3. flash attention
+4. debug sun check IMU signal, i) ; ii) ; iii) output normalized or not
 5. Compare against 1000+ rand init
 6. Use joint contact force as downstream application, since AddBiom cannot provide this
+
+[results]
+1. filtered, Acc * 0.5 + gyr * 0.5 is the best
+
 """
 

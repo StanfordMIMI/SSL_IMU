@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 from matplotlib import rc, colormaps
 from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd_profiles, format_axis
 from ssl_main.config import RESULTS_PATH
-from matplotlib.backends.backend_pdf import PdfPages
 from ssl_main.const import FONT_DICT, LINE_WIDTH_THICK
 
 
@@ -20,7 +19,7 @@ def init_fig():
 def draw_line(line_config, amount_list):
     def format_ticks():
         ax = plt.gca()
-        ax.set_xlabel('Number of training steps', fontdict=FONT_DICT)
+        ax.set_xlabel(target_param, fontdict=FONT_DICT)
         ax.set_ylabel('Correlation Coefficient of KFM Estimation', fontdict=FONT_DICT)
         # ax.set_xlim(line_config['data'][0, 0], 1)
         ax.tick_params(bottom=False)
@@ -48,26 +47,27 @@ def finalize_fig():
     plt.tight_layout(rect=[0., 0., 1., 1.])
 
 
-data_path = RESULTS_PATH + '2023_04_15_16_33_35_ssl_step'
-test_name = '/walking_knee_moment_output'     # hw_running_VALR   walking_knee_moment_output  Carmargo_output
+test_name = '/walking_knee_moment_output'     # hw_running_VALR   walking_knee_moment_output  Camargo_output
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 
 
 if __name__ == "__main__":
+    data_path = RESULTS_PATH + '2023_04_17_23_00_49_nlayers'
+    target_param = 'nlayers'
     metric = 'r2'
     results_task = load_da_data(data_path + test_name + '.h5')
     result_df = results_dict_to_pd_profiles(results_task, 1)
 
-    num_grad_de_ssl = np.sort(list(set(result_df['NumGradDeSsl'])))
+    num_grad_de_ssl = np.sort(list(set(result_df[target_param])))
 
     data_cond = result_df[(result_df['PatchLen'] == 8) & (result_df['MaskPatchNum'] == 6)]
-    data_cond_0 = data_cond[~data_cond['LinearProb']&data_cond['UseSsl']][['NumGradDeSsl', metric]]
+    data_cond_0 = data_cond[~data_cond['LinearProb']&data_cond['UseSsl']][[target_param, metric]]
     line_config_0 = {'color': colors[0], 'style': '.-', 'label': 'Self-Supervised Encoders - Fine-tuning', 'data': data_cond_0.values}
-    data_cond_1 = data_cond[data_cond['LinearProb']&data_cond['UseSsl']][['NumGradDeSsl', metric]]
+    data_cond_1 = data_cond[data_cond['LinearProb']&data_cond['UseSsl']][[target_param, metric]]
     line_config_1 = {'color': colors[0], 'style': '--.', 'label': 'Self-Supervised Encoders - Linear', 'data': data_cond_1.values}
-    data_cond_2 = data_cond[~data_cond['LinearProb']&~data_cond['UseSsl']][['NumGradDeSsl', metric]]
+    data_cond_2 = data_cond[~data_cond['LinearProb']&~data_cond['UseSsl']][[target_param, metric]]
     line_config_2 = {'color': colors[1], 'style': '.-', 'label': 'Randomly Initialized Encoders - Fine-tuning', 'data': data_cond_2.values}
-    data_cond_3 = data_cond[data_cond['LinearProb']&~data_cond['UseSsl']][['NumGradDeSsl', metric]]
+    data_cond_3 = data_cond[data_cond['LinearProb']&~data_cond['UseSsl']][[target_param, metric]]
     line_config_3 = {'color': colors[1], 'style': '--.', 'label': 'Randomly Initialized Encoders - Linear', 'data': data_cond_3.values}
 
     fig = init_fig()

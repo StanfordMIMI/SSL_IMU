@@ -37,7 +37,7 @@ configs = [{'only_linear': False, 'use_ssl': True, 'start_str': '\multirow{2}{*}
            {'only_linear': False, 'use_ssl': False, 'start_str': '                               & Initial Encoders & '},
            {'only_linear': True, 'use_ssl': True, 'start_str': '\multirow{2}{*}{Linear} & Self-Supervised Encoders & '},
            {'only_linear': True, 'use_ssl': False, 'start_str': '                               & Initial Encoders & '}]
-# task_names = ['/hw_running_VALR', '/Carmargo_peak_fy', '/walking_knee_moment_KFM']
+# task_names = ['/hw_running_VALR', '/Camargo_peak_fy', '/walking_knee_moment_KFM']
 task_names = ['/walking_knee_moment_KFM']
 metrics_and_attributes = [['correlation', '', 2], ['r_rmse', '\%', 1]]
 

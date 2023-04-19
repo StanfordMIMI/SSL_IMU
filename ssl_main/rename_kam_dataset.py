@@ -1,5 +1,4 @@
 import h5py
-from const import IMU_CARMARGO_SEGMENT_LIST
 import json
 import numpy as np
 from config import DATA_PATH

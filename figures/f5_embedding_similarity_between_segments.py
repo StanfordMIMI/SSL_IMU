@@ -3,7 +3,6 @@ from ssl_main.const import RESULTS_PATH
 from torch.nn import functional as F
 import torch
 import os
-from ssl_main.a1_ssl import ssl_task_Carmargo
 import matplotlib.pyplot as plt
 
 
@@ -54,7 +53,7 @@ def show_sub_mat(mat, segments_to_show):
 
 temperature = 0.1
 num_of_segment = 17
-imu_segments = ssl_task_Carmargo['imu_segments']
+imu_segments = ssl_task_Camargo['imu_segments']
 
 embedding_path = os.path.join(RESULTS_PATH, 'embedding_similarity_between_segments')
 # pre_mat = compute_similarity_map_between_segments('pre_ssl')
