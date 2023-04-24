@@ -1,3 +1,5 @@
+import copy
+import sys
 import articulate as art
 from utils import data_filter
 import numpy as np
@@ -11,6 +13,8 @@ import scipy.interpolate as interpo
 from a0_process_MoVi import ContinuousDatasetLoader, WindowSegmentation
 import h5py, json
 from config import DATA_PATH
+from multiprocessing import Pool, cpu_count
+import time
 
 
 """ 
@@ -138,58 +142,77 @@ def plot_3d_scatter(vert):
     plt.show()
 
 
-def process_amass():
-    body_model = art.ParametricModel(raw_amass_dir + 'ModelFiles/smpl/models/basicmodel_m_lbs_10_207_0_v1.0.0.pkl')
-    imu_names = [imu_name for imu_name, imu_config in IMU_CONFIGS.items()]
-    columns = [segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']]
+def process_one_trial(npz_fname, body_model_path, imu_names, columns, progress_percent):
+    # sys.stdout.write(f'{round(progress_percent*100, 2)}%')
+    # sys.stdout.flush()
+    print(f'{round(progress_percent*100, 2)}%', end='\r', flush=True)
+    body_model = art.ParametricModel(body_model_path)
+    trial_wins = []
+    try: cdata = np.load(npz_fname)
+    except: return []
+    ori_frame_rate = int(cdata['mocap_framerate'])
+    if ori_frame_rate < 50: print('abandoned low sampling rate trial', npz_fname); return []
+    data_pose_current = resample_to_target_fre(cdata['poses'].astype(np.float32), target_frame_rate, ori_frame_rate)
+    data_trans_current = resample_to_target_fre(cdata['trans'].astype(np.float32), target_frame_rate, ori_frame_rate)
+
+    data_pose = torch.tensor(np.asarray(data_pose_current, np.float32)).view(-1, 52, 3)
+    data_trans = torch.tensor(np.asarray(data_trans_current, np.float32))
+    data_shape = torch.tensor(np.asarray(cdata['betas'][:10], np.float32))       # TODO: Augment the data by changing betas
+    length = torch.tensor(data_pose_current.shape[0])
+    data_pose[:, 23] = data_pose[:, 37]     # right hand, [UNCLEAR]
+    data_pose = data_pose[:, :24].clone()   # only use body, [UNCLEAR]
+
+    if length < win_len: print('\tdiscard one sequence with length', length); return []
+    p = art.math.axis_angle_to_rotation_matrix(data_pose).view(-1, 24, 3, 3)
+    grot, joint, traj = body_model.forward_kinematics(p, data_shape, data_trans, calc_mesh=True)
+
+    # plot_3d_scatter(traj)
+
+    trial_data = []
+    for imu_name in imu_names:
+        imu_config = IMU_CONFIGS[imu_name]
+        synthetic = SyntheticAccGyr(imu_name, R_wb=grot[:, imu_config['ji_sel']], traj=traj[:, imu_config['vi_sel']], R_sb=imu_config['R_sw'])
+        acc_, gyr_ = synthetic.get_acc_gyr()
+        trial_data.append(acc_)
+        trial_data.append(gyr_)
+    trial_data_continuous = np.concatenate(trial_data, axis=1).T
+
+    # segment trial data from [feature, time] into windows [step, feature, time]
+    gyr_cols = [i for i, col in enumerate(columns) if 'Accel' in col]
+    trial_len = trial_data_continuous.shape[1]
+    for i_ in range(0, trial_len - win_len, win_stride):
+        win_data = trial_data_continuous[:, i_:i_+win_len]
+        acc_std = np.std(win_data[gyr_cols], axis=1)
+        # plt.figure()
+        # plt.plot(win_data[gyr_cols].T)
+        # plt.title(npz_fname.split('\\')[-1] + '\t' + str(acc_std.mean()))
+        # plt.show()
+        if acc_std.mean() >= 2:
+            trial_wins.append(win_data)
+    return trial_wins
+
+
+
+def process_amass_multi_thread():
+    def record_wins(trial_wins):
+        dset_wins.extend(trial_wins)
+
+    imu_names = tuple([imu_name for imu_name, imu_config in IMU_CONFIGS.items()])
+    body_model_path = raw_amass_dir + 'ModelFiles/smpl/models/basicmodel_m_lbs_10_207_0_v1.0.0.pkl'
+    columns = tuple([segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
     for dset_name in amass_data:
         print('\rReading', dset_name)
-        dset_data_win = []
-        for npz_fname in tqdm(glob.glob(os.path.join(raw_amass_dir, dset_name, '*/*_poses.npz'))[68:]):
-            try: cdata = np.load(npz_fname)
-            except: continue
-
-            ori_frame_rate = int(cdata['mocap_framerate'])
-            if ori_frame_rate < 50: print('abandoned low sampling rate trial', npz_fname); continue
-            data_pose_current = resample_to_target_fre(cdata['poses'].astype(np.float32), target_frame_rate, ori_frame_rate)
-            data_trans_current = resample_to_target_fre(cdata['trans'].astype(np.float32), target_frame_rate, ori_frame_rate)
-
-            data_pose = torch.tensor(np.asarray(data_pose_current, np.float32)).view(-1, 52, 3)
-            data_trans = torch.tensor(np.asarray(data_trans_current, np.float32))
-            data_shape = torch.tensor(np.asarray(cdata['betas'][:10], np.float32))       # TODO: Augment the data by changing betas
-            length = torch.tensor(data_pose_current.shape[0])
-            data_pose[:, 23] = data_pose[:, 37]     # right hand, [UNCLEAR]
-            data_pose = data_pose[:, :24].clone()   # only use body, [UNCLEAR]
-
-            if length < win_len: print('\tdiscard one sequence with length', length); continue
-            p = art.math.axis_angle_to_rotation_matrix(data_pose).view(-1, 24, 3, 3)
-            grot, joint, traj = body_model.forward_kinematics(p, data_shape, data_trans, calc_mesh=True)
-
-            # plot_3d_scatter(traj)
-
-            trial_data = []
-            for imu_name in imu_names:
-                imu_config = IMU_CONFIGS[imu_name]
-                synthetic = SyntheticAccGyr(imu_name, R_wb=grot[:, imu_config['ji_sel']], traj=traj[:, imu_config['vi_sel']], R_sb=imu_config['R_sw'])
-                acc_, gyr_ = synthetic.get_acc_gyr()
-                trial_data.append(acc_)
-                trial_data.append(gyr_)
-            trial_data_continuous = np.concatenate(trial_data, axis=1).T
-
-            # segment trial data from [feature, time] into windows [step, feature, time]
-            gyr_cols = [i for i, col in enumerate(columns) if 'Accel' in col]
-            trial_len = trial_data_continuous.shape[1]
-            for i_ in range(0, trial_len - win_len, win_stride):
-                win_data = trial_data_continuous[:, i_:i_+win_len]
-                acc_std = np.std(win_data[gyr_cols], axis=1)
-                # plt.figure()
-                # plt.plot(win_data[gyr_cols].T)
-                # plt.title(npz_fname.split('\\')[-1] + '\t' + str(acc_std.mean()))
-                # plt.show()
-                if acc_std.mean() >= 2:
-                    dset_data_win.append(win_data)
-
-        dset_data = np.stack(dset_data_win, axis=0)
+        dset_wins = []
+        t0 = time.time()
+        pool = Pool(processes=4)
+        trials = glob.glob(os.path.join(raw_amass_dir, dset_name, '*/*_poses.npz'))[0:10]
+        trial_num = len(trials)
+        for i_trial, npz_fname in enumerate(trials):
+            pool.apply_async(process_one_trial, args=(npz_fname, body_model_path, imu_names, columns, (i_trial+1)/trial_num), callback=record_wins)
+        pool.close()
+        pool.join()
+        print('Time cost:', time.time() - t0)
+        dset_data = np.stack(dset_wins, axis=0)
         with h5py.File(DATA_PATH + 'amass.h5', 'a') as hf:
             try: del hf[dset_name]
             except KeyError: pass
@@ -202,4 +225,4 @@ target_frame_rate = 100
 win_len, win_stride = 128, 64
 if __name__ == '__main__':
     raw_amass_dir = 'D:/Local/Data/AMASS/'
-    process_amass()
+    process_amass_multi_thread()
