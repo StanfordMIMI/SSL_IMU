@@ -1,5 +1,6 @@
 import copy
 import sys
+sys.path.insert(0, '..')
 import articulate as art
 from utils import data_filter
 import numpy as np
@@ -12,7 +13,7 @@ import torch
 import scipy.interpolate as interpo
 from a0_process_MoVi import ContinuousDatasetLoader, WindowSegmentation
 import h5py, json
-from config import DATA_PATH
+from config import AMASS_PATH, DATA_PATH
 from multiprocessing import Pool, cpu_count
 import time
 
@@ -145,7 +146,7 @@ def plot_3d_scatter(vert):
 def process_one_trial(npz_fname, body_model_path, imu_names, columns, progress_percent):
     # sys.stdout.write(f'{round(progress_percent*100, 2)}%')
     # sys.stdout.flush()
-    print(f'{round(progress_percent*100, 2)}%', end='\r', flush=True)
+    print(f'{round(progress_percent*100, 2)}%', end='\t')
     body_model = art.ParametricModel(body_model_path)
     trial_wins = []
     try: cdata = np.load(npz_fname)
@@ -162,7 +163,7 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, progress_p
     data_pose[:, 23] = data_pose[:, 37]     # right hand, [UNCLEAR]
     data_pose = data_pose[:, :24].clone()   # only use body, [UNCLEAR]
 
-    if length < win_len: print('\tdiscard one sequence with length', length); return []
+    if length < win_len: return []
     p = art.math.axis_angle_to_rotation_matrix(data_pose).view(-1, 24, 3, 3)
     grot, joint, traj = body_model.forward_kinematics(p, data_shape, data_trans, calc_mesh=True)
 
@@ -175,7 +176,7 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, progress_p
         acc_, gyr_ = synthetic.get_acc_gyr()
         trial_data.append(acc_)
         trial_data.append(gyr_)
-    trial_data_continuous = np.concatenate(trial_data, axis=1).T
+    trial_data_continuous = np.concatenate(trial_data, axis=1).T.astype(np.float32)
 
     # segment trial data from [feature, time] into windows [step, feature, time]
     gyr_cols = [i for i, col in enumerate(columns) if 'Accel' in col]
@@ -192,37 +193,38 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, progress_p
     return trial_wins
 
 
-
 def process_amass_multi_thread():
     def record_wins(trial_wins):
         dset_wins.extend(trial_wins)
 
     imu_names = tuple([imu_name for imu_name, imu_config in IMU_CONFIGS.items()])
-    body_model_path = raw_amass_dir + 'ModelFiles/smpl/models/basicmodel_m_lbs_10_207_0_v1.0.0.pkl'
+    body_model_path = AMASS_PATH + 'ModelFiles/smpl/models/basicmodel_m_lbs_10_207_0_v1.0.0.pkl'
     columns = tuple([segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
     for dset_name in amass_data:
-        print('\rReading', dset_name)
+        print(dset_name)
         dset_wins = []
         t0 = time.time()
-        pool = Pool(processes=4)
-        trials = glob.glob(os.path.join(raw_amass_dir, dset_name, '*/*_poses.npz'))[0:10]
+        pool = Pool(processes=5)
+        trials = glob.glob(os.path.join(AMASS_PATH, dset_name, '*/*_poses.npz'))[:10]
         trial_num = len(trials)
         for i_trial, npz_fname in enumerate(trials):
             pool.apply_async(process_one_trial, args=(npz_fname, body_model_path, imu_names, columns, (i_trial+1)/trial_num), callback=record_wins)
         pool.close()
         pool.join()
         print('Time cost:', time.time() - t0)
+        if len(dset_wins) == 0: continue
         dset_data = np.stack(dset_wins, axis=0)
-        with h5py.File(DATA_PATH + 'amass.h5', 'a') as hf:
-            try: del hf[dset_name]
-            except KeyError: pass
-            dset = hf.create_dataset(dset_name, dset_data.shape, data=dset_data)
+        with h5py.File(DATA_PATH + 'amass.h5', 'w') as hf:
+            try:
+                del hf[dset_name]
+            except KeyError:
+                pass
+            dset = hf.create_dataset(dset_name, dset_data.shape, data=dset_data)        # , compression='gzip', compression_opts=9
             hf.attrs['columns'] = json.dumps(columns)
 
 
-amass_data = ['ACCAD']      # DFaust_67     Transitions_mocap
+amass_data = ['ACCAD']      # , 'BioMotionLab_NTroje', 'BMLmovi', 'BMLhandball', 'CMU', 'CNRS', 'DFaust_67']      #      Transitions_mocap
 target_frame_rate = 100
 win_len, win_stride = 128, 64
 if __name__ == '__main__':
-    raw_amass_dir = 'D:/Local/Data/AMASS/'
     process_amass_multi_thread()
