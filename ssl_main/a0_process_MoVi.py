@@ -2,10 +2,8 @@ import h5py
 import numpy as np
 import ast
 from const import TRIAL_TYPES, GRAVITY, STANCE_V_GRF_THD, DICT_TRIAL_MOVI
-from scipy.interpolate import interp1d
-from a0_generate_windows import BaseSegmentation, DataStruct
-import matplotlib.pyplot as plt
-
+from utils import resample_to_target_fre
+from a0_process_camargo import DataStruct, BaseSegmentation
 DATA_PATH_MOVI = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/MoVi/data_processed/'
 
 
@@ -22,18 +20,9 @@ class ContinuousDatasetLoader:
                     i_trial = DICT_TRIAL_MOVI[trial]
                     trial_data = trial_data[:].T
                     if target_fre is not None:
-                        trial_data = self.resample_to_target_fre(trial_data, target_fre)
+                        trial_data = resample_to_target_fre(trial_data, target_fre)
                     trial_data = self.add_additional_info(trial_data, i_subject, i_trial)
                     self.data_contin[subject].append(trial_data)
-
-    @staticmethod
-    def resample_to_target_fre(trial_data, target_fre, ori_fre=120):
-        x, step = np.linspace(0., 1., trial_data.shape[0], retstep=True)
-        new_x = np.arange(0., 1., step*ori_fre/target_fre)
-        f = interp1d(x, trial_data, axis=0)
-        trial_data_resampled = f(new_x)
-
-        return trial_data_resampled
 
     def add_additional_info(self, trial_data, i_subject, i_trial):
         data_len = trial_data.shape[0]

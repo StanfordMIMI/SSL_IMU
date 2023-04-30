@@ -52,13 +52,13 @@ colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 
 
 if __name__ == "__main__":
-    data_path = RESULTS_PATH + '2023_04_17_23_00_49_nlayers'
-    target_param = 'nlayers'
+    data_path = RESULTS_PATH + 't03_test_camargo'
+    target_param = 'NumGradDeSsl'
     metric = 'r2'
     results_task = load_da_data(data_path + test_name + '.h5')
     result_df = results_dict_to_pd_profiles(results_task, 1)
 
-    num_grad_de_ssl = np.sort(list(set(result_df[target_param])))
+    param_set = np.sort(list(set(result_df[target_param])))
 
     data_cond = result_df[(result_df['PatchLen'] == 8) & (result_df['MaskPatchNum'] == 6)]
     data_cond_0 = data_cond[~data_cond['LinearProb']&data_cond['UseSsl']][[target_param, metric]]
@@ -71,10 +71,10 @@ if __name__ == "__main__":
     line_config_3 = {'color': colors[1], 'style': '--.', 'label': 'Randomly Initialized Encoders - Linear', 'data': data_cond_3.values}
 
     fig = init_fig()
-    draw_line(line_config_0, num_grad_de_ssl)
-    draw_line(line_config_1, num_grad_de_ssl)
-    draw_line(line_config_2, num_grad_de_ssl)
-    draw_line(line_config_3, num_grad_de_ssl)
+    draw_line(line_config_0, param_set)
+    draw_line(line_config_1, param_set)
+    draw_line(line_config_2, param_set)
+    draw_line(line_config_3, param_set)
     finalize_fig()
     plt.show()
 

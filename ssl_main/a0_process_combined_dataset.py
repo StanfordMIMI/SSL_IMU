@@ -1,4 +1,4 @@
-from a0_process_MoVi import ContinuousDatasetLoader, WindowSegmentation, DataStruct, BaseSegmentation
+from utils import resample_to_target_fre
 import h5py
 import numpy as np
 import pandas as pd
@@ -39,7 +39,7 @@ class CombinedDatasetLoader:
         if target_fre == ori_fre:
             return trial_data
         else:
-            return ContinuousDatasetLoader.resample_to_target_fre(trial_data, target_fre, ori_fre)
+            return resample_to_target_fre(trial_data, target_fre, ori_fre)
 
     def add_additional_info(self, trial_data, i_dataset, i_subject, i_trial):
         return trial_data

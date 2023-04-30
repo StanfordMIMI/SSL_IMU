@@ -2,7 +2,6 @@ import h5py
 import numpy as np
 import pandas as pd
 import json
-from a0_process_combined_dataset import CombinedDatasetLoader
 import matplotlib.pyplot as plt
 import matplotlib
 # matplotlib.use('WebAgg')
@@ -30,11 +29,11 @@ if __name__ == '__main__':
     #         for i in range(len(data_reader.data_contin[dset][sub])):
     #             plot_trial_data(data_reader.data_contin[dset][sub][i], dset)
 
-    with h5py.File('D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/data_processed/combined_walking_knee_moment.h5', 'r') as hf:
-        data_columns = json.loads(hf.attrs['columns'])
-        data_dict = {dset_: data_[:] for dset_, data_ in hf.items()}
-    for dset_, data_ in data_dict.items():
-        print('dset: ', dset_, 'max: ', np.max(np.abs(data_)), 'argmax: ', np.argmax(np.abs(data_)))
+    # with h5py.File('D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/data_processed/combined_walking_knee_moment.h5', 'r') as hf:
+    #     data_columns = json.loads(hf.attrs['columns'])
+    #     data_dict = {dset_: data_[:] for dset_, data_ in hf.items()}
+    # for dset_, data_ in data_dict.items():
+    #     print('dset: ', dset_, 'max: ', np.max(np.abs(data_)), 'argmax: ', np.argmax(np.abs(data_)))
         # for i in range(8):
         #     plt.figure()
         #     for j in range(3):
@@ -46,5 +45,12 @@ if __name__ == '__main__':
         #     plt.title(dset_ + ' ' + data_columns[6*i+3])
         # plt.show()
 
+    with h5py.File('D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/data_processed/Camargo_100.h5', 'r') as hf:
+        data_columns = json.loads(hf.attrs['columns'])
+        data_dict = {dset_: data_[:] for dset_, data_ in hf.items()}
 
+    grf_col_loc = [data_columns.index(col_) for col_ in ['fx', 'fy', 'fz']]
+    plt.figure()
+    plt.plot(data_dict['AB06'][0, grf_col_loc, :].T)
+    plt.show()
 

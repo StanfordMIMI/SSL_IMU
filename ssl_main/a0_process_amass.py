@@ -16,10 +16,12 @@ import h5py, json
 from config import AMASS_PATH, DATA_PATH
 from multiprocessing import Pool, cpu_count
 import time
+import random
 
 
 """ 
 Notes: 
+AMASS body frames: x points left; y points up, z points forward
 [step, feature, time]
 ['CHEST', 'WAIST', 'R_THIGH', 'L_THIGH', 'R_SHANK', 'L_SHANK', 'R_FOOT', 'L_FOOT'] 
 """
@@ -143,15 +145,15 @@ def plot_3d_scatter(vert):
     plt.show()
 
 
-def process_one_trial(npz_fname, body_model_path, imu_names, columns, progress_percent):
-    # sys.stdout.write(f'{round(progress_percent*100, 2)}%')
-    # sys.stdout.flush()
-    print(f'{round(progress_percent*100, 2)}%', end='\t')
+def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, trial_num, dset_name):
     body_model = art.ParametricModel(body_model_path)
+    if i_trial % (trial_num // 10) == 0:
+        print(f'{round(i_trial/trial_num*100, 2)}%')
     trial_wins = []
     try: cdata = np.load(npz_fname)
     except: return []
-    ori_frame_rate = int(cdata['mocap_framerate'])
+    try: ori_frame_rate = int(cdata['mocap_framerate'])
+    except KeyError: ori_frame_rate = int(cdata['mocap_frame_rate'])
     if ori_frame_rate < 50: print('abandoned low sampling rate trial', npz_fname); return []
     data_pose_current = resample_to_target_fre(cdata['poses'].astype(np.float32), target_frame_rate, ori_frame_rate)
     data_trans_current = resample_to_target_fre(cdata['trans'].astype(np.float32), target_frame_rate, ori_frame_rate)
@@ -190,41 +192,83 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, progress_p
         # plt.show()
         if acc_std.mean() >= 2:
             trial_wins.append(win_data)
-    return trial_wins
+
+    if len(trial_wins) == 0: return
+    dset_data = np.stack(trial_wins, axis=0)
+    temp_save_file = f'{DATA_PATH}npy_temp/{dset_name}/{i_trial}.npy'
+    temp_dir = os.path.dirname(temp_save_file)
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
+    with open(temp_save_file, 'wb') as f:
+        np.save(f, dset_data)
+        # print(f'Saved temp file: {temp_save_file}')
+
+
+def npy_to_h5():
+    with h5py.File(DATA_PATH + 'amass.h5', 'w') as hf:
+        hf.attrs['columns'] = json.dumps(columns)
+        for dset_name in next(os.walk(os.path.join(DATA_PATH, 'npy_temp')))[1]:
+            print(f'Saving dset: {dset_name}')
+            dset_wins = []
+            temp_files = glob.glob(os.path.join(DATA_PATH, 'npy_temp', dset_name, '*.npy'))
+            for temp_file in temp_files:
+                with open(temp_file, 'rb') as f:
+                    dset_wins.append(np.load(f))
+            if len(dset_wins) > 0:
+                dset_data = np.concatenate(dset_wins, axis=0)
+                dset = hf.create_dataset(dset_name, dset_data.shape, data=dset_data)
+
+
+def npy_to_h5_small_size():
+    with h5py.File(DATA_PATH + 'amass_small.h5', 'w') as hf:
+        hf.attrs['columns'] = json.dumps(columns)
+        for dset_name in next(os.walk(os.path.join(DATA_PATH, 'npy_temp')))[1]:
+            print(f'Saving dset: {dset_name}')
+            dset_wins = []
+            temp_files = glob.glob(os.path.join(DATA_PATH, 'npy_temp', dset_name, '*.npy'))
+            for temp_file in temp_files:
+                with open(temp_file, 'rb') as f:
+                    dset_wins.append(np.load(f))
+            if len(dset_wins) > 10:
+                dset_data = np.concatenate(dset_wins, axis=0)
+                sampled_rows = np.sort(random.sample(range(dset_data.shape[0]), int(0.1 * dset_data.shape[0])))
+                dset_data = dset_data[sampled_rows]
+                dset = hf.create_dataset(dset_name, dset_data.shape, data=dset_data)
 
 
 def process_amass_multi_thread():
-    def record_wins(trial_wins):
-        dset_wins.extend(trial_wins)
-
-    imu_names = tuple([imu_name for imu_name, imu_config in IMU_CONFIGS.items()])
     body_model_path = AMASS_PATH + 'ModelFiles/smpl/models/basicmodel_m_lbs_10_207_0_v1.0.0.pkl'
-    columns = tuple([segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
-    for dset_name in amass_data:
-        print(dset_name)
-        dset_wins = []
+    for dset_name in amass_dset_names:
         t0 = time.time()
-        pool = Pool(processes=5)
-        trials = glob.glob(os.path.join(AMASS_PATH, dset_name, '*/*_poses.npz'))[:10]
+        # pool = Pool(processes=1)
+        trials = glob.glob(os.path.join(AMASS_PATH, dset_name, '*/*_poses.npz'))
+        print('Processing ', dset_name, '\t Num of trials ', len(trials))
         trial_num = len(trials)
         for i_trial, npz_fname in enumerate(trials):
-            pool.apply_async(process_one_trial, args=(npz_fname, body_model_path, imu_names, columns, (i_trial+1)/trial_num), callback=record_wins)
-        pool.close()
-        pool.join()
-        print('Time cost:', time.time() - t0)
-        if len(dset_wins) == 0: continue
-        dset_data = np.stack(dset_wins, axis=0)
-        with h5py.File(DATA_PATH + 'amass.h5', 'w') as hf:
             try:
-                del hf[dset_name]
-            except KeyError:
-                pass
-            dset = hf.create_dataset(dset_name, dset_data.shape, data=dset_data)        # , compression='gzip', compression_opts=9
-            hf.attrs['columns'] = json.dumps(columns)
+                process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, trial_num, dset_name)
+            except Exception as e:
+                print(e)
+                print('Failed to process ', npz_fname)
+            # pool.apply_async(process_one_trial, args=(npz_fname, body_model_path, imu_names, columns, i_trial, trial_num, dset_name))
+        # pool.close()
+        # pool.join()
+        print('Time cost:', time.time() - t0)
 
 
-amass_data = ['ACCAD']      # , 'BioMotionLab_NTroje', 'BMLmovi', 'BMLhandball', 'CMU', 'CNRS', 'DFaust_67']      #      Transitions_mocap
+imu_names = tuple([imu_name for imu_name, imu_config in IMU_CONFIGS.items()])
+columns = tuple([segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
+amass_dset_names = [
+    'ACCAD', 'BioMotionLab_NTroje', 'BMLhandball', 'BMLmovi', 'CNRS', 'DanceDB', 'DFaust_67', 'CMU',
+    'EKUT', 'Eyes_Japan_Dataset', 'GRAB', 'HUMAN4D', 'HumanEva', 'KIT', 'MPI_HDM05', 'MPI_Limits', 'MPI_mosh',
+    'SFU', 'SOMA', 'SSM_synced', 'TotalCapture','Transitions_mocap', 'WEIZMANN'
+]
 target_frame_rate = 100
 win_len, win_stride = 128, 64
 if __name__ == '__main__':
-    process_amass_multi_thread()
+    # process_amass_multi_thread()
+    # npy_to_h5()
+    npy_to_h5_small_size()
+
+
+

@@ -91,8 +91,7 @@ CAMARGO_SUB_HEIGHT_WEIGHT = {
 SUB_ID_ALL_DATASETS = {
     'hw_running': ['subject_' + str(i) for i in range(15)],
     'Camargo': list(CAMARGO_SUB_HEIGHT_WEIGHT.keys()),
-    'CamargoStepWin': ['AB06', 'AB07', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
-                        'AB18', 'AB19', 'AB20', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30'],
+    'Camargo_100': list(CAMARGO_SUB_HEIGHT_WEIGHT.keys()),
     'walking_knee_moment': ['subject_' + ('0' + str(i))[-2:] for i in range(1, 18)],
     'sun_drop_jump': ['P_08_zhangboyuan', 'P_09_libang', 'P_10_dongxuan', 'P_11_liuchunyu', 'P_12_fuzijun',
                       'P_13_xulibang', 'P_14_hunan', 'P_15_liuzhaoyu', 'P_16_zhangjinduo', 'P_17_congyuanqi',
@@ -110,3 +109,13 @@ train_sub_Camargo = [id for id in SUB_ID_ALL_DATASETS['Camargo'] if id not in te
 
 test_sub_hw = ['subject_' + str(i) for i in range(5)]
 train_sub_hw = [id for id in SUB_ID_ALL_DATASETS['hw_running'] if id not in test_sub_hw]
+
+train_set_combined_dataset = ['except test']        # except test
+test_set_combined_dataset = ['dset' + str(i) for i in range(6, 9)]
+
+train_set_amass_dset = ['except test']
+test_set_amass_dset = ['ACCAD']
+
+
+
+

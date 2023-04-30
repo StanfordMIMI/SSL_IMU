@@ -17,10 +17,13 @@ from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, res
     preprocess_modality, get_scores, print_table, get_step_len, save_multi_image
 from const import DICT_TRIAL_TYPE_ID, RESULTS_PATH, CAMARGO_SUB_HEIGHT_WEIGHT, \
     GRAVITY, train_sub_Camargo, test_sub_Camargo, test_sub_hw, train_sub_hw, train_sub_kam, test_sub_kam, \
-    SUB_ID_ALL_DATASETS, _mods, STANDARD_IMU_SEQUENCE
+    SUB_ID_ALL_DATASETS, _mods, STANDARD_IMU_SEQUENCE, train_set_combined_dataset, test_set_combined_dataset, \
+    train_set_amass_dset, test_set_amass_dset
 from config import DATA_PATH
 import json
 import pytorch_warmup as warmup
+import matplotlib
+# matplotlib.use('WebAgg')
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
@@ -98,7 +101,7 @@ class FrameworkDownstream:
                 current_set_data = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
                 """ [step, feature, time] """
                 self.set_data[data_name] = current_set_data
-                self.check_dataset_imu_orientation(self.set_data[data_name], self.data_columns, self.da_task['imu_segments'])
+                # self.check_dataset_imu_orientation(self.set_data[data_name], self.data_columns, self.da_task['imu_segments'])
 
     def load_and_process_sun(self, train_sub_ids: List[str], validate_sub_ids: List[str],
                              test_sub_ids: List[str]):
@@ -127,7 +130,7 @@ class FrameworkDownstream:
         for imu in imu_list:
             plt.figure()
             plt.title(imu)
-            col_loc = [columns_.index(imu + '_Accel_' + axis) for axis in ['X', 'Y', 'Z']]
+            col_loc = [columns_.index(imu + '_Gyro_' + axis) for axis in ['X', 'Y', 'Z']]
             plt.plot(data_[0, col_loc, :].T)
         plt.show()
 
@@ -236,8 +239,12 @@ class FrameworkDownstream:
                 loss.backward()
                 optimizer.step()
                 i_optimize += 1
-                # if i_optimize in [int(10 ** x) for x in np.linspace(1, 3, 81)]:
-                #     record_intermediate_results(i_optimize)
+
+                # plt.figure()
+                # plt.plot(xb[1].detach().cpu().numpy()[:, 18, :].ravel())
+                # plt.plot(yb.detach().cpu().numpy()[:, 1, :].ravel())
+                # plt.show()
+
                 with warmup_scheduler.dampening():
                     scheduler.step()
             return i_optimize
@@ -318,7 +325,7 @@ class FrameworkDownstream:
                 test_loss = eval_during_training(model, test_dl, torch.nn.MSELoss())
                 if self.config.log_with_wandb:
                     wandb.log({'linear train loss': train_loss, 'linear test loss': test_loss})
-                if epoch < 5 or i_epoch % int(epoch / 5) == 0 or i_epoch == epoch - 1:
+                if epoch < 2 or i_epoch % int(epoch / 2) == 0 or i_epoch == epoch - 1:
                     logging.info(f'| Regressibility | epoch{i_epoch:3d}/{epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s |'
                                  f' train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
                 epoch_end_time = time.time()
@@ -331,9 +338,10 @@ class FrameworkDownstream:
             plt.figure()
             for i_output in range(y_true.shape[1]):
                 plt.title('test set')
-                plt.plot(y_true[:10, i_output].ravel(), '-', color='C'+str(i_output), label=list(self.output_columns.keys())[i_output])
-                plt.plot(y_pred[:10, i_output].ravel(), '--', color='C'+str(i_output), label=list(self.output_columns.keys())[i_output])
+                plt.plot(y_true[:10, i_output].ravel(), '-', color='C'+str(i_output), label=self.output_columns)
+                plt.plot(y_pred[:10, i_output].ravel(), '--', color='C'+str(i_output), label=self.output_columns)
                 plt.legend()
+            plt.show()
         if verbose:
             all_scores = get_scores(y_true, y_pred, self.output_columns, test_step_lens)
             all_scores = [{'subject': 'all', **scores} for scores in all_scores]
@@ -482,7 +490,9 @@ def run_ssl(ssl_task):
     elif ssl_task['ssl_file_name'] == 'hw_running':
         ssl_framework.preprocess(train_sub_hw+test_sub_hw, test_sub_hw, test_sub_hw)
     elif 'Combined' in ssl_task['ssl_file_name']:
-        ssl_framework.preprocess(train_sub_combined_dataset, test_sub_combined_dataset, test_sub_combined_dataset)
+        ssl_framework.preprocess(train_set_combined_dataset, test_set_combined_dataset, test_set_combined_dataset)
+    elif 'amass' in ssl_task['ssl_file_name']:
+        ssl_framework.preprocess(train_set_amass_dset, test_set_amass_dset, test_set_amass_dset)
     ssl_framework.ssl_training(config)
 
 
@@ -508,26 +518,26 @@ def run_cross_vali(da_framework, da_use_ratios, fold_num=5, only_test_one_fold=F
         run_da(da_framework, da_use_ratios)
 
 
-train_sub_combined_dataset = ['except test']        # except test
-test_sub_combined_dataset = ['dset' + str(i) for i in range(6, 9)]
-ssl_task = {'ssl_file_name': 'filtered_walking_knee_moment', 'imu_segments': STANDARD_IMU_SEQUENCE}
+ssl_task = {'ssl_file_name': 'walking_knee_moment', 'imu_segments': STANDARD_IMU_SEQUENCE}      # amass
 
 DOWNSTREAM_TASK_0 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['KFM', 'KAM'],
                      'imu_segments': STANDARD_IMU_SEQUENCE}
-DOWNSTREAM_TASK_1 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'Camargo', 'output_columns': ['fx', 'fy', 'fz'],
-                     'imu_segments': ['CHEST', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise', 'R_FOOT', 'rand_noise']}
+DOWNSTREAM_TASK_1 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'Camargo_100', 'output_columns': ['fx', 'fy', 'fz'],
+                     'imu_segments': ['CHEST', 'rand_noise', 'rand_noise', 'rand_noise', 'R_SHANK', 'rand_noise', 'rand_noise', 'rand_noise']}     # ['CHEST', 'rand_noise', 'rand_noise', 'rand_noise', 'R_SHANK', 'rand_noise', 'rand_noise', 'rand_noise']
 DOWNSTREAM_TASK_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output_columns': ['R_KNEE_MOMENT_X', 'R_GRF_Z'],
                      'imu_segments': STANDARD_IMU_SEQUENCE}
 
+# log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
+
 config = {'NumGradDeSsl': 3e4, 'NumGradDeDa': 5e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
-# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.02, 'log_with_wandb': False,
+# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.1, 'log_with_wandb': False,
           'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 1e-4, 'FeedForwardDim': 512, 'nlayers': 6, 'nhead': 48,
           'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 
-test_name = 'test_camargo'
-test_info = 'test_camargo, hidden 512, filtered, Acc * 0.5 + gyr * 0.5'
+test_name = 'learned_pos_emb'
+test_info = 'cos sin init'
 
-# config['result_dir'] = os.path.join('../figures/results/2023_04_19_09_12_11_find_best_accuracy')
+# config['result_dir'] = os.path.join('../figures/results/2023_04_20_11_30_56_camargo')
 config['result_dir'] = os.path.join(RESULTS_PATH, result_folder() + "_" + test_name)
 config = parse_config(config)
 
@@ -559,12 +569,11 @@ if __name__ == '__main__':
 
                 run_ssl(ssl_task)
 
-                # log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
-                # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_0)
-                # run_cross_vali(da_framework, da_use_ratios=[.25], fold_num=5)
+                da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_0)
+                run_cross_vali(da_framework, da_use_ratios=[.25], fold_num=5)
 
-                da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_1)
-                run_cross_vali(da_framework, da_use_ratios=[0.05], fold_num=5)
+                # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_1)
+                # run_cross_vali(da_framework, da_use_ratios=[0.1], fold_num=5)
 
                 # da_framework = FrameworkDownstream(config, DOWNSTREAM_TASK_3)
                 # run_cross_vali(da_framework, da_use_ratios=[1.], fold_num=5)

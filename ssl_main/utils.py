@@ -13,6 +13,16 @@ from customized_logger import logger as logging, add_file_handler
 from sklearn.metrics import r2_score, mean_squared_error as mse
 from scipy.stats import pearsonr
 from scipy.stats import kendalltau
+from scipy.interpolate import interp1d
+
+
+def resample_to_target_fre(trial_data, target_fre, ori_fre=120):
+    x, step = np.linspace(0., 1., trial_data.shape[0], retstep=True)
+    new_x = np.arange(0., 1., step*ori_fre/target_fre)
+    f = interp1d(x, trial_data, axis=0)
+    trial_data_resampled = f(new_x)
+
+    return trial_data_resampled
 
 
 def fix_seed():

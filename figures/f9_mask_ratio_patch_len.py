@@ -75,13 +75,13 @@ def finalize_fig(fig, ax, im):
     pdf.savefig()
 
 
-# hw_running_VALR   walking_knee_moment_output  Camargo_output   sun_drop_jump_output
-test_name = '/walking_knee_moment_output'
 colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 
 
 if __name__ == "__main__":
-    test_folder = '2023_04_19_09_12_11_find_best_accuracy'      # 2023_04_19_09_11_37_find_best_accuracy    2023_04_19_09_12_11_find_best_accuracy
+    # hw_running_VALR   walking_knee_moment_output  Camargo_output   sun_drop_jump_output
+    test_name = '/walking_knee_moment_output'
+    test_folder = '2023_04_16_23_52_13_filtering'      # 2023_04_19_09_11_37_find_best_accuracy    2023_04_19_09_12_11_find_best_accuracy
     data_path = RESULTS_PATH + test_folder
     metric = 'r2'
     results_task = load_da_data(data_path + test_name + '.h5')

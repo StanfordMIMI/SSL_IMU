@@ -11,14 +11,14 @@ from ssl_main.config import RESULTS_PATH
 if __name__ == "__main__":
     # hw_running_VALR   walking_knee_moment_output  Camargo_output   sun_drop_jump_output
     test_name = '/Camargo_100_output'
-    test_folder = 't03_test_camargo_filtered'
+    test_folder = '2023_04_20_11_30_56_camargo'
     data_path = RESULTS_PATH + test_folder
     results_task = load_da_data(data_path + test_name + '.h5')
 
     for key_, value_ in results_task.items():
         plt.figure()
         plt.title(key_)
-        plt.plot(value_['sub_0'][0, 1])
-        plt.plot(value_['sub_0'][0, 4])
+        plt.plot(value_['sub_0'][:, 1].ravel())
+        plt.plot(value_['sub_0'][:, 4].ravel())
     plt.show()
 

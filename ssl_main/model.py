@@ -44,7 +44,6 @@ class SslReconstructNet(nn.Module):
 
     def forward(self, mods, lens):
         mod_all = torch.concat(mods, dim=1)
-        # mod_all = mod_all[:, 24:]     # !!!
         mod_outputs, mask_indices, mod_all_expanded = self.emb_net(mod_all, lens)
         mod_outputs = self.linear(mod_outputs.transpose(1, 2)).transpose(1, 2)
         loss = self.loss_fn(mod_outputs, mod_all, mask_indices)
@@ -52,7 +51,6 @@ class SslReconstructNet(nn.Module):
 
     def show_reconstructed_signal(self, mods, lens, fig_title):
         mod_all = torch.concat(mods, dim=1)
-        # mod_all = mod_all[:, 24:]     # !!!
         mod_outputs, mask_indices, _ = self.emb_net(mod_all, lens)
         mod_outputs = self.linear(mod_outputs.transpose(1, 2)).transpose(1, 2)
 
@@ -111,7 +109,6 @@ class RegressNet(nn.Module):
     def forward(self, x, lens):
         batch_size, _, seq_len = x[0].shape
         mod_all = torch.concat(x, dim=1)
-        # mod_all = mod_all[:, 24:]            # !!!
         mod_outputs, _, _ = self.emb_net(mod_all, lens)
 
         output = mod_outputs.transpose(1, 2)
@@ -121,12 +118,12 @@ class RegressNet(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, dropout: float = 0., patch_num: int = 16):
+    def __init__(self, d_model, max_len, dropout: float = 0.):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
-        position = torch.arange(patch_num).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(patch_num * 2) / d_model))
-        pe = torch.zeros(patch_num, 1, d_model)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(max_len * 2) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
         pe[:, 0, 0::2] = torch.sin(position * div_term)
         try:
             pe[:, 0, 1::2] = torch.cos(position * div_term)
@@ -134,10 +131,11 @@ class PositionalEncoding(nn.Module):
             pe[:, 0, 1::2] = torch.cos(position * div_term)[:, :-1]
 
         pe = pe.transpose(0, 1)
-        # plt.figure()
-        # plt.imshow(pe[0])
-        # plt.show()
         self.register_buffer('pe', pe)
+
+        # # Learnable positional encoding
+        # self.register_buffer('pe_init', pe)
+        # self.pe = nn.Parameter(torch.zeros(pe.shape).uniform_() - 0.5)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -162,20 +160,22 @@ class TransformerBase(nn.Module):
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.device = device
         self.mask_patch_num = mask_patch_num
-        self.ssl_mask_emb = nn.Parameter(torch.zeros([x_dim, patch_len]).uniform_() - 0.5)
+        self.ssl_mask_emb = nn.Parameter(torch.zeros([1, x_dim * patch_len]).uniform_() - 0.5)
         self.reduced_imu_mask_emb = nn.Parameter(torch.zeros([48, 128]).uniform_() - 0.5)
         self.mask_input_channel = mask_input_channel
         self.patch_num = int(128 / self.patch_len)
-        self.pos_encoding = PositionalEncoding(x_dim * patch_len, patch_num=self.patch_num)
+        # self.pos_encoding = PositionalEncoding(x_dim * patch_len, self.patch_num)
+        self.pos_encoding = PositionalEncoding(x_dim * patch_len, self.patch_num)
 
     def forward(self, sequence, lens):
         sequence = self.apply_reduced_imu_set_mask(sequence)
-        sequence, mask_indices = self.apply_ssl_mask(sequence)
         sequence_patch = self.divide_into_patches(sequence)
+        sequence_patch, mask_indices = self.apply_ssl_mask(sequence_patch)
         sequence_patch = self.pos_encoding(sequence_patch)
         sequence_patch = self.transformer_encoder(sequence_patch)
 
         output = self.flat_patches(sequence_patch)
+        mask_indices = self.flat_patches(mask_indices)
         return output, mask_indices, sequence
 
     def divide_into_patches(self, sequence):
@@ -198,7 +198,12 @@ class TransformerBase(nn.Module):
                 mask_indices_np[:, i_channel*3+24:(i_channel+1)*3+24] = True
         mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
         mask_indices = mask_indices.unsqueeze(-1).expand_as(seq)
-        # mask_emb_repeated = self.reduced_imu_mask_emb.repeat(0, self.patch_num)
+
+        # [test]
+        # ttt = torch.zeros(self.reduced_imu_mask_emb.shape).cuda()
+        # tensor = torch.mul(seq, ~mask_indices) + torch.mul(ttt, mask_indices)
+        # temp = tensor.detach().cpu().numpy()
+
         tensor = torch.mul(seq, ~mask_indices) + torch.mul(self.reduced_imu_mask_emb, mask_indices)
         return tensor
 
@@ -209,17 +214,16 @@ class TransformerBase(nn.Module):
         :param mask_type: 0 for mask random samples, 1 for mask one entire patch, 2 for testing
         :return:
         """
-        bs, patch_emb, length = seq.shape
-        mask_indices_np = np.full((bs, length), False)
+        bs, patch_num, emb_dim = seq.shape
+        mask_indices_np = np.full((bs, patch_num), False)
         for i_row in range(mask_indices_np.shape[0]):
             len_to_mask = [self.mask_patch_num]     # [self.mask_patch_num]   [int(0.5*self.mask_patch_num), int(0.5*self.mask_patch_num)]
             for len_ in len_to_mask:
                 masked_loc = random.sample(range(self.patch_num - len_ + 1), 1)[0]
-                mask_indices_np[i_row, masked_loc*self.patch_len:(masked_loc+len_)*self.patch_len] = True
+                mask_indices_np[i_row, masked_loc:masked_loc+len_] = True
         mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
-        mask_indices = mask_indices.unsqueeze(1).expand_as(seq)
-        mask_emb_repeated = self.ssl_mask_emb.repeat(1, self.patch_num)
-        tensor = torch.mul(seq, ~mask_indices) + torch.mul(mask_emb_repeated, mask_indices)
+        mask_indices = mask_indices.unsqueeze(2).expand_as(seq)
+        tensor = torch.mul(seq, ~mask_indices) + torch.mul(self.ssl_mask_emb, mask_indices)
         return tensor, mask_indices
 
 
