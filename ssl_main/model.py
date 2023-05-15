@@ -47,26 +47,24 @@ class SslReconstructNet(nn.Module):
         mod_outputs, mask_indices, mod_all_expanded = self.emb_net(mod_all, lens)
         mod_outputs = self.linear(mod_outputs.transpose(1, 2)).transpose(1, 2)
         loss = self.loss_fn(mod_outputs, mod_all, mask_indices)
-        return loss, mod_outputs
+        return loss, mod_outputs, mask_indices
 
-    def show_reconstructed_signal(self, mods, lens, fig_title):
-        mod_all = torch.concat(mods, dim=1)
-        mod_outputs, mask_indices, _ = self.emb_net(mod_all, lens)
-        mod_outputs = self.linear(mod_outputs.transpose(1, 2)).transpose(1, 2)
 
-        for i_color, (i_channel, label_) in enumerate(zip([0, -1], ['Acc channel 1', 'Gyr channel 1'])):       # one acc and one gyr channel
-            fig = plt.figure()
-            true_data = mod_all.detach().cpu().numpy()[0, i_channel]
-            pred_data = mod_outputs.detach().cpu().numpy()[0, i_channel]
+def show_reconstructed_signal(mod_all, mod_outputs, fig_title, mask_indices=None, fig_group='Img', channel_names=['Acc channel 1', 'Gyr channel 1']):
+    for i_color, (i_channel, label_) in enumerate(zip([0, -1], channel_names)):       # one acc and one gyr channel
+        fig = plt.figure()
+        true_data = mod_all.detach().cpu().numpy()[0, i_channel]
+        pred_data = mod_outputs.detach().cpu().numpy()[0, i_channel]
+        plt.plot(true_data, color=f'C{i_color}', label=label_+' - True')
+        plt.plot(pred_data, '-.', color=f'C{i_color}', label=label_+' - Reconstructed')
+        max_val = max(np.max(true_data), np.max(pred_data))
+        min_val = min(np.min(true_data), np.min(pred_data))
+        if mask_indices is not None:
             msk = mask_indices.detach().cpu().numpy()[0, i_channel]
-            plt.plot(true_data, color=f'C{i_color}', label=label_+' - True')
-            plt.plot(pred_data, '-.', color=f'C{i_color}', label=label_+' - Reconstructed')
-            max_val = max(np.max(true_data), np.max(pred_data))
-            min_val = min(np.min(true_data), np.min(pred_data))
             plt.fill_between(range(true_data.shape[0]), min_val, max_val, label='Masked', where=msk, facecolor='gray', alpha=0.3)
-            plt.legend()
-            plt.tight_layout()
-            wandb.log({"img": [wandb.Image(fig, caption=fig_title)]})
+        plt.legend()
+        plt.tight_layout()
+        wandb.log({fig_group: [wandb.Image(fig, caption=fig_title)]})
 
 
 class SslContrastiveNet(nn.Module):
@@ -142,7 +140,7 @@ class PositionalEncoding(nn.Module):
         Args:
             x: Tensor, shape [batch_size, seq_len, embedding_dim]
         """
-        x = x + self.pe     # [:, :x.shape[1], :]
+        x = x + self.pe[:, :x.shape[1], :]
         return self.dropout(x)
 
 
@@ -164,7 +162,6 @@ class TransformerBase(nn.Module):
         self.reduced_imu_mask_emb = nn.Parameter(torch.zeros([48, 128]).uniform_() - 0.5)
         self.mask_input_channel = mask_input_channel
         self.patch_num = int(128 / self.patch_len)
-        # self.pos_encoding = PositionalEncoding(x_dim * patch_len, self.patch_num)
         self.pos_encoding = PositionalEncoding(x_dim * patch_len, self.patch_num)
 
     def forward(self, sequence, lens):

@@ -35,7 +35,7 @@ def results_dict_to_pd(result_all_tests):
     return result_df
 
 
-def results_dict_to_pd_profiles(result_all_tests, result_field_id, block_swing_phase=True):
+def results_to_pd_summary(result_all_tests, result_field_id, block_swing_phase=True):
     result_list = []
     for test_name, test_results in result_all_tests.items():
         param_tuples = [param_tuple.split('_') for param_tuple in test_name.split(', ')]
@@ -55,8 +55,7 @@ def results_dict_to_pd_profiles(result_all_tests, result_field_id, block_swing_p
             r2 = r2_score(data_true, data_pred)
             correlation, _ = pearsonr(data_true, data_pred)
             result_list.append([param_tuple[1] for param_tuple in param_tuples] + [sub_id, rmse, r_rmse, r2, correlation])
-    result_df = pd.DataFrame(result_list, columns=[param_tuple[0] for param_tuple in param_tuples] + ['sub_id',
-                                                   'rmse', 'r_rmse', 'r2', 'correlation'])
+    result_df = pd.DataFrame(result_list, columns=[param_tuple[0] for param_tuple in param_tuples] + ['sub_id', 'rmse', 'r_rmse', 'r2', 'correlation'])
     return result_df
 
 

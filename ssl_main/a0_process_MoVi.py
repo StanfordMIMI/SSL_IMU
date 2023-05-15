@@ -1,10 +1,18 @@
 import h5py
 import numpy as np
 import ast
-from const import TRIAL_TYPES, GRAVITY, STANCE_V_GRF_THD, DICT_TRIAL_MOVI
+from const import TRIAL_TYPES, GRAVITY, STANDARD_IMU_SEQUENCE, DICT_TRIAL_MOVI
 from utils import resample_to_target_fre
 from a0_process_camargo import DataStruct, BaseSegmentation
 DATA_PATH_MOVI = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/MoVi/data_processed/'
+
+
+""" 
+IMU orientations
+Thigh: X down
+Shank: X down
+Foot: X forward
+"""
 
 
 class ContinuousDatasetLoader:
@@ -39,11 +47,33 @@ class ContinuousDatasetLoader:
         columns = list(np.array(ast.literal_eval(open(DATA_PATH_MOVI + '/columns.txt').read()), dtype=object))
         return columns
 
+    @staticmethod
+    def calibrate_imu_orientation(real_imu, columns):
+        for imu in STANDARD_IMU_SEQUENCE:
+            col_loc_acc = [columns.index(item) for item in [imu + '_Accel_' + axis for axis in ['X', 'Y', 'Z']]]
+            col_loc_gyr = [columns.index(item) for item in [imu + '_Gyro_' + axis for axis in ['X', 'Y', 'Z']]]
+            for i_sample in range(real_imu.shape[0]):
+                real_imu[i_sample, col_loc_acc] = np.matmul(movi_orientation_transform_mat[imu], real_imu[i_sample, col_loc_acc])
+                real_imu[i_sample, col_loc_gyr] = np.matmul(movi_orientation_transform_mat[imu], real_imu[i_sample, col_loc_gyr])
+        return real_imu
+
+    @staticmethod
+    def update_imu_name(columns):
+        name_map = {'Spine1': 'CHEST', 'Hip': 'WAIST', 'RightUpLeg': 'R_THIGH', 'LeftUpLeg': 'L_THIGH',
+                    'RightLeg': 'R_SHANK', 'LeftLeg': 'L_SHANK', 'RightFoot': 'R_FOOT', 'LeftFoot': 'L_FOOT'}
+        old_name_list = list(name_map.keys())
+        for i_col, col in enumerate(columns):
+            for old_name in old_name_list:
+                if old_name in col:
+                    columns[i_col] = col.replace(old_name, name_map[old_name])
+        return columns
+
     def loop_all_the_trials(self, segment_methods):
         for subject, data_trials in self.data_contin.items():
             [method.set_data_struct(DataStruct(len(self.columns), method.win_len)) for method in segment_methods]
             for trial_data in data_trials:
-                # trial_data = self.clean_imu_data(trial_data, self.columns)
+                self.columns = self.update_imu_name(self.columns)
+                trial_data = self.calibrate_imu_orientation(trial_data, self.columns)
                 for method in segment_methods:
                     method.start_segment(trial_data)
             [method.export(self.columns, subject) for method in segment_methods]
@@ -70,17 +100,23 @@ class WindowSegmentation(BaseSegmentation):
             i_current += self.win_step
 
 
+movi_orientation_transform_mat = {
+    'CHEST': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]), 'WAIST': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]),
+    'R_THIGH': np.array([[0, 0, 1], [-1, 0, 0], [0, -1, 0]]), 'L_THIGH': np.array([[0, 0, -1], [-1, 0, 0], [0, 1, 0]]),
+    'R_SHANK': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]), 'L_SHANK': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]),
+    'R_FOOT': np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]]), 'L_FOOT': np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]])}
+
 if __name__ == '__main__':
-    sub_list = ['sub_' + str(i+1) for i in range(90)]
+    sub_list = ['sub_' + str(i+1) for i in range(88)]
 
-    data_reader = ContinuousDatasetLoader(sub_list, 200)
-    data_reader.loop_all_the_trials([WindowSegmentation(64, 'MoVi_hw_running')])
-
-    data_reader = ContinuousDatasetLoader(sub_list, 200)
-    data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi_Camargo')])
+    # data_reader = ContinuousDatasetLoader(sub_list, 200)
+    # data_reader.loop_all_the_trials([WindowSegmentation(64, 'MoVi_hw_running')])
+    #
+    # data_reader = ContinuousDatasetLoader(sub_list, 200)
+    # data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi_Camargo')])
 
     data_reader = ContinuousDatasetLoader(sub_list, 100)
-    data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi_walking_knee_moment')])
+    data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi')])
 
     # data_reader = ContinuousDatasetLoader(sub_list, 100)
     # data_reader.loop_all_the_trials([WindowSegment(80, 'MoVi_sun_drop_jump')])

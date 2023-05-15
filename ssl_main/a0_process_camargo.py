@@ -6,7 +6,7 @@ import ast
 from scipy.signal import medfilt
 from utils import get_data_by_merging_data_struct, find_peak_max, data_filter
 from const import DATA_PATH_CAMARGO_WIN, TRIAL_TYPES, GRAVITY, IMU_CAMARGO_SAMPLE_RATE, EMG_CAMARGO_SAMPLE_RATE,\
-    GRF_CAMARGO_SAMPLE_RATE, IMU_CAMARGO_SEGMENT_LIST, DICT_LABEL, STANCE_V_GRF_THD
+    GRF_CAMARGO_SAMPLE_RATE, IMU_CAMARGO_SEGMENT_LIST, SUB_ID_ALL_DATASETS, STANCE_V_GRF_THD
 from config import DATA_PATH
 from const import DICT_SUBJECT_ID, DICT_TRIAL_TYPE_ID
 
@@ -17,7 +17,7 @@ class ContinuousDatasetLoader:
         self.columns_raw = self.load_columns()
         for key_ in self.columns_raw.keys():
             self.columns_raw[key_]['200'] = self.update_column_names(self.columns_raw[key_]['200'])
-        self.col_200 = INFO_LIST + IMU_LIST
+        self.col_200 = INFO_LIST + IMU_LIST + ID_LIST
         self.col_1000 = FORCE_LIST
         self.subject_list = subject_list
         self.data_contin_merged = {}
@@ -261,6 +261,7 @@ INFO_LIST = ['sub_id', 'trial_type_id', 'label', 'treadmill_speed', 'ramp', 'hee
 
 EMG_LIST = ['gastrocmed', 'tibialisanterior', 'soleus', 'vastusmedialis', 'vastuslateralis', 'rectusfemoris',
             'bicepsfemoris', 'semitendinosus', 'gracilis', 'gluteusmedius']
+ID_LIST = ['knee_angle_r_moment', 'knee_angle_l_moment']
 FORCE_LIST = ['fx', 'fy', 'fz']     # 'cx', 'cy', 'cz'
 
 FORCE_AXIS, COP_AXIS = ['vx', 'vy', 'vz'], ['px', 'py', 'pz']
@@ -273,13 +274,7 @@ RIGHT_FOOT_COP_COL = {type: [plate + '_' + axis for plate in plates for axis in 
 PARAM_TO_STORE = []
 
 if __name__ == '__main__':
-    sub_list = [
-        'AB06',
-        'AB07',
-        # 'AB08', 'AB09', 'AB10',
-        # 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17',
-        # 'AB18', 'AB19', 'AB21', 'AB23', 'AB24', 'AB25', 'AB27', 'AB28', 'AB30'
-    ]
+    sub_list = SUB_ID_ALL_DATASETS['Camargo_100']
     data_reader = ContinuousDatasetLoader(sub_list)
     data_reader.loop_all_the_trials([WindowSegmentation('Camargo_100')])
 

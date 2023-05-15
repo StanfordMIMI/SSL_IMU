@@ -80,9 +80,11 @@ TRIAL_LIST = [
     'Treadmill_01_01', 'Treadmill_02_01', 'Treadmill_03_01', 'Treadmill_04_01', 'Treadmill_05_01']
 
 CAMARGO_SUB_HEIGHT_WEIGHT = {
-    'AB06': [1.80, 74.8], 'AB07': [1.65, 55.3], 'AB08': [1.74, 72.6], 'AB09': [1.63, 63.5], 'AB10': [1.75, 83.9],
+    # 'AB06': [1.80, 74.8],
+    'AB07': [1.65, 55.3], 'AB08': [1.74, 72.6], 'AB09': [1.63, 63.5], 'AB10': [1.75, 83.9],
     'AB11': [1.75, 77.1], 'AB12': [1.74, 86.2], 'AB13': [1.73, 59.0], 'AB14': [1.52, 58.4], 'AB15': [1.78, 96.2],
-    'AB16': [1.65, 55.8], 'AB17': [1.68, 61.2], 'AB18': [1.80, 60.1], 'AB19': [1.70, 68.0],
+    # 'AB16': [1.65, 55.8],
+    'AB17': [1.68, 61.2], 'AB18': [1.80, 60.1], 'AB19': [1.70, 68.0],
     # 'AB20': [1.71, 68.0],     # this sub has not GRF
     'AB21': [1.57, 58.1], 'AB23': [1.80, 76.8], 'AB24': [1.73, 72.6], 'AB25': [1.63, 52.2], 'AB27': [1.70, 68.0],
     'AB28': [1.69, 62.1], 'AB30': [1.77, 77.0]
@@ -96,26 +98,32 @@ SUB_ID_ALL_DATASETS = {
     'sun_drop_jump': ['P_08_zhangboyuan', 'P_09_libang', 'P_10_dongxuan', 'P_11_liuchunyu', 'P_12_fuzijun',
                       'P_13_xulibang', 'P_14_hunan', 'P_15_liuzhaoyu', 'P_16_zhangjinduo', 'P_17_congyuanqi',
                       'P_18_hezhonghai', 'P_19_xiongyihui', 'P_20_xuanweicheng', 'P_21_wujianing',
-                      'P_22_zhangning', 'P_23_wangjinhong', 'P_24_liziqing']
+                      'P_22_zhangning', 'P_23_wangjinhong', 'P_24_liziqing'],
+    'opencap_dj': ['subject' + str(i) for i in [2, 4, 5, 6, 7, 8, 9, 10, 11]],
+    'opencap_squat': ['subject' + str(i) for i in [2, 4, 5, 6, 7, 8, 9, 10, 11]],
+    'opencap_sts': ['subject' + str(i) for i in [2, 5, 6, 7, 8, 9, 10, 11]],
 }
 
 DICT_SUBJECT_ID = {subject: i for i, subject in enumerate(SUB_ID_ALL_DATASETS['Camargo'])}
 
-test_sub_kam = ['subject_17']
-train_sub_kam = [element for element in SUB_ID_ALL_DATASETS['walking_knee_moment'] if element not in test_sub_kam]
 
-test_sub_Camargo = ['AB06', 'AB07', 'AB08', 'AB09', 'AB10']
-train_sub_Camargo = [id for id in SUB_ID_ALL_DATASETS['Camargo'] if id not in test_sub_Camargo]
+DSET_SUBS_FOR_SSL_TEST = {
+    'walking_knee_moment': ['subject_17'],
+    'filtered_walking_knee_moment': ['subject_17'],
+    'Camargo': ['AB07'],
+    'Combined': ['dset' + str(i) for i in range(13, 14)],
+    'amass': ['ACCAD'],
+    'MoVi': ['sub_88'],
+}
 
-test_sub_hw = ['subject_' + str(i) for i in range(5)]
-train_sub_hw = [id for id in SUB_ID_ALL_DATASETS['hw_running'] if id not in test_sub_hw]
-
-train_set_combined_dataset = ['except test']        # except test
-test_set_combined_dataset = ['dset' + str(i) for i in range(6, 9)]
-
-train_set_amass_dset = ['except test']
-test_set_amass_dset = ['ACCAD']
-
+DSET_SUBS_FOR_SSL_TRAINING = {
+    'walking_knee_moment': [element for element in SUB_ID_ALL_DATASETS['walking_knee_moment'] if element not in DSET_SUBS_FOR_SSL_TEST['walking_knee_moment']],
+    'filtered_walking_knee_moment': [element for element in SUB_ID_ALL_DATASETS['walking_knee_moment'] if element not in DSET_SUBS_FOR_SSL_TEST['walking_knee_moment']],
+    'Camargo': [element for element in SUB_ID_ALL_DATASETS['walking_knee_moment'] if element not in DSET_SUBS_FOR_SSL_TEST['Camargo']],
+    'Combined': ['except test'],
+    'amass': ['except test'],
+    'MoVi': ['except test'],
+}
 
 
 

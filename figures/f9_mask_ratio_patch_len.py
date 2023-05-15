@@ -6,7 +6,7 @@ os.environ['MPLCONFIGDIR'] = tempfile.mkdtemp()
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import rc, colormaps
-from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd_profiles
+from figures.PaperFigures import save_fig, load_da_data, results_to_pd_summary
 from ssl_main.config import RESULTS_PATH
 from matplotlib.backends.backend_pdf import PdfPages
 
@@ -79,14 +79,14 @@ colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 
 
 if __name__ == "__main__":
-    # hw_running_VALR   walking_knee_moment_output  Camargo_output   sun_drop_jump_output
-    test_name = '/walking_knee_moment_output'
-    test_folder = '2023_04_16_23_52_13_filtering'      # 2023_04_19_09_11_37_find_best_accuracy    2023_04_19_09_12_11_find_best_accuracy
+    # hw_running_VALR   walking_knee_moment  Camargo_100   sun_drop_jump
+    test_name = '/sun_drop_jump' + '_output'
+    test_folder = '2023_05_01_12_54_17_comprehensive_da'      # 2023_04_19_09_11_37_find_best_accuracy    2023_04_19_09_12_11_find_best_accuracy
     data_path = RESULTS_PATH + test_folder
     metric = 'r2'
     results_task = load_da_data(data_path + test_name + '.h5')
 
-    result_df = results_dict_to_pd_profiles(results_task, 1)
+    result_df = results_to_pd_summary(results_task, 1)
     result_df['PercentOfMasking'] = result_df['MaskPatchNum'] / (128 / result_df['PatchLen'])
 
     patch_len_list = np.sort(list(set(result_df['PatchLen'])))

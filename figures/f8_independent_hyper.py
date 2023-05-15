@@ -6,7 +6,7 @@ os.environ['MPLCONFIGDIR'] = tempfile.mkdtemp()
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import rc, colormaps
-from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd_profiles, format_axis
+from figures.PaperFigures import save_fig, load_da_data, results_to_pd_summary, format_axis
 from ssl_main.config import RESULTS_PATH
 from ssl_main.const import FONT_DICT, LINE_WIDTH_THICK
 
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     target_param = 'NumGradDeSsl'
     metric = 'r2'
     results_task = load_da_data(data_path + test_name + '.h5')
-    result_df = results_dict_to_pd_profiles(results_task, 1)
+    result_df = results_to_pd_summary(results_task, 1)
 
     param_set = np.sort(list(set(result_df[target_param])))
 
