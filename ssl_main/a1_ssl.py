@@ -63,14 +63,12 @@ class FrameworkDownstream:
         elif 'opencap' in test_name:
             self.load_and_process_opencap(train_sub_ids, validate_sub_ids, test_sub_ids)
 
-    def load_and_process_camargo(self, train_sub_ids: List[str], validate_sub_ids: List[str],
-                                 test_sub_ids: List[str]):
+    def load_and_process_camargo(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         """
         train_sub_ids: a list of subject id for model training
         validate_sub_ids: a list of subject id for model validation
         test_sub_ids: a list of subject id for model testing
         """
-        type_to_exclude = [DICT_TRIAL_TYPE_ID[type] for type in self.da_task['remove_trial_type']]
         self.set_data = {}
         with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
@@ -78,8 +76,6 @@ class FrameworkDownstream:
                 current_set_data_list = []
                 for sub_id in set_sub_ids:
                     sub_data = hf[sub_id][:, :, :]
-                    has_grf_index = np.where(np.max(sub_data[:, self.data_columns.index('fz')], axis=1) > 10)
-                    sub_data = sub_data[has_grf_index]
                     sub_weight = CAMARGO_SUB_HEIGHT_WEIGHT[sub_id][1] * GRAVITY
                     force_col_loc = [self.data_columns.index(x) for x in ['fx', 'fy', 'fz']]
                     sub_data[:, force_col_loc] = sub_data[:, force_col_loc] / sub_weight
@@ -89,18 +85,22 @@ class FrameworkDownstream:
                 # use rand noise to replace reduced IMUs
                 rand_noise = np.random.normal(size=(current_set_data.shape[0], 6, current_set_data.shape[2]))
                 current_set_data = np.concatenate([current_set_data, rand_noise], axis=1)
-                # # Only keep grf > 0 rows if using overground walking data
-                # current_set_data_ = current_set_data[np.all(np.abs(current_set_data[:, self.data_columns.index('fz')]) > 0.01, axis=1)]
                 self.set_data[data_name] = current_set_data
             self.data_columns.extend(['rand_noise' + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
 
-    def load_and_process_kam(self, train_sub_ids: List[str], validate_sub_ids: List[str],
-                             test_sub_ids: List[str]):
+    def load_and_process_kam(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         self.set_data = {}
         with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
             self.data_columns = json.loads(hf.attrs['columns'])
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
-                current_set_data_list = [hf[sub_] for sub_ in set_sub_ids]
+                current_set_data_list = []
+                for sub_id in set_sub_ids:
+                    sub_data = hf[sub_id][:, :, :]
+                    sub_weight_col = self.data_columns.index('body weight')
+                    sub_weight = sub_data[0, 0, sub_weight_col] * GRAVITY
+                    force_col_loc = [self.data_columns.index(x) for x in [f'plate_{num_}_force_{axis_}' for num_ in [1, 2] for axis_ in ['x', 'y', 'z']]]
+                    sub_data[:, :, force_col_loc] = sub_data[:, :, force_col_loc] / sub_weight
+                    current_set_data_list.append(sub_data)
                 current_set_data = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
                 """ [step, feature, time] """
                 self.set_data[data_name] = current_set_data
@@ -172,13 +172,17 @@ class FrameworkDownstream:
             logging.info('Downstream {}. Number of steps: {}'.format(data_name, sampled_data.shape[0]))
             data_ds = preprocess_modality(self.data_columns, self._data_scalar, sampled_data, define_channel_names(self.da_task), norm_method)
             output_data = sampled_data[:, [self.data_columns.index(x) for x in self.output_columns]]
-            # output_data = self.norm_output_by_subject_weight(sampled_data)
             data_ds['output'] = normalize_data(self._data_scalar, output_data, 'output', norm_method, 'by_each_column')
             data_ds['sub_id'] = sampled_data[:, self.data_columns.index('sub_id'), 0]
             if 'trial_type_id' in self.data_columns:
                 data_ds['trial_type_id'] = sampled_data[:, self.data_columns.index('trial_type_id'), 0]
             else:
                 data_ds['trial_type_id'] = np.zeros([sampled_data.shape[0]])
+            if self.da_task['data_lost_robustness'] and data_name == 'test':
+                mask = np.random.choice([True, False], size=data_ds['acc'].shape, p=[self.da_task['data_lost_robustness'], 1-self.da_task['data_lost_robustness']])
+                mask[:, 2::3, :] = mask[:, 1::3, :] = mask[:, 0::3, :]
+                data_ds['acc'][mask] = 0
+                data_ds['gyr'][mask] = 0
             self.da_task[data_name] = data_ds
 
     def inverse_normalize_output(self, y_true, y_pred):
@@ -214,7 +218,11 @@ class FrameworkDownstream:
         sub_id_set = list(set(sub_ids))
         results = np.concatenate([y_true, y_pred], axis=1)
         columns = ['y_true', 'y_pred']
-        with h5py.File(os.path.join(self.config.result_dir, self.da_task['dataset'] + '_' + 'output' + '.h5'), 'a') as hf:
+        if self.da_task['data_lost_robustness'] == 0:
+            save_file_name = os.path.join(self.config.result_dir, self.da_task['dataset'] + '_output' + '.h5')
+        else:
+            save_file_name = os.path.join(self.config.result_dir, self.da_task['dataset'] + '_robustness' + '.h5')
+        with h5py.File(save_file_name, 'a') as hf:
             grp = hf.require_group(test_name)
             for i_sub in sub_id_set:
                 results_sub = results[sub_ids == i_sub]
@@ -294,7 +302,6 @@ class FrameworkDownstream:
                                        ', ratio_' + str(self.config.da_use_ratio) + ', i_optimize_' + str(i_optimize)
             self.save_results(intermediate_result_name, y_true, y_pred, test_data['sub_id'])
 
-        self.config = SimpleNamespace(**config)
         test_name = 'LinearProb_' + str(linear_protocol) + ', UseSsl_' + str(use_ssl) + \
                     ', ratio_' + str(self.config.da_use_ratio) + self.config.FileNameAppendix
         logging.info('Regressing, ' + test_name)
@@ -305,7 +312,6 @@ class FrameworkDownstream:
                 self.set_regress_net_to_init_state()
         else:
             self.set_regress_net_to_post_linear_init_head_first(use_ssl)
-        self.sample_and_normalize_data()
         train_data, test_data = self.da_task['train'], self.da_task['test']
         train_input_data = [train_data[mod] for mod in self.da_task['_mods']]
         train_output_data = train_data['output']
@@ -322,7 +328,7 @@ class FrameworkDownstream:
             lr_ = 3e-3
             param_to_train = model.linear.parameters()
         else:
-            lr_ = 3e-5
+            lr_ = 1e-4
             param_to_train = model.parameters()
 
         optimizer = torch.optim.AdamW(param_to_train, lr_, weight_decay=1e-5)
@@ -525,6 +531,8 @@ def run_da(da_frameworks, fold_num=5):
             da_framework.load_and_process(dataset_name, train_set, test_set, test_set)
             for ratio in da_framework.da_use_ratios:
                 config['da_use_ratio'] = ratio
+                da_framework.config = SimpleNamespace(**config)
+                da_framework.sample_and_normalize_data()
                 da_framework.regressibility(linear_protocol=True, use_ssl=True)
                 da_framework.regressibility(linear_protocol=True, use_ssl=False)
                 da_framework.regressibility(linear_protocol=False, use_ssl=True)
@@ -532,36 +540,34 @@ def run_da(da_frameworks, fold_num=5):
                 plt.close("all")
 
 
-DOWNSTREAM_0 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['KFM'],
-                'da_use_ratios': [0.1], 'imu_segments': STANDARD_IMU_SEQUENCE}
-DOWNSTREAM_1 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'Camargo_100', 'output_columns': ['knee_angle_r_moment'],
-                'da_use_ratios': [0.1], 'imu_segments': ['CHEST', 'rand_noise', 'rand_noise', 'rand_noise', 'R_SHANK', 'rand_noise', 'rand_noise', 'rand_noise']}
-DOWNSTREAM_2 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output_columns': ['R_KNEE_MOMENT_X'],
-                'da_use_ratios': [1.], 'imu_segments': STANDARD_IMU_SEQUENCE}
-DOWNSTREAM_3 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'opencap_dj', 'output_columns': ['knee_angle_r_moment'],
-                'da_use_ratios': [1.], 'imu_segments': STANDARD_IMU_SEQUENCE}
-DOWNSTREAM_4 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'opencap_squat', 'output_columns': ['knee_angle_r_moment'],
-                'da_use_ratios': [1.], 'imu_segments': STANDARD_IMU_SEQUENCE}
-DOWNSTREAM_5 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'opencap_sts', 'output_columns': ['knee_angle_r_moment'],
-                'da_use_ratios': [1.], 'imu_segments': STANDARD_IMU_SEQUENCE}
+DOWNSTREAM_0 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['plate_2_force_z'],
+                'da_use_ratios': [1], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
+DOWNSTREAM_1 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'Camargo_levelground', 'output_columns': ['fy'],        # knee moment have NaNs
+                 'da_use_ratios': [1], 'imu_segments': ['CHEST', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise', 'R_FOOT', 'rand_noise'], 'data_lost_robustness': 0.}
+DOWNSTREAM_2 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output_columns': ['R_GRF_Z'],
+                'da_use_ratios': [1.], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
 
-# log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
+DOWNSTREAM_6, DOWNSTREAM_7, DOWNSTREAM_8 = copy.deepcopy(DOWNSTREAM_0), copy.deepcopy(DOWNSTREAM_1), copy.deepcopy(DOWNSTREAM_2)
+log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
+DOWNSTREAM_6.update({'da_use_ratios': log_array})
+DOWNSTREAM_7.update({'da_use_ratios': log_array})
+DOWNSTREAM_8.update({'da_use_ratios': log_array})
 
-SSL_KAM = {'ssl_file_names': ['filtered_walking_knee_moment'], 'imu_segments': STANDARD_IMU_SEQUENCE}
-SSL_KAM_MOVI = {'ssl_file_names': ['filtered_walking_knee_moment', 'MoVi'], 'imu_segments': STANDARD_IMU_SEQUENCE}
-SSL_KAM_AMASS = {'ssl_file_names': ['filtered_walking_knee_moment', 'amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
-# SSL_KAM_AMASS_TEN_PERCENT = {'ssl_file_names': ['filtered_walking_knee_moment', 'amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
+SSL_KAM = {'ssl_file_names': ['walking_knee_moment'], 'imu_segments': STANDARD_IMU_SEQUENCE}
+SSL_MOVI = {'ssl_file_names': ['MoVi'], 'imu_segments': STANDARD_IMU_SEQUENCE}
+SSL_AMASS = {'ssl_file_names': ['amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
+SSL_COMBINED = {'ssl_file_names': ['walking_knee_moment', 'MoVi', 'amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 
 config = {'NumGradDeSsl': 3e4, 'NumGradDeDa': 2e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
-# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.1, 'log_with_wandb': False,
-          'batch_size_ssl': 64, 'batch_size_linear': 32, 'lr_ssl': 1e-4, 'FeedForwardDim': 512, 'nlayers': 6, 'nhead': 48,
+# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.01, 'log_with_wandb': False,
+          'batch_size_ssl': 64, 'batch_size_linear': 64, 'lr_ssl': 1e-4, 'FeedForwardDim': 512, 'nlayers': 6, 'nhead': 48,
           'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 
-test_name = 'SSL_KAM_AMASS'
-test_info = 'SSL_KAM_AMASS'
+test_name = 'SSL_COMBINED'
+test_info = 'camargo use 4 IMUs'
 
 # config['result_dir'] = os.path.join('../figures/results/t04_da_opencap')      # local
-# config['result_dir'] = os.path.join('../../results/2023_05_08_da')      # cluster
+# config['result_dir'] = os.path.join('../../results/2023_05_15_22_23_47_SSL_AMASS')      # cluster
 config['result_dir'] = os.path.join(RESULTS_PATH, result_folder() + "_" + test_name)
 config = parse_config(config)
 
@@ -572,11 +578,9 @@ if __name__ == '__main__':
     os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
     add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
 
-    # independent_hyper = ('nlayers', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {8: [6]})
+    # coupled_hypers = (['PatchLen', 'MaskPatchNum'], {1: [16, 32, 48, 64, 80], 2: [8, 16, 24, 32, 40], 4: [4, 8, 12, 16, 20], 8: [2, 4, 6, 8, 10], 16: [1, 2, 3, 4, 5]})
     independent_hyper = ('NumGradDeSsl', [config['NumGradDeSsl']])
-    # {1: [16, 32, 48, 64, 80, 96], 2: [8, 16, 24, 32, 40, 48], 4: [4, 8, 12, 16, 20, 24], 8: [2, 4, 6, 8, 10, 12]}
-    coupled_hypers = (['PatchLen', 'MaskPatchNum'], {4: [8, 16], 8: [4, 8]})
-    # coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {8: [6]})
 
     for indep_hyper_val in independent_hyper[1]:
         for coupled_hyper_val_1, coupled_hyper_val_list_2 in coupled_hypers[1].items():
@@ -591,9 +595,9 @@ if __name__ == '__main__':
                 logging.info(config['FileNameAppendix'])
                 logging.info(config)
 
-                FrameworkSSL(config, SSL_KAM_AMASS).run_ssl()
+                FrameworkSSL(config, SSL_COMBINED).run_ssl()
                 da_frameworks = [FrameworkDownstream(config, da_task) for da_task in
-                                 [DOWNSTREAM_0, DOWNSTREAM_1, DOWNSTREAM_2, DOWNSTREAM_3, DOWNSTREAM_4, DOWNSTREAM_5]]
+                                 [DOWNSTREAM_0, DOWNSTREAM_1, DOWNSTREAM_2]]
                 run_da(da_frameworks, fold_num=5)
 
                 plt.show()
@@ -604,11 +608,8 @@ if __name__ == '__main__':
 1. Transformer complexity matters. Longer patch length corresponds to larger models. Improvements might be from larger complexity.
 
 [TODO]
-0. Improvement on each window
-1. !!! Camargo check incorrect trials and remove them
-2. Robustness as a downstream task, e.g. against one biased sensor
-3. 
-4. flash attention
+1. [done] Improvement on each window
+2. [done] Robustness against randomly missing datapoints. SSL has no advantage over rand init. 
 5. Compare against 1000+ rand init
 
 """

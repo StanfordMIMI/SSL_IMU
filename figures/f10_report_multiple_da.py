@@ -49,24 +49,38 @@ def plot_example_windows(results_task):
 
 
 def plot_r2_distribution_of_windows(results_task):
-    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(8, 6))
+    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(12, 6))
     plt.figure()
     tick_list = []
+    r2_conditions = {}
     for i_subplot, (ax, data_key_) in enumerate(zip(axes.flatten(), results_task.items())):
         key_, data_ = data_key_
         params = dict([param_tuple.split('_') for param_tuple in key_.split(', ')])
-        tick_list.append('UseSSL: ' + params['UseSsl'] + ', ' + 'Linear Prob: ' + params['LinearProb'])
+        name_1 = 'ssl' if params['UseSsl'] == 'True' else 'no ssl'
+        name_2 = ', linear prob' if params['LinearProb'] == 'True' else ', tuning'
+        condition_name = name_1 + name_2
+        tick_list.append(condition_name)
         output_num = int(list(data_.values())[2].shape[1] / 2)
         data_true = list(data_.values())[2][:, :output_num]
         data_pred = list(data_.values())[2][:, output_num:]
         r2_list = []
         for i_win in range(data_true.shape[0]):
             r2_list.append(r2_score(data_true[i_win, :].ravel(), data_pred[i_win, :].ravel()))
-        plt.violinplot(r2_list, [i_subplot], points=20, widths=0.3, showmeans=True, showextrema=True)
+        r2_conditions[condition_name] = np.array(r2_list)
+        plt.violinplot(r2_list, [i_subplot + int(i_subplot / 2)], points=20, widths=0.3, showmeans=True, showextrema=True)
+
+    plt.violinplot(r2_conditions['ssl, tuning'] - r2_conditions['no ssl, tuning'],
+                   [2], points=20, widths=0.3, showmeans=True, showextrema=True)
+    tick_list.insert(2, 'Difference')
+    plt.violinplot(r2_conditions['ssl, linear prob'] - r2_conditions['no ssl, linear prob'],
+                   [5], points=20, widths=0.3, showmeans=True, showextrema=True)
+    tick_list.insert(5, 'Difference')
+
     ax = plt.gca()
     ax.set_xticks(np.arange(len(tick_list)))
-    ax.set_xticklabels(tick_list, rotation=30)
+    ax.set_xticklabels(tick_list, size=7)
     plt.title('R2 distribution of windows', size=20)
+    plt.grid()
     plt.tight_layout(rect=[0., 0., 1., 1.], w_pad=6)
     pdf.savefig()
 
@@ -141,8 +155,8 @@ colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 
 if __name__ == "__main__":
     # 'walking_knee_moment', 'Camargo_100', 'sun_drop_jump', 'opencap_dj', 'opencap_squat'
-    da_names = [element + '_output' for element in ['walking_knee_moment', 'Camargo_100', 'sun_drop_jump', 'opencap_dj', 'opencap_squat', 'opencap_sts']]
-    test_folder = '2023_05_10_18_14_03_SSL_KAM'
+    da_names = ['Camargo_levelground_robustness', 'Camargo_levelground_output']
+    test_folder = '2023_06_05_10_10_35_SSL_COMBINED'
     data_path = RESULTS_PATH + test_folder + '/'
 
     title_list = ['SSL - Fine-tuning', 'SSL - Linear', 'no SSL - Fine-tuning', 'no SSL - Linear']
@@ -190,7 +204,7 @@ if __name__ == "__main__":
             plt.suptitle('Dataset: ' + da_name[:-7], size=20)
             pdf.savefig()
 
-            results_task_example = {key_: value_ for key_, value_ in results_task.items() if 'PatchLen_8' in key_ and 'MaskPatchNum_8' in key_}
+            results_task_example = {key_: value_ for key_, value_ in results_task.items() if 'PatchLen_8' in key_ and 'MaskPatchNum_6' in key_}
             plot_r2_distribution_of_windows(results_task_example)
             plot_spectrum(results_task_example)
             plot_example_windows(results_task_example)

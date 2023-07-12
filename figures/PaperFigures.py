@@ -17,6 +17,13 @@ def load_da_data(test_dir):
         return result_all_tests
 
 
+def format_errorbar_cap(caplines, size=15):
+    for i_cap in range(1):
+        caplines[i_cap].set_marker('_')
+        caplines[i_cap].set_markersize(size)
+        caplines[i_cap].set_markeredgewidth(LINE_WIDTH)
+
+
 def results_dict_to_pd(result_all_tests):
     result_list = []
     for test_name, test_results in result_all_tests.items():
@@ -58,6 +65,35 @@ def results_to_pd_summary(result_all_tests, result_field_id, block_swing_phase=T
     result_df = pd.DataFrame(result_list, columns=[param_tuple[0] for param_tuple in param_tuples] + ['sub_id', 'rmse', 'r_rmse', 'r2', 'correlation'])
     return result_df
 
+
+def results_to_pd_summary_only_peaks(result_all_tests, result_field_id, sign_of_peak=1):
+    result_list = []
+    for test_name, test_results in result_all_tests.items():
+        param_tuples = [param_tuple.split('_') for param_tuple in test_name.split(', ')]
+        for param_tuple in param_tuples:
+            if param_tuple[1] in ['True', 'False']:
+                param_tuple[1] = param_tuple[1] == 'True'
+            else:
+                param_tuple[1] = float(param_tuple[1])
+        for sub_name, subject_data in test_results.items():
+            sub_id = int(sub_name[4:])
+            data_true, data_pred = subject_data[:, result_field_id], subject_data[:, result_field_id+int(subject_data.shape[1]/2)]
+
+            # for data_step_true, data_step_pred in zip(data_true, data_pred):
+            #     plt.figure()
+            #     plt.plot(data_step_true)
+            #     plt.plot(data_step_pred)
+            #     plt.show()
+
+            peaks = np.array([[np.max(sign_of_peak * data_step_true), np.max(sign_of_peak * data_step_pred)]
+                              for data_step_true, data_step_pred in zip(data_true, data_pred)])
+            rmse = np.sqrt(mse(peaks[:, 0], peaks[:, 1]))
+            r_rmse = rmse / (np.max(peaks[:, 0]) - np.min(peaks[:, 0])) * 100
+            r2 = r2_score(peaks[:, 0], peaks[:, 1])
+            correlation, _ = pearsonr(peaks[:, 0], peaks[:, 1])
+            result_list.append([param_tuple[1] for param_tuple in param_tuples] + [sub_id, rmse, r_rmse, r2, correlation])
+    result_df = pd.DataFrame(result_list, columns=[param_tuple[0] for param_tuple in param_tuples] + ['sub_id', 'rmse', 'r_rmse', 'r2', 'correlation'])
+    return result_df
 
 def results_dict_to_pd_ssl_sub_num(result_all_tests):
     result_list = []

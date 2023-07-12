@@ -5,7 +5,7 @@ import json
 from const import STANDARD_IMU_SEQUENCE
 import matplotlib.pyplot as plt
 import matplotlib
-matplotlib.use('WebAgg')
+# matplotlib.use('WebAgg')
 
 
 def plot_trial_data(trial_data, title, i_imu=0):
@@ -16,15 +16,8 @@ def plot_trial_data(trial_data, title, i_imu=0):
 
 if __name__ == '__main__':
 
-    # with h5py.File('D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/data_processed/walking_knee_moment.h5', 'r') as hf:
-    #     data_columns = json.loads(hf.attrs['columns'])
-    #     data_list = [data_[:, :128, :] for sub_, data_ in hf.items()]     # only keep 128 time steps
-    #     kam_data = np.concatenate(data_list, axis=0).transpose([0, 2, 1])
-    #     """ [step, feature, time] """
-    #     plot_trial_data(data_list[0], 'kam_data')
-
     IMU_LIST = [segment + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for segment in STANDARD_IMU_SEQUENCE for axis in ['X', 'Y', 'Z']]
-    with h5py.File('D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/data_processed/MoVi.h5', 'r') as hf:
+    with h5py.File('D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/data_processed/amass.h5', 'r') as hf:
         data_columns = json.loads(hf.attrs['columns'])
         data_list = [data_[:] for sub_, data_ in hf.items()]
         movi_data = np.concatenate(data_list, axis=0)
@@ -32,6 +25,7 @@ if __name__ == '__main__':
             col_acc = IMU_LIST[i_sensor*3:(i_sensor+1)*3]
             col_loc = [data_columns.index(col_) for col_ in col_acc]
             plt.figure()
+            plt.grid()
             for i_axis in range(3):
                 plt.plot(movi_data[:100, col_loc[i_axis]].ravel())
             plt.title(STANDARD_IMU_SEQUENCE[i_sensor])

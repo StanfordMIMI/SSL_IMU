@@ -80,12 +80,14 @@ TRIAL_LIST = [
     'Treadmill_01_01', 'Treadmill_02_01', 'Treadmill_03_01', 'Treadmill_04_01', 'Treadmill_05_01']
 
 CAMARGO_SUB_HEIGHT_WEIGHT = {
-    # 'AB06': [1.80, 74.8],
-    'AB07': [1.65, 55.3], 'AB08': [1.74, 72.6], 'AB09': [1.63, 63.5], 'AB10': [1.75, 83.9],
+    'AB06': [1.80, 74.8],
+    'AB07': [1.65, 55.3],
+    # 'AB08': [1.74, 72.6],     # wrong data collection
+    'AB09': [1.63, 63.5], 'AB10': [1.75, 83.9],
     'AB11': [1.75, 77.1], 'AB12': [1.74, 86.2], 'AB13': [1.73, 59.0], 'AB14': [1.52, 58.4], 'AB15': [1.78, 96.2],
-    # 'AB16': [1.65, 55.8],
+    'AB16': [1.65, 55.8],
     'AB17': [1.68, 61.2], 'AB18': [1.80, 60.1], 'AB19': [1.70, 68.0],
-    # 'AB20': [1.71, 68.0],     # this sub has not GRF
+    # 'AB20': [1.71, 68.0],     # this sub has no GRF
     'AB21': [1.57, 58.1], 'AB23': [1.80, 76.8], 'AB24': [1.73, 72.6], 'AB25': [1.63, 52.2], 'AB27': [1.70, 68.0],
     'AB28': [1.69, 62.1], 'AB30': [1.77, 77.0]
 }
@@ -93,7 +95,7 @@ CAMARGO_SUB_HEIGHT_WEIGHT = {
 SUB_ID_ALL_DATASETS = {
     'hw_running': ['subject_' + str(i) for i in range(15)],
     'Camargo': list(CAMARGO_SUB_HEIGHT_WEIGHT.keys()),
-    'Camargo_100': list(CAMARGO_SUB_HEIGHT_WEIGHT.keys()),
+    'Camargo_levelground': list(CAMARGO_SUB_HEIGHT_WEIGHT.keys()),
     'walking_knee_moment': ['subject_' + ('0' + str(i))[-2:] for i in range(1, 18)],
     'sun_drop_jump': ['P_08_zhangboyuan', 'P_09_libang', 'P_10_dongxuan', 'P_11_liuchunyu', 'P_12_fuzijun',
                       'P_13_xulibang', 'P_14_hunan', 'P_15_liuzhaoyu', 'P_16_zhangjinduo', 'P_17_congyuanqi',

@@ -1,3 +1,4 @@
+import pandas as pd
 from scipy.stats import ttest_rel
 from ssl_main.const import LINE_WIDTH, FONT_DICT
 from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd, format_axis
@@ -20,18 +21,18 @@ def init_fig():
 
 
 def draw_box(result_df, i_da, i_test):
-    with_ssl_ = result_df[result_df['UseSsl'] == True][metric].values
-    no_ssl_ = result_df[result_df['UseSsl'] == False][metric].values
+    for i_use_ssl, use_ssl in enumerate([True, False]):
+        df_ = result_df[result_df['UseSsl'] == use_ssl]
+        data_ = df_[df_['NoisyData'] == False][metric].values - df_[df_['NoisyData'] == True][metric].values
 
-    data_ = with_ssl_ - no_ssl_
-    x_loc = i_da * 4 + i_test
-    bar = plt.bar(x_loc, np.mean(data_), width=0.7, color=colors[i_test], edgecolor='none', linewidth=LINE_WIDTH)
-    lolims = np.mean(data_) > 0
-    uplims = not lolims
-    ebar, caplines, barlinecols = plt.errorbar([x_loc], np.mean(data_), np.std(data_),
-                                               capsize=0, ecolor='black', fmt='none',
-                                               uplims=uplims, lolims=lolims, elinewidth=LINE_WIDTH)
-    format_errorbar_cap(caplines, 10)
+        x_loc = i_da * 4 + i_test + 0.5 * i_use_ssl
+        bar = plt.bar(x_loc, np.mean(data_), width=0.35, color=colors[i_test], edgecolor='none', linewidth=LINE_WIDTH)
+        lolims = np.mean(data_) > 0
+        uplims = not lolims
+        ebar, caplines, barlinecols = plt.errorbar([x_loc], np.mean(data_), np.std(data_),
+                                                   capsize=0, ecolor='black', fmt='none',
+                                                   uplims=uplims, lolims=lolims, elinewidth=LINE_WIDTH)
+        format_errorbar_cap(caplines, 10)
     return bar
 
 
@@ -57,35 +58,38 @@ def finalize_fig(bars):
     plt.legend(bars[:3], ['MoVi', 'AMASS', 'Combined'], bbox_to_anchor=(0.65, 1.22 - 0.2 * (ylim_ori[0])),
                ncol=1, fontsize=FONT_DICT['fontsize'], frameon=False)
     plt.tight_layout(rect=[0., 0., 1., 1.01])
-    plt.show()
 
 
 # colors = [np.array(x) / 255 for x in [[255, 166, 0], [0, 98, 204], [0, 138, 113]]]
 colors = [np.array(x) / 255 for x in [[3, 166, 200], [2, 83, 100], [173, 201, 230]]]
 
 if __name__ == "__main__":
-    metric = 'r2'
+    metric = 'correlation'
     patch_len = 8
     mask_patch_num = 8
 
-    da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
-    test_folders = ['2023_05_17_08_23_49_SSL_MOVI', '2023_05_17_08_23_03_SSL_AMASS', '2023_05_17_00_08_22_SSL_KAM']
-
+    da_names = ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']
+    test_folders = ['2023_05_18_19_53_08_SSL_AMASS_large_batch_size']
     rc('font', family='Arial')
     bars = []
-
     for i_da, da_name in enumerate(da_names):
         for i_test, test_folder in enumerate(test_folders):
-            data_path = RESULTS_PATH + test_folder + '/'
-            results_task = load_da_data(data_path + da_name + '.h5')
-            results_task = {key_: value_ for key_, value_ in results_task.items()
-                            if f'PatchLen_{patch_len}' in key_ and
-                            f'MaskPatchNum_{mask_patch_num}' in key_ and
-                            'LinearProb_False' in key_}
-            result_df = results_to_pd_summary(results_task, 0)
+            result_df_list = []
+            for appendix in ['_output', '_robustness']:
+                data_path = RESULTS_PATH + test_folder + '/'
+                results_task = load_da_data(data_path + da_name + appendix + '.h5')
+                results_task = {key_: value_ for key_, value_ in results_task.items()
+                                if f'PatchLen_{patch_len}' in key_ and
+                                f'MaskPatchNum_{mask_patch_num}' in key_ and
+                                'LinearProb_False' in key_}
+                result_df = results_to_pd_summary(results_task, 0)
+                result_df['NoisyData'] = appendix=='_robustness'
+                result_df_list.append(result_df)
+            result_df = pd.concat(result_df_list)
             bars.append(draw_box(result_df, i_da, i_test))
 
-    finalize_fig(bars)
+    # finalize_fig(bars)
+    plt.show()
 
 
 

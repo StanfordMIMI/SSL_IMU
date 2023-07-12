@@ -67,34 +67,6 @@ def show_reconstructed_signal(mod_all, mod_outputs, fig_title, mask_indices=None
         wandb.log({fig_group: [wandb.Image(fig, caption=fig_title)]})
 
 
-class SslContrastiveNet(nn.Module):
-    def __init__(self, emb_net, common_space_dim, loss_fn):
-        super(SslContrastiveNet, self).__init__()
-        self.emb_net = emb_net
-        output_channel_num = emb_net.output_dim
-        self.linear_proj_1 = nn.ModuleList([nn.Linear(output_channel_num, common_space_dim) for _ in range(len(_mods))])
-        self.linear_proj_2 = nn.ModuleList([nn.Linear(common_space_dim, common_space_dim) for _ in range(len(_mods))])
-        self.bn_proj_1 = nn.ModuleList([nn.BatchNorm1d(common_space_dim) for _ in range(len(_mods))])
-        self.loss_fn = loss_fn
-        self.temperature = 0.1
-
-    def forward(self, mods, lens):
-        def reshape_and_emb(mod_, embnet, linear_proj_1, linear_proj_2, bn_proj_1):
-            mod_ = mod_.view(-1, 3, *mod_.shape[2:])
-            mod_ = mod_.transpose(1, 2)
-            mod_, _ = embnet(mod_, lens)
-            mod_ = F.relu(bn_proj_1(linear_proj_1(mod_)))
-            mod_ = linear_proj_2(mod_)
-            return mod_
-
-        mod_outputs = []
-        for i_mod, mod in enumerate(mods):
-            mod_outputs.append(reshape_and_emb(
-                mod, self.emb_net, self.linear_proj_1[i_mod], self.linear_proj_2[i_mod], self.bn_proj_1[i_mod]))
-        loss = self.loss_fn(mod_outputs, self.temperature)
-        return loss, mod_outputs
-
-
 class RegressNet(nn.Module):
     def __init__(self, emb_net, mod_channel_num, output_dim):
         super(RegressNet, self).__init__()
@@ -130,10 +102,6 @@ class PositionalEncoding(nn.Module):
 
         pe = pe.transpose(0, 1)
         self.register_buffer('pe', pe)
-
-        # # Learnable positional encoding
-        # self.register_buffer('pe_init', pe)
-        # self.pe = nn.Parameter(torch.zeros(pe.shape).uniform_() - 0.5)
 
     def forward(self, x: Tensor) -> Tensor:
         """

@@ -152,13 +152,18 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, t
     trial_wins = []
     try: cdata = np.load(npz_fname)
     except: return []
-    try: ori_frame_rate = int(cdata['mocap_framerate'])
-    except KeyError: ori_frame_rate = int(cdata['mocap_frame_rate'])
+    try:
+        if 'mocap_framerate' in cdata.keys():
+            ori_frame_rate = int(cdata['mocap_framerate'])
+        else:
+            ori_frame_rate = int(cdata['mocap_frame_rate'])
+    except KeyError:
+        return
     if ori_frame_rate < 50: print('abandoned low sampling rate trial', npz_fname); return []
     data_pose_current = resample_to_target_fre(cdata['poses'].astype(np.float32), target_frame_rate, ori_frame_rate)
     data_trans_current = resample_to_target_fre(cdata['trans'].astype(np.float32), target_frame_rate, ori_frame_rate)
 
-    data_pose = torch.tensor(np.asarray(data_pose_current, np.float32)).view(-1, 52, 3)
+    data_pose = torch.tensor(np.asarray(data_pose_current, np.float32)).view(data_pose_current.shape[0], -1, 3)
     data_trans = torch.tensor(np.asarray(data_trans_current, np.float32))
     data_shape = torch.tensor(np.asarray(cdata['betas'][:10], np.float32))       # TODO: Augment the data by changing betas
     length = torch.tensor(data_pose_current.shape[0])
@@ -186,10 +191,6 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, t
     for i_ in range(0, trial_len - win_len, win_stride):
         win_data = trial_data_continuous[:, i_:i_+win_len]
         acc_std = np.std(win_data[gyr_cols], axis=1)
-        # plt.figure()
-        # plt.plot(win_data[gyr_cols].T)
-        # plt.title(npz_fname.split('\\')[-1] + '\t' + str(acc_std.mean()))
-        # plt.show()
         if acc_std.mean() >= 2:
             trial_wins.append(win_data)
 
@@ -201,7 +202,6 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, t
         os.makedirs(temp_dir)
     with open(temp_save_file, 'wb') as f:
         np.save(f, dset_data)
-        # print(f'Saved temp file: {temp_save_file}')
 
 
 def npy_to_h5():
@@ -240,8 +240,8 @@ def process_amass_multi_thread():
     body_model_path = AMASS_PATH + 'ModelFiles/smpl/models/basicmodel_m_lbs_10_207_0_v1.0.0.pkl'
     for dset_name in amass_dset_names:
         t0 = time.time()
-        # pool = Pool(processes=1)
-        trials = glob.glob(os.path.join(AMASS_PATH, dset_name, '*/*_poses.npz'))
+        trials = glob.glob(os.path.join(AMASS_PATH, dset_name, '*/*.npz'))
+        # trials = [item for item in trials if '_poses.npz' not in item]        # !!! remove
         print('Processing ', dset_name, '\t Num of trials ', len(trials))
         trial_num = len(trials)
         for i_trial, npz_fname in enumerate(trials):
@@ -250,24 +250,24 @@ def process_amass_multi_thread():
             except Exception as e:
                 print(e)
                 print('Failed to process ', npz_fname)
-            # pool.apply_async(process_one_trial, args=(npz_fname, body_model_path, imu_names, columns, i_trial, trial_num, dset_name))
-        # pool.close()
-        # pool.join()
         print('Time cost:', time.time() - t0)
 
 
 imu_names = tuple([imu_name for imu_name, imu_config in IMU_CONFIGS.items()])
 columns = tuple([segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
 amass_dset_names = [
-    'ACCAD', 'BioMotionLab_NTroje', 'BMLhandball', 'BMLmovi', 'CNRS', 'DanceDB', 'DFaust_67', 'CMU',
-    'EKUT', 'Eyes_Japan_Dataset', 'GRAB', 'HUMAN4D', 'HumanEva', 'KIT', 'MPI_HDM05', 'MPI_Limits', 'MPI_mosh',
-    'SFU', 'SOMA', 'SSM_synced', 'TotalCapture','Transitions_mocap', 'WEIZMANN'
+    'ACCAD', 'BioMotionLab_NTroje', 'BMLhandball',
+    'BMLmovi', 'CNRS', 'DanceDB', 'DFaust_67', 'CMU',
+    'EKUT', 'Eyes_Japan_Dataset', 'GRAB', 'HUMAN4D',
+    'HumanEva', 'KIT', 'MPI_HDM05', 'MPI_Limits', 'MPI_mosh',
+    'SFU', 'SOMA', 'SSM_synced', 'TotalCapture', 'Transitions_mocap',
+    'WEIZMANN'
 ]
 target_frame_rate = 100
 win_len, win_stride = 128, 64
 if __name__ == '__main__':
     # process_amass_multi_thread()
-    # npy_to_h5()
+    npy_to_h5()
     npy_to_h5_small_size()
 
 

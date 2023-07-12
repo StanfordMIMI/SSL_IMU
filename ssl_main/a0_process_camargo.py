@@ -33,6 +33,13 @@ class ContinuousDatasetLoader:
                 data_trial_merged, columns = self.merge_1000_to_200(data_trials)
                 data_trial_merged = self.resample_to_100(data_trial_merged)
                 self.data_contin_merged[subject] = data_trial_merged
+
+                # force_row = columns.index('fy')
+                # plt.figure()
+                # for i in range(0, 25, 5):
+                #     plt.plot(list(data_trial_merged.values())[i][:, force_row])
+                # plt.show()
+
         columns = self.update_column_names(columns)
         self.columns = columns
 
@@ -233,6 +240,29 @@ class BaseSegmentation:
             hf.attrs['columns'] = json.dumps(columns)
 
 
+class HasDataSegmentation(BaseSegmentation):
+    """ Only create windows when the data (e.g., fy) is not zero """
+    def __init__(self, name='Camargo'):
+        self.win_len = self.data_len = 128
+        self.name = name
+        self.win_step = self.win_len
+
+    def start_segment(self, trial_data, columns):
+        trial_len = trial_data.shape[0]
+        label, grf = [trial_data[:, columns.index(col)] for col in ['label', 'fy']]
+        walking_turning_stair_ramp_treadmill = np.sum(np.array([label == i for i in [-1, 0, 3, 4, 5, 6, 7, 8, 9]]), axis=0).astype(dtype=bool)
+        grf_bool = np.abs(grf) > 50
+        grf_margin = 40
+        grf_start = np.where(grf_bool[1:] & ~grf_bool[:-1])[0] + 1 - grf_margin
+        for i_start in grf_start:
+            i_current = i_start
+            while i_current+self.win_len < trial_len and walking_turning_stair_ramp_treadmill[i_current:i_current+self.win_len].all() and \
+                    grf_bool[i_current+grf_margin:i_current+self.win_len-grf_margin].all():
+                data_ = trial_data[i_current:i_current+self.win_len]
+                self.data_struct.add_new_step(data_)
+                i_current += self.win_step
+
+
 class WindowSegmentation(BaseSegmentation):
     def __init__(self, name='Camargo'):
         self.win_len = self.data_len = 128
@@ -274,7 +304,9 @@ RIGHT_FOOT_COP_COL = {type: [plate + '_' + axis for plate in plates for axis in 
 PARAM_TO_STORE = []
 
 if __name__ == '__main__':
-    sub_list = SUB_ID_ALL_DATASETS['Camargo_100']
+    sub_list = SUB_ID_ALL_DATASETS['Camargo_levelground']
+    # sub_list = ['AB06']
     data_reader = ContinuousDatasetLoader(sub_list)
-    data_reader.loop_all_the_trials([WindowSegmentation('Camargo_100')])
+    # data_reader.loop_all_the_trials([WindowSegmentation('Camargo_100')])
+    data_reader.loop_all_the_trials([HasDataSegmentation('Camargo_levelground')])
 
