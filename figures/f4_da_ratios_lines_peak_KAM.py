@@ -50,21 +50,21 @@ def draw_line(line_config, amount_list):
 
 def finalize_fig():
     format_axis()
-    plt.legend(['MoVi', 'AMASS', 'Combined', 'Baseline'], bbox_to_anchor=(0.7, 1.), ncol=2, fontsize=FONT_DICT['fontsize'], frameon=False, handlelength=4)
-    plt.tight_layout(rect=[0., 0., 1., 1.])
+    plt.tight_layout(rect=[0., 0., 1., .84])
+    plt.legend(['MoVi', 'AMASS', 'Combined', 'Baseline'], bbox_to_anchor=(0.7, 1.3), ncol=2, fontsize=FONT_DICT['fontsize'], frameon=False, handlelength=4)
 
 
 colors = [np.array(x) / 255 for x in [[3, 166, 200], [2, 83, 100], [153, 181, 210], [180, 180, 180]]]
 
 if __name__ == "__main__":
     metric = 'correlation'
+    # metric = 'r2'
     target_param = 'ratio'
     patch_len = 8
     mask_patch_num = 6
 
     da_names = [element + '_output' for element in ['walking_knee_moment']]
-    test_folders = ['2023_05_20_16_49_09_SSL_MOVI_da_ratio', '2023_05_20_16_48_08_SSL_AMASS_da_ratio',
-                    '2023_05_20_16_48_08_SSL_COMBINED_da_ratio', 'baseline']
+    test_folders = ['2023_07_17_11_07_10_SSL_MOVI', '2023_07_17_11_12_25_SSL_AMASS', '2023_07_17_11_12_25_SSL_AMASS', 'baseline']
 
     rc('font', family='Arial')
     bars = []
@@ -83,10 +83,12 @@ if __name__ == "__main__":
                             if f'PatchLen_{patch_len}' in key_ and
                             f'MaskPatchNum_{mask_patch_num}' in key_ and
                             'LinearProb_False' in key_}
-            full_size_task = [value_ for key_, value_ in results_task.items() if 'ratio_1.0' in key_][0]
+            full_size_task = [value_ for key_, value_ in results_task.items() if 'ratio_1' in key_][0]
             win_number_total = np.sum([data_.shape[0] for _, data_ in full_size_task.items()])
 
+            results_task = {test_name: {'sub_000': np.concatenate(list(test_results.values()), axis=0)} for test_name, test_results in results_task.items()}
             result_df = results_to_pd_summary_only_peaks(results_task, 0, sign_of_peak=-1)
+            # result_df = results_to_pd_summary(results_task, 0)
 
             param_set = list(set(result_df[target_param]))
             param_set.sort()

@@ -72,8 +72,8 @@ if __name__ == "__main__":
     mask_patch_num = 6
 
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
-    da_sign_of_peak = [1, -1, 1]     # Change to [1, -1, 1] !!!
-    test_folders = ['2023_05_22_21_16_37_SSL_MoVi', '2023_05_22_21_17_53_SSL_AMASS', '2023_05_22_21_16_37_SSL_COMBINED', 'baseline']
+    da_sign_of_peak = [1, -1, 1]
+    test_folders = ['2023_07_17_11_07_10_SSL_MOVI', '2023_07_17_11_12_25_SSL_AMASS', '2023_07_17_11_12_25_SSL_AMASS', 'baseline']
 
     rc('font', family='Arial')
     bars = []
@@ -91,7 +91,8 @@ if __name__ == "__main__":
                             if f'PatchLen_{patch_len}' in key_ and
                             f'MaskPatchNum_{mask_patch_num}' in key_ and
                             'LinearProb_False' in key_ and
-                            f'UseSsl_{use_ssl}' in key_}
+                            f'UseSsl_{use_ssl}' in key_ and
+                            'ratio_1' in key_}
             result_df = results_to_pd_summary_only_peaks(results_task, 0, sign_of_peak)
             bars.append(draw_box(result_df, i_da, i_test))
 
