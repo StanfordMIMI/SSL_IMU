@@ -22,8 +22,7 @@ from const import DICT_TRIAL_TYPE_ID, RESULTS_PATH, CAMARGO_SUB_HEIGHT_WEIGHT, \
 from config import DATA_PATH
 import json
 import pytorch_warmup as warmup
-import matplotlib
-# matplotlib.use('WebAgg')
+import itertools
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
@@ -71,6 +70,7 @@ class FrameworkDownstream:
         """
         self.set_data = {}
         with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
+            logging.info('Camargo dataset size, {}'.format(sum([hf[sub_id].shape[0] for sub_id in train_sub_ids + test_sub_ids])))
             self.data_columns = json.loads(hf.attrs['columns'])
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
                 current_set_data_list = []
@@ -91,6 +91,7 @@ class FrameworkDownstream:
     def load_and_process_kam(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         self.set_data = {}
         with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
+            logging.info('KAM dataset size, {}'.format(sum([hf[sub_id].shape[0] for sub_id in train_sub_ids + test_sub_ids])))
             self.data_columns = json.loads(hf.attrs['columns'])
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
                 current_set_data_list = []
@@ -316,22 +317,22 @@ class FrameworkDownstream:
         train_input_data = [train_data[mod] for mod in self.da_task['_mods']]
         train_output_data = train_data['output']
         train_step_lens = get_step_len(train_input_data[0])
-        train_dl = prepare_dl([*train_input_data, train_output_data, train_step_lens], int(self.config.batch_size_linear), shuffle=True)
+        train_dl = prepare_dl([*train_input_data, train_output_data, train_step_lens], int(self.config.BatchSizeLinear), shuffle=True)
         test_input_data = [test_data[mod] for mod in self.da_task['_mods']]
         test_output_data = test_data['output']
         test_step_lens = get_step_len(test_input_data[0])
-        test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens], int(self.config.batch_size_linear), shuffle=False)
+        test_dl = prepare_dl([*test_input_data, test_output_data, test_step_lens], int(self.config.BatchSizeLinear), shuffle=False)
 
         model = self.regress_net
         dtype, model = set_dtype_and_model(self.config.device, model)
+        lr_ = self.config.LrDa
         if linear_protocol:
-            lr_ = 3e-3
+            lr_ = lr_ * 10
             param_to_train = model.linear.parameters()
         else:
-            lr_ = 1e-4
             param_to_train = model.parameters()
 
-        optimizer = torch.optim.AdamW(param_to_train, lr_, weight_decay=1e-5)
+        optimizer = torch.optim.AdamW(param_to_train, lr_)      # !!! , weight_decay=1e-5
         epoch_end_time = time.time()
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.NumGradDeDa)
         warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.NumGradDeDa/5))
@@ -387,6 +388,7 @@ class FrameworkSSL:
         self.ssl_data_dict, self.ssl_columns_dict = {}, {}
         for ssl_file_name in ssl_task['ssl_file_names']:
             with h5py.File(DATA_PATH + ssl_file_name + '.h5', 'r') as hf:
+                logging.info('{} size, {}'.format(ssl_file_name, sum([hf[sub_].shape[0] for sub_, sub_data in hf.items()])))
                 data_dict = {sub_: sub_data[:int(self.config.ssl_use_ratio * hf[sub_].shape[0]), :, :] for sub_, sub_data in hf.items()}
                 if ssl_file_name in ['walking_knee_moment', 'filtered_walking_knee_moment']:
                     data_dict = {sub_: data_.transpose([0, 2, 1]) for sub_, data_ in data_dict.items()}     # [step, feature, time]
@@ -404,8 +406,10 @@ class FrameworkSSL:
         train_sub_ids = DSET_SUBS_FOR_SSL_TRAINING[ssl_file_name]
         validate_sub_ids = test_sub_ids = DSET_SUBS_FOR_SSL_TEST[ssl_file_name]
         data_, columns_ = self.ssl_data_dict[ssl_file_name], self.ssl_columns_dict[ssl_file_name]
+        train_sub_ids_print = []
         if train_sub_ids == ['except test']:
             train_data = np.concatenate([data_[sub] for sub in list(data_.keys()) if sub not in test_sub_ids], axis=0)
+            train_sub_ids_print = [sub for sub in list(data_.keys()) if sub not in test_sub_ids]
         else:
             train_data = np.concatenate([data_[sub] for sub in train_sub_ids], axis=0)
         vali_data = np.concatenate([data_[sub] for sub in validate_sub_ids], axis=0)
@@ -413,11 +417,11 @@ class FrameworkSSL:
 
         # SSL preprocess
         train_data_ssl = preprocess_modality(columns_, self._data_scalar, train_data, define_channel_names(self.ssl_task), 'fit_transform')
-        logging.info('SSL training with dataset {} subject ids: {}. Number of steps: {}'.format(ssl_file_name, train_sub_ids, list(train_data_ssl.values())[0].shape[0]))
+        logging.info('SSL training with dataset {} subject ids: {}. Number of steps: {}'.format(ssl_file_name, train_sub_ids_print, list(train_data_ssl.values())[0].shape[0]))
         vali_data_ssl = preprocess_modality(columns_, self._data_scalar, vali_data, define_channel_names(self.ssl_task), 'transform')
         # logging.info('Validation with subject ids: {}. Number of steps: {}'.format(validate_sub_ids, list(vali_data_ssl.values())[0].shape[0]))
         test_data_ssl = preprocess_modality(columns_, self._data_scalar, test_data, define_channel_names(self.ssl_task), 'transform')
-        # logging.info('Testing with subject ids: {}. Number of steps: {}'.format(test_sub_ids, list(test_data_ssl.values())[0].shape[0]))
+        logging.info('SSL test with dataset {} subject ids: {}. Number of steps: {}'.format(ssl_file_name, test_sub_ids, list(test_data_ssl.values())[0].shape[0]))
         return train_data_ssl, vali_data_ssl, test_data_ssl
 
     @staticmethod
@@ -463,9 +467,9 @@ class FrameworkSSL:
         if self.config.log_with_wandb:
             wandb.watch(model, config['ssl_loss_fn'], log='all', log_freq=20)
 
-        train_dl = prepare_dl([train_data[mod] for mod in _mods] + [train_step_lens], int(self.config.batch_size_ssl), shuffle=True, drop_last=True)
-        vali_dl = prepare_dl([vali_data[mod] for mod in _mods] + [vali_step_lens], int(self.config.batch_size_ssl), shuffle=False, drop_last=True)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.lr_ssl, weight_decay=1e-5)
+        train_dl = prepare_dl([train_data[mod] for mod in _mods] + [train_step_lens], int(self.config.BatchSizeSsl), shuffle=True, drop_last=True)
+        vali_dl = prepare_dl([vali_data[mod] for mod in _mods] + [vali_step_lens], int(self.config.BatchSizeSsl), shuffle=False, drop_last=True)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.LrSsl, weight_decay=1e-5)
 
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.NumGradDeSsl)
         warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.NumGradDeSsl/5))
@@ -540,34 +544,74 @@ def run_da(da_frameworks, fold_num=5):
                 plt.close("all")
 
 
-DOWNSTREAM_0 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'walking_knee_moment', 'output_columns': ['plate_2_force_z'],
+def tune_ssl_hyper():
+    logging.info('Tuning hyperparameter of SSL')
+    ssl_hyper_dict = {'LrSsl': [1e-5, 1e-4, 1e-3], 'BatchSizeSsl': [32, 64, 128], 'NumGradDeSsl': [1e3, 1e4, 1e5]}     # 'FeedForwardDim': [256, 512, 1028]
+    hyper_keys = list(ssl_hyper_dict.keys())
+    hyper_value_combos = list(itertools.product(*list(ssl_hyper_dict.values())))
+    for i_hyper_run, hyper_value in enumerate(hyper_value_combos):
+        config.update({key_: value_ for key_, value_ in zip(hyper_keys, hyper_value)})
+        config.update({'PatchLen': 8, 'MaskPatchNum': 6})
+
+        config['FileNameAppendix'] = ', ' + ', '.join([key_ + '_' + str(value_) for key_, value_ in zip(hyper_keys, hyper_value)])
+        logging.info(f'Hyper SSL round {i_hyper_run}/{len(hyper_value_combos)}' + config['FileNameAppendix'])
+        logging.info(config)
+
+        FrameworkSSL(config, SSL_COMBINED).run_ssl()
+        da_frameworks = [FrameworkDownstream(config, da_task) for da_task in [DOWNSTREAM_9_FOR_HYPER]]
+        run_da(da_frameworks, fold_num=5)
+        plt.show()
+
+
+def tune_da_hyper():
+    logging.info('Tuning hyperparameter of downstream tasks')
+    da_hyper_dict = {'NumGradDeDa': [1e2, 3e2, 1e3], 'LrDa': [1e-5, 1e-4, 1e-3], 'BatchSizeLinear': [32, 64, 128]}
+    hyper_keys = list(da_hyper_dict.keys())
+    hyper_value_combos = list(itertools.product(*list(da_hyper_dict.values())))
+    FrameworkSSL(config, SSL_COMBINED).run_ssl()
+    for i_hyper_run, hyper_value in enumerate(hyper_value_combos):
+        config.update({key_: value_ for key_, value_ in zip(hyper_keys, hyper_value)})
+        config.update({'PatchLen': 8, 'MaskPatchNum': 6})
+        config['FileNameAppendix'] = ', ' + ', '.join([key_ + '_' + str(value_) for key_, value_ in zip(hyper_keys, hyper_value)])
+        logging.info(f'Hyper downstream round {i_hyper_run}/{len(hyper_value_combos)}' + config['FileNameAppendix'])
+        logging.info(config)
+        da_frameworks = [FrameworkDownstream(config, da_task) for da_task in [DOWNSTREAM_9_FOR_HYPER]]
+        run_da(da_frameworks, fold_num=5)
+        plt.show()
+
+
+DOWNSTREAM_0 = {'_mods': _mods, 'dataset': 'walking_knee_moment', 'output_columns': ['plate_2_force_z'],
                 'da_use_ratios': [1], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
-DOWNSTREAM_1 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'Camargo_levelground', 'output_columns': ['fy'],        # knee moment have NaNs
+DOWNSTREAM_1 = {'_mods': _mods, 'dataset': 'Camargo_levelground', 'output_columns': ['fy'],
                  'da_use_ratios': [1], 'imu_segments': ['CHEST', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise', 'R_FOOT', 'rand_noise'], 'data_lost_robustness': 0.}
-DOWNSTREAM_2 = {'_mods': _mods, 'remove_trial_type': [], 'dataset': 'sun_drop_jump', 'output_columns': ['R_GRF_Z'],
+DOWNSTREAM_2 = {'_mods': _mods, 'dataset': 'sun_drop_jump', 'output_columns': ['R_GRF_Z'],
                 'da_use_ratios': [1.], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
 
 DOWNSTREAM_6, DOWNSTREAM_7, DOWNSTREAM_8 = copy.deepcopy(DOWNSTREAM_0), copy.deepcopy(DOWNSTREAM_1), copy.deepcopy(DOWNSTREAM_2)
 log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
 DOWNSTREAM_6.update({'da_use_ratios': log_array})
-DOWNSTREAM_7.update({'da_use_ratios': log_array})
-DOWNSTREAM_8.update({'da_use_ratios': log_array})
+linear_array = np.arange(0.1, 1.01, 0.1).tolist()
+DOWNSTREAM_7.update({'da_use_ratios': linear_array})
+DOWNSTREAM_8.update({'da_use_ratios': linear_array})
 
-SSL_KAM = {'ssl_file_names': ['walking_knee_moment'], 'imu_segments': STANDARD_IMU_SEQUENCE}
+DOWNSTREAM_9_FOR_HYPER = {'_mods': _mods, 'dataset': 'Camargo_levelground', 'output_columns': ['fy'], 'da_use_ratios': [1],
+                          'imu_segments': ['CHEST', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise',
+                                           'R_FOOT', 'rand_noise'], 'data_lost_robustness': 0.}
+
 SSL_MOVI = {'ssl_file_names': ['MoVi'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 SSL_AMASS = {'ssl_file_names': ['amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
-SSL_COMBINED = {'ssl_file_names': ['walking_knee_moment', 'MoVi', 'amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
+SSL_COMBINED = {'ssl_file_names': ['MoVi', 'amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 
-config = {'NumGradDeSsl': 3e4, 'NumGradDeDa': 2e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
-# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.01, 'log_with_wandb': False,
-          'batch_size_ssl': 64, 'batch_size_linear': 64, 'lr_ssl': 1e-4, 'FeedForwardDim': 512, 'nlayers': 6, 'nhead': 48,
-          'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
+# config = {'NumGradDeSsl': 1e4, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
+config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.01, 'log_with_wandb': False,
+          'BatchSizeSsl': 64, 'BatchSizeLinear': 64, 'LrSsl': 1e-4, 'LrDa': 1e-4, 'FeedForwardDim': 512,
+          'nlayers': 6, 'nhead': 48, 'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 
-test_name = 'SSL_COMBINED'
-test_info = 'camargo use 4 IMUs'
+test_name = 'hyper_da'
+test_info = 'full run'
 
 # config['result_dir'] = os.path.join('../figures/results/t04_da_opencap')      # local
-# config['result_dir'] = os.path.join('../../results/2023_05_15_22_23_47_SSL_AMASS')      # cluster
+# config['result_dir'] = os.path.join('../../results/2023_07_14_13_47_19_new_amass_copy')      # cluster
 config['result_dir'] = os.path.join(RESULTS_PATH, result_folder() + "_" + test_name)
 config = parse_config(config)
 
@@ -577,6 +621,10 @@ if config['log_with_wandb']:
 if __name__ == '__main__':
     os.makedirs(os.path.join(config['result_dir']), exist_ok=True)
     add_file_handler(logging, os.path.join(config['result_dir'], 'training_log.txt'))
+    logging.info(test_name + '\t' + test_info)
+
+    # tune_ssl_hyper()
+    # tune_da_hyper()
 
     coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {8: [6]})
     # coupled_hypers = (['PatchLen', 'MaskPatchNum'], {1: [16, 32, 48, 64, 80], 2: [8, 16, 24, 32, 40], 4: [4, 8, 12, 16, 20], 8: [2, 4, 6, 8, 10], 16: [1, 2, 3, 4, 5]})
@@ -591,13 +639,13 @@ if __name__ == '__main__':
                 config['FileNameAppendix'] = f', {independent_hyper[0]}_{indep_hyper_val},' \
                                              f' {coupled_hypers[0][0]}_{coupled_hyper_val_1},' \
                                              f' {coupled_hypers[0][1]}_{coupled_hyper_val_2}'
-                logging.info(test_info)
                 logging.info(config['FileNameAppendix'])
                 logging.info(config)
 
                 FrameworkSSL(config, SSL_COMBINED).run_ssl()
                 da_frameworks = [FrameworkDownstream(config, da_task) for da_task in
                                  [DOWNSTREAM_0, DOWNSTREAM_1, DOWNSTREAM_2]]
+                                 # [DOWNSTREAM_6, DOWNSTREAM_7, DOWNSTREAM_8]]
                 run_da(da_frameworks, fold_num=5)
 
                 plt.show()

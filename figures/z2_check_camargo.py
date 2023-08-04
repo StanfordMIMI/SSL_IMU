@@ -1,7 +1,5 @@
-from scipy.stats import ttest_rel
-from ssl_main.const import LINE_WIDTH, FONT_DICT
-from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd, format_axis
-from matplotlib.patches import Patch
+from ssl_main.const import FONT_DICT
+from figures.PaperFigures import format_axis
 import os, sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
@@ -49,12 +47,7 @@ if __name__ == "__main__":
     bars = []
 
     da_name = 'Camargo_levelground_output'
-    # for i_test, test_folder in enumerate(test_folders):
-    #     if test_folder == 'baseline':
-    #         test_folder = test_folders[i_test - 1]
-    #         use_ssl = False
-    #     else:
-    #         use_ssl = True
+
     results_task = load_da_data('D:/Local/results/2023_07_12_17_44_04_ssl_hyper/' + da_name + '.h5')
     results_task = {key_: value_ for key_, value_ in results_task.items()
                     if f'PatchLen_{patch_len}' in key_ and

@@ -5,7 +5,6 @@ analysisTemp.xml
 config.py
 runs/
 figures/results/
-figures/exports/
 .idea/
 .wandb/
 wandb/

@@ -6,7 +6,6 @@ import h5py
 from sklearn.metrics import r2_score
 from sklearn.metrics import mean_squared_error as mse
 from scipy.stats import pearsonr
-from scipy.stats import kendalltau
 from scipy.signal import find_peaks
 
 
@@ -47,10 +46,10 @@ def results_to_pd_summary(result_all_tests, result_field_id, block_swing_phase=T
     for test_name, test_results in result_all_tests.items():
         param_tuples = [param_tuple.split('_') for param_tuple in test_name.split(', ')]
         for param_tuple in param_tuples:
-            if param_tuple[1] in ['True', 'False']:
-                param_tuple[1] = param_tuple[1] == 'True'
+            if param_tuple[-1] in ['True', 'False']:
+                param_tuple[-1] = param_tuple[-1] == 'True'
             else:
-                param_tuple[1] = float(param_tuple[1])
+                param_tuple[-1] = float(param_tuple[-1])
         for sub_name, subject_data in test_results.items():
             sub_id = int(sub_name[4:])
             data_true, data_pred = subject_data[:, result_field_id].ravel(), subject_data[:, result_field_id+int(subject_data.shape[1]/2)].ravel()
@@ -61,7 +60,7 @@ def results_to_pd_summary(result_all_tests, result_field_id, block_swing_phase=T
             r_rmse = rmse / (np.max(data_true) - np.min(data_true)) * 100
             r2 = r2_score(data_true, data_pred)
             correlation, _ = pearsonr(data_true, data_pred)
-            result_list.append([param_tuple[1] for param_tuple in param_tuples] + [sub_id, rmse, r_rmse, r2, correlation])
+            result_list.append([param_tuple[-1] for param_tuple in param_tuples] + [sub_id, rmse, r_rmse, r2, correlation])
     result_df = pd.DataFrame(result_list, columns=[param_tuple[0] for param_tuple in param_tuples] + ['sub_id', 'rmse', 'r_rmse', 'r2', 'correlation'])
     return result_df
 
@@ -78,12 +77,10 @@ def results_to_pd_summary_only_peaks(result_all_tests, result_field_id, sign_of_
         for sub_name, subject_data in test_results.items():
             sub_id = int(sub_name[4:])
             data_true, data_pred = subject_data[:, result_field_id], subject_data[:, result_field_id+int(subject_data.shape[1]/2)]
-
-            # for data_step_true, data_step_pred in zip(data_true, data_pred):
-            #     plt.figure()
-            #     plt.plot(data_step_true)
-            #     plt.plot(data_step_pred)
-            #     plt.show()
+            # if len(data_true) <= 1:
+            #     continue
+            # if sub_id == 18:
+            #     x=1
 
             peaks = np.array([[np.max(sign_of_peak * data_step_true), np.max(sign_of_peak * data_step_pred)]
                               for data_step_true, data_step_pred in zip(data_true, data_pred)])
@@ -165,8 +162,9 @@ def save_fig(name, dpi=300):
     plt.savefig('exports/' + name + '.png', dpi=dpi)
 
 
-def format_axis(line_width=LINE_WIDTH):
-    ax = plt.gca()
+def format_axis(ax=None, line_width=LINE_WIDTH):
+    if ax is None:
+        ax = plt.gca()
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.xaxis.set_tick_params(width=line_width)

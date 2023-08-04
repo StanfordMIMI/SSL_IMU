@@ -1,6 +1,5 @@
 import os, sys
 from ssl_main.const import FONT_DICT, LINE_WIDTH_THICK
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
 import tempfile
@@ -101,8 +100,6 @@ def finalize_fig(fig, ax, im):
     fig.colorbar(im, ax=ax)
 
 
-# colors = [np.array(list_) / 255 for list_ in [[54, 97, 118], [119, 100, 150], [170, 138, 165], [213, 158, 187]]]
-# colors = [np.array(list_) / 255 for list_ in [[8,81,156], [49,130,189], [107,174,214], [189,215,231]]]
 colors = [np.array(list_) / 255 for list_ in [(84, 39, 143), (117, 107, 177), (158, 154, 200), (203, 201, 226)]]
 plot_type = 'curve'
 
@@ -113,11 +110,10 @@ if __name__ == "__main__":
     test_folder = '2023_05_21_15_03_25_SSL_COMBINED_f2'
     data_path = RESULTS_PATH + test_folder
     if plot_type == 'curve':
-        # fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(5, 9))
         fig = plt.figure(figsize=(12, 4.5))
     else:
         fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(8, 3.5), height_ratios=[3, 1])
-    metric = 'r2'
+    metric = 'correlation'
     for i_da, test_name in enumerate(test_names):
         plt.subplot(1, 3, i_da + 1)
         results_task = load_da_data(data_path + test_name + '_output' + '.h5')
@@ -130,7 +126,7 @@ if __name__ == "__main__":
         result_mean_map = np.zeros([2, len(patch_len_list), len(percent_of_masking_list)])
         for i_patch, patch_len in enumerate(patch_len_list):
             for i_percent, percent_of_masking in enumerate(percent_of_masking_list):
-                data_cond = result_df[(result_df['PatchLen'] == patch_len) & (result_df['PercentOfMasking'] == percent_of_masking) & (result_df['NumGradDeSsl'] == 30000)]
+                data_cond = result_df[(result_df['PatchLen'] == patch_len) & (result_df['PercentOfMasking'] == percent_of_masking) & (result_df['NumGradDeSsl'] == 10000)]
                 data_cond_0 = data_cond[~data_cond['LinearProb']&data_cond['UseSsl']]
                 result_mean_map[0, i_patch, i_percent] = np.mean(data_cond_0[metric])
                 data_cond_2 = data_cond[~data_cond['LinearProb']&~data_cond['UseSsl']]
@@ -139,7 +135,7 @@ if __name__ == "__main__":
             plot_curve(i_da, result_mean_map, ['0\n(baseline)'] + percent_of_masking_list_str, patch_len_list)
         else:
             plot_map(i_da, result_mean_map, patch_len_list, percent_of_masking_list_str)
-    save_fig('f2')
+    save_fig('f3')
     plt.show()
 
 

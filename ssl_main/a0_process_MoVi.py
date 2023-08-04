@@ -1,6 +1,8 @@
 import h5py
 import numpy as np
 import ast
+import pandas as pd
+import matplotlib.pyplot as plt
 from const import TRIAL_TYPES, GRAVITY, STANDARD_IMU_SEQUENCE, DICT_TRIAL_MOVI
 from utils import resample_to_target_fre
 from a0_process_camargo import DataStruct, BaseSegmentation
@@ -79,6 +81,39 @@ class ContinuousDatasetLoader:
             [method.export(self.columns, subject) for method in segment_methods]
 
 
+def compare_real_synthetic_movi():
+    IMU_CONFIGS = {
+        'CHEST': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 1329, 'ji_sel': 9},
+        'WAIST': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 3147, 'ji_sel': 0},
+        'L_THIGH': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 4434, 'ji_sel': 2},
+        'R_THIGH': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 945, 'ji_sel': 1},
+        'L_SHANK': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 4563, 'ji_sel': 5},
+        'R_SHANK': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 1075, 'ji_sel': 4},
+        'L_FOOT': {'R_sw': np.array([[1, 0, 0], [0, 0.5, - np.sqrt(3)/2], [0, np.sqrt(3)/2, 0.5]]), 'vi_sel': 6740, 'ji_sel': 8},
+        'R_FOOT': {'R_sw': np.array([[1, 0, 0], [0, 0.5, - np.sqrt(3)/2], [0, np.sqrt(3)/2, 0.5]]), 'vi_sel': 3343, 'ji_sel': 7}
+    }
+    synthetic_imu = [np.load(f'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/AMASS_data_cutoff_15/BMLmovi/{i_}.npy').T for i_ in range(10)]
+    synthetic_imu = np.concatenate(synthetic_imu, axis=0)
+    imu_names = tuple([imu_name for imu_name, imu_config in IMU_CONFIGS.items()])
+    synthetic_columns = tuple([segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
+    synthetic_df = pd.DataFrame(synthetic_imu, columns=synthetic_columns)
+
+    real_imu_file = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/MoVi/data_processed/sub_69.h5'
+    real_imu = []
+    real_columns = ContinuousDatasetLoader.update_imu_name(ContinuousDatasetLoader.load_columns())
+    with h5py.File(real_imu_file, 'r') as hf:
+        for trial, trial_data in hf.items():
+            current_trial = trial_data[:].T
+            current_trial = ContinuousDatasetLoader.calibrate_imu_orientation(current_trial, real_columns)
+            real_imu.append(current_trial)
+    real_df = pd.DataFrame(real_imu[0], columns=real_columns)
+
+    plt.figure()
+    plt.plot(real_df['R_THIGH_Accel_X'] * 9.81)
+    plt.plot(synthetic_df['R_THIGH_Accel_X'])
+    plt.show()
+
+
 class WindowSegmentation(BaseSegmentation):
     def __init__(self, win_len, name='UnivariantWinTest', imu_num=17):
         self.imu_num = imu_num
@@ -95,7 +130,7 @@ class WindowSegmentation(BaseSegmentation):
         while i_current+self.win_len < trial_len:
             data_ = trial_data[i_current:i_current+self.win_len]
             acc_std = np.std(data_[:, acc_cols], axis=0)
-            if acc_std.mean() >= 0.2:
+            if acc_std.mean() >= 0.5:
                 self.data_struct.add_new_step(data_)
             i_current += self.win_step
 
@@ -109,18 +144,10 @@ movi_orientation_transform_mat = {
 if __name__ == '__main__':
     sub_list = ['sub_' + str(i+1) for i in range(88)]
 
-    # data_reader = ContinuousDatasetLoader(sub_list, 200)
-    # data_reader.loop_all_the_trials([WindowSegmentation(64, 'MoVi_hw_running')])
-    #
-    # data_reader = ContinuousDatasetLoader(sub_list, 200)
-    # data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi_Camargo')])
-
-    data_reader = ContinuousDatasetLoader(sub_list, 100)
-    data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi')])
+    compare_real_synthetic_movi()
 
     # data_reader = ContinuousDatasetLoader(sub_list, 100)
-    # data_reader.loop_all_the_trials([WindowSegment(80, 'MoVi_sun_drop_jump')])
-
+    # data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi')])
 
 
 

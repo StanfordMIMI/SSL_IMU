@@ -10,7 +10,6 @@ import matplotlib.pyplot as plt
 from matplotlib import rc, colormaps
 from figures.PaperFigures import save_fig, load_da_data, results_to_pd_summary, format_errorbar_cap
 from ssl_main.config import RESULTS_PATH
-import matplotlib
 
 
 def init_fig():
@@ -22,7 +21,7 @@ def draw_line_1(line_config, amount_list):
     def format_ticks():
         ax = plt.gca()
         ax.set_xlabel('Size of Training Set', fontdict=FONT_DICT)
-        ax.set_ylabel('Correlation of Peak vGRF Estimation', fontdict=FONT_DICT)
+        ax.set_ylabel('Correlation Coefficients - vGRF Profile', fontdict=FONT_DICT)
         ax.set_xscale('log')
         x_ticks = win_number_list[::2]
         ax.set_xticks(x_ticks)
@@ -30,9 +29,9 @@ def draw_line_1(line_config, amount_list):
         ax.set_xticklabels(x_ticks_label, fontdict=FONT_DICT)
         ax.get_xaxis().set_tick_params(which='minor', size=0)
         ax.get_xaxis().set_tick_params(which='minor', width=0)
-        ax.set_ylim(0., 1.)
-        ax.set_yticks([.0, 0.2, 0.4, 0.6, 0.8, 1.])
-        ax.set_yticklabels([.0, 0.2, 0.4, 0.6, 0.8, 1.], fontdict=FONT_DICT)
+        ax.set_ylim(0.9, 0.98)
+        ax.set_yticks([0.9, 0.92, 0.94, 0.96, 0.98])
+        ax.set_yticklabels([0.9, 0.92, 0.94, 0.96, 0.98], fontdict=FONT_DICT)
         plt.title(test_names_print[i_da], fontdict=FONT_DICT, pad=15)
     rc('font', family='Arial')
     mean_, std_ = [], []
@@ -45,22 +44,29 @@ def draw_line_1(line_config, amount_list):
              color=line_config['color'], label=line_config['label'])
     format_ticks()
     format_axis()
+    print(np.round(mean_[-1], 2), np.round(std_[-1], 2))
 
 
 def draw_line_0_2(line_config, amount_list):
     def format_ticks():
         ax = plt.gca()
         ax.set_xlabel('Size of Training Set', fontdict=FONT_DICT)
-        ax.set_ylabel('Correlation Coefficients - vGRF Peak', fontdict=FONT_DICT)
+        ax.set_ylabel('Correlation Coefficients - vGRF Profile', fontdict=FONT_DICT)
         ax.set_xlim(30, 415)
         x_ticks = win_number_list[:1] + [130, 220, 310] + win_number_list[-1:]
         x_ticks_label = [f'{x_tick}\n{round(x_tick*100/(0.8*win_number_total))}%' for x_tick in x_ticks]
         ax.set_xticks(x_ticks)
         ax.set_xticklabels(x_ticks_label, fontdict=FONT_DICT)
 
-        ax.set_ylim(0., 1.)
-        ax.set_yticks([.0, 0.2, 0.4, 0.6, 0.8, 1.])
-        ax.set_yticklabels([.0, 0.2, 0.4, 0.6, 0.8, 1.], fontdict=FONT_DICT)
+        if i_da == 0:
+            ax.set_ylim(0.89, 0.94)
+            ax.set_yticks([0.89, 0.9, 0.91, 0.92, 0.93, 0.94])
+            ax.set_yticklabels([0.89, 0.9, 0.91, 0.92, 0.93, 0.94], fontdict=FONT_DICT)
+        elif i_da == 2:
+            ax.set_ylim(0.89, 0.92)
+            ax.set_yticks([0.88, 0.89, 0.9, 0.91, 0.92])
+            ax.set_yticklabels([0.88, 0.89, 0.9, 0.91, 0.92], fontdict=FONT_DICT)
+
         plt.title(test_names_print[i_da], fontdict=FONT_DICT, pad=15)
 
     rc('font', family='Arial')
@@ -74,6 +80,7 @@ def draw_line_0_2(line_config, amount_list):
              color=line_config['color'], label=line_config['label'])
     format_ticks()
     format_axis()
+    print(np.round(np.max(mean_), 2), np.round(std_[np.argmax(mean_)], 2))
 
 
 def finalize_fig():
@@ -91,7 +98,7 @@ if __name__ == "__main__":
 
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
     test_folders = ['2023_07_17_11_07_10_SSL_MOVI', '2023_07_17_11_12_25_SSL_AMASS', '2023_07_17_15_28_20_SSL_COMBINED', 'baseline']
-    test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking', 'Task 3 - Drop Jump')
+    test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking', 'Task 3 - Drop Landing')
 
     rc('font', family='Arial')
     bars = []
@@ -114,8 +121,7 @@ if __name__ == "__main__":
             full_size_task = [value_ for key_, value_ in results_task.items() if 'ratio_1' in key_][0]
             win_number_total = np.sum([data_.shape[0] for _, data_ in full_size_task.items()])
 
-            results_task = {test_name: {'sub_000': np.concatenate(list(test_results.values()), axis=0)} for test_name, test_results in results_task.items()}
-            result_df = results_to_pd_summary_only_peaks(results_task, 0, sign_of_peak=sign)
+            result_df = results_to_pd_summary(results_task, 0)
 
             param_set = list(set(result_df[target_param]))
             param_set.sort()
@@ -126,6 +132,7 @@ if __name__ == "__main__":
                 draw_line_1(line_config, param_set)
             else:
                 draw_line_0_2(line_config, param_set)
+            plt.grid(True, linewidth=1, alpha=0.5)
     finalize_fig()
     save_fig('f4_lines')
     plt.show()

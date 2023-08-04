@@ -39,15 +39,12 @@ IMU_CONFIGS = {
 
 class SyntheticAccGyr:
     def __init__(self, imu_name, R_wb, traj, R_sb):
-        traj = data_filter(traj, 10, 100)
         self.R_wb = R_wb
         self.traj = traj
         self.R_sb = R_sb
         self.imu_name = imu_name
         self.acc = self._compute_acc()
         self.gyr = self._compute_gyr()
-        self.acc = data_filter(self.acc, 15, 100)
-        self.gyr = data_filter(self.gyr, 15, 100)
 
     def get_acc_gyr(self):
         return self.acc, self.gyr
@@ -84,9 +81,6 @@ class SyntheticAccGyr:
         for i_sample in range(data_len):
             gyr_s[i_sample, :] = np.matmul(self.R_sb, gyr_b[i_sample, :])
 
-        # plt.figure()
-        # plt.plot(gyr_s)
-        # plt.title(self.imu_name + ' gyr')
         return gyr_s
 
     def _compute_acc(self):
@@ -103,9 +97,6 @@ class SyntheticAccGyr:
             acc_b = np.matmul(R_bw, acc_w[i_sample, :])
             acc_s[i_sample, :] = np.matmul(self.R_sb, acc_b)
 
-        # plt.figure()
-        # plt.plot(acc_s)
-        # plt.title(self.imu_name + ' acc')
         return acc_s
 
     @staticmethod
@@ -130,18 +121,31 @@ class SyntheticAccGyr:
 
 
 def plot_3d_scatter(vert):
-    fig = plt.figure()
-    ax = fig.add_subplot(projection='3d')
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(projection='3d', computed_zorder=False)
     data_ = vert[0].numpy()
+    data_ = data_ - np.mean(data_, axis=0)
     # for i_, data__ in enumerate(data_[::10]):
     #     ax.text(data__[0], data__[1], data__[2], str(i_*10), 'x', fontsize=8)
-    ax.scatter(data_[:, 0], data_[:, 1], data_[:, 2])
-    # ax.scatter(data_[vi_sel, 0], data_[vi_sel, 1], data_[vi_sel, 2], c='r', s=50)
-    ax.scatter([0, 2], [0, 2], [0, 2], s=1)
-    ax.set_xlabel('X Label')
-    ax.set_ylabel('Y Label')
-    ax.set_zlabel('Z Label')
+    ax.scatter(data_[:, 0], data_[:, 1], data_[:, 2], edgecolors='none', c='gray', s=5, zorder=10)
+    for segment, config in IMU_CONFIGS.items():
+        ax.scatter(data_[config['vi_sel'], 0], data_[config['vi_sel'], 1], data_[config['vi_sel'], 2], c='r', s=25, zorder=20)
+    # ax.set_xlabel('X')
+    # ax.set_ylabel('Y')
+    # ax.set_zlabel('Z')
     ax.view_init(elev=0., azim=90)
+
+    ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax.xaxis._axinfo["grid"]['color'] = (1, 1, 1, 0)
+    ax.yaxis._axinfo["grid"]['color'] = (1, 1, 1, 0)
+    ax.zaxis._axinfo["grid"]['color'] = (1, 1, 1, 0)
+    ax.set_axis_off()
+    ax.set_xlim(-1.2, 1.2)
+    ax.set_ylim(-1.2, 1.2)
+    ax.set_zlim(-1.2, 1.2)
+
     plt.show()
 
 
@@ -149,7 +153,6 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, t
     body_model = art.ParametricModel(body_model_path)
     if i_trial % (trial_num // 10) == 0:
         print(f'{round(i_trial/trial_num*100, 2)}%')
-    trial_wins = []
     try: cdata = np.load(npz_fname)
     except: return []
     try:
@@ -160,8 +163,12 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, t
     except KeyError:
         return
     if ori_frame_rate < 50: print('abandoned low sampling rate trial', npz_fname); return []
-    data_pose_current = resample_to_target_fre(cdata['poses'].astype(np.float32), target_frame_rate, ori_frame_rate)
-    data_trans_current = resample_to_target_fre(cdata['trans'].astype(np.float32), target_frame_rate, ori_frame_rate)
+
+    data_pose_current = data_filter(cdata['poses'].astype(np.float32), amass_cut_off_fre, ori_frame_rate)
+    data_trans_current = data_filter(cdata['trans'].astype(np.float32), amass_cut_off_fre, ori_frame_rate)
+
+    data_pose_current = resample_to_target_fre(data_pose_current, target_frame_rate, ori_frame_rate)
+    data_trans_current = resample_to_target_fre(data_trans_current, target_frame_rate, ori_frame_rate)
 
     data_pose = torch.tensor(np.asarray(data_pose_current, np.float32)).view(data_pose_current.shape[0], -1, 3)
     data_trans = torch.tensor(np.asarray(data_trans_current, np.float32))
@@ -175,6 +182,7 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, t
     grot, joint, traj = body_model.forward_kinematics(p, data_shape, data_trans, calc_mesh=True)
 
     # plot_3d_scatter(traj)
+    # exit()
 
     trial_data = []
     for imu_name in imu_names:
@@ -185,37 +193,47 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, t
         trial_data.append(gyr_)
     trial_data_continuous = np.concatenate(trial_data, axis=1).T.astype(np.float32)
 
-    # segment trial data from [feature, time] into windows [step, feature, time]
-    gyr_cols = [i for i, col in enumerate(columns) if 'Accel' in col]
-    trial_len = trial_data_continuous.shape[1]
-    for i_ in range(0, trial_len - win_len, win_stride):
-        win_data = trial_data_continuous[:, i_:i_+win_len]
-        acc_std = np.std(win_data[gyr_cols], axis=1)
-        if acc_std.mean() >= 2:
-            trial_wins.append(win_data)
-
-    if len(trial_wins) == 0: return
-    dset_data = np.stack(trial_wins, axis=0)
-    temp_save_file = f'{DATA_PATH}npy_temp/{dset_name}/{i_trial}.npy'
+    temp_save_file = npy_data_path + f'{dset_name}/{i_trial}.npy'
     temp_dir = os.path.dirname(temp_save_file)
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir)
     with open(temp_save_file, 'wb') as f:
-        np.save(f, dset_data)
+        np.save(f, trial_data_continuous)
 
 
-def npy_to_h5():
-    with h5py.File(DATA_PATH + 'amass.h5', 'w') as hf:
+def load_npy_and_to_h5():
+    with h5py.File(DATA_PATH + 'amass_with_extreme_values.h5', 'w') as hf:
         hf.attrs['columns'] = json.dumps(columns)
-        for dset_name in next(os.walk(os.path.join(DATA_PATH, 'npy_temp')))[1]:
-            print(f'Saving dset: {dset_name}')
+        for dset_name in next(os.walk(npy_data_path))[1]:
+
             dset_wins = []
-            temp_files = glob.glob(os.path.join(DATA_PATH, 'npy_temp', dset_name, '*.npy'))
+            temp_files = glob.glob(os.path.join(npy_data_path, dset_name, '*.npy'))
+            print(f'Saving dset: {dset_name}, {len(temp_files)} trials')
+            num_of_removed_static, num_of_removed_extreme = 0, 0
             for temp_file in temp_files:
                 with open(temp_file, 'rb') as f:
-                    dset_wins.append(np.load(f))
+                    trial_data_continuous = np.load(f)
+                    if imu_cut_off_fre is not None:
+                        trial_data_continuous = data_filter(trial_data_continuous.T, imu_cut_off_fre, target_frame_rate).T
+                    """ segment trial data from [feature, time] into windows [step, feature, time] """
+                    acc_cols = [i for i, col in enumerate(columns) if 'Accel' in col]
+                    gyr_cols = [i for i, col in enumerate(columns) if 'Gyro' in col]
+                    trial_len = trial_data_continuous.shape[1]
+                    for i_ in range(0, trial_len - win_len, win_stride):
+                        win_data = trial_data_continuous[:, i_:i_+win_len]
+                        acc_std = np.std(win_data[acc_cols], axis=1)
+
+                        if acc_std.mean() < 2:
+                            num_of_removed_static += 1
+                            continue
+                        if np.max(np.abs(win_data[acc_cols])) > 160 or np.max(np.abs(win_data[gyr_cols])) > 35:
+                            num_of_removed_extreme += 1
+                            continue
+                        dset_wins.append(win_data)
+
+            print(f'{num_of_removed_static} / {num_of_removed_extreme} / {len(dset_wins)}; static_win/ extreme_win / kept_win')
             if len(dset_wins) > 0:
-                dset_data = np.concatenate(dset_wins, axis=0)
+                dset_data = np.stack(dset_wins)
                 dset = hf.create_dataset(dset_name, dset_data.shape, data=dset_data)
 
 
@@ -225,7 +243,7 @@ def npy_to_h5_small_size():
         for dset_name in next(os.walk(os.path.join(DATA_PATH, 'npy_temp')))[1]:
             print(f'Saving dset: {dset_name}')
             dset_wins = []
-            temp_files = glob.glob(os.path.join(DATA_PATH, 'npy_temp', dset_name, '*.npy'))
+            temp_files = glob.glob(os.path.join(npy_data_path, dset_name, '*.npy'))
             for temp_file in temp_files:
                 with open(temp_file, 'rb') as f:
                     dset_wins.append(np.load(f))
@@ -236,12 +254,49 @@ def npy_to_h5_small_size():
                 dset = hf.create_dataset(dset_name, dset_data.shape, data=dset_data)
 
 
-def process_amass_multi_thread():
+def check_extreme_values():
+    with h5py.File(DATA_PATH + 'amass.h5', 'r') as hf:
+        ssl_data = {sub_: sub_data[:int(1 * hf[sub_].shape[0]), :, :] for sub_, sub_data in hf.items()}
+        ssl_columns = json.loads(hf.attrs['columns'])
+    acc_col_loc = [i for i, col in enumerate(ssl_columns) if 'Accel' in col]
+    gyr_col_loc = [i for i, col in enumerate(ssl_columns) if 'Gyro' in col]
+
+    total_num, total_bad_num = 0, 0
+    for dset_name, data_ in ssl_data.items():
+        total_win = data_.shape[0]
+        bad_win_num = 0
+        badbad_win_num = 0
+        for i_win in range(total_win):
+            if np.max(np.abs(data_[i_win, acc_col_loc])) > 320 or np.max(np.abs(data_[i_win, gyr_col_loc])) > 70:
+                badbad_win_num += 1
+            if np.max(np.abs(data_[i_win, acc_col_loc])) > 160 or np.max(np.abs(data_[i_win, gyr_col_loc])) > 35:
+                bad_win_num += 1
+            plt.subplot(2, 2, 1)
+            plt.plot(data_[i_win, acc_col_loc].T)
+            plt.subplot(2, 2, 2)
+            plt.plot(data_[i_win, gyr_col_loc].T)
+            plt.title(dset_name)
+            plt.show()
+        print(dset_name, ': {} / {} / {}'.format(badbad_win_num, bad_win_num, total_win))
+        total_num += total_win
+        total_bad_num += bad_win_num
+    print('Total: {} / {}'.format(total_bad_num, total_num))
+
+
+def check_num_of_npy_vs_num_of_npz():
+    print('Checking')
+    for dset_name in amass_dset_names:
+        trials = glob.glob(os.path.join(AMASS_PATH, dset_name, '*/*.npz'))
+        num_of_trials = len(trials)
+        num_of_npy = len(glob.glob(os.path.join(npy_data_path, dset_name, '*.npy')))
+        print(dset_name, f' {num_of_npy}/{num_of_trials} trials processed.')
+
+
+def process_amass_single_thread():
     body_model_path = AMASS_PATH + 'ModelFiles/smpl/models/basicmodel_m_lbs_10_207_0_v1.0.0.pkl'
     for dset_name in amass_dset_names:
         t0 = time.time()
         trials = glob.glob(os.path.join(AMASS_PATH, dset_name, '*/*.npz'))
-        # trials = [item for item in trials if '_poses.npz' not in item]        # !!! remove
         print('Processing ', dset_name, '\t Num of trials ', len(trials))
         trial_num = len(trials)
         for i_trial, npz_fname in enumerate(trials):
@@ -256,19 +311,36 @@ def process_amass_multi_thread():
 imu_names = tuple([imu_name for imu_name, imu_config in IMU_CONFIGS.items()])
 columns = tuple([segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
 amass_dset_names = [
-    'ACCAD', 'BioMotionLab_NTroje', 'BMLhandball',
-    'BMLmovi', 'CNRS', 'DanceDB', 'DFaust_67', 'CMU',
-    'EKUT', 'Eyes_Japan_Dataset', 'GRAB', 'HUMAN4D',
-    'HumanEva', 'KIT', 'MPI_HDM05', 'MPI_Limits', 'MPI_mosh',
-    'SFU', 'SOMA', 'SSM_synced', 'TotalCapture', 'Transitions_mocap',
-    'WEIZMANN'
+    'ACCAD', 'BMLhandball',
+    'BioMotionLab_NTroje',
+    'BMLmovi',
+    'CNRS',
+    'DFaust_67',
+    'EKUT', 'Eyes_Japan_Dataset', 'GRAB', 'HUMAN4D', 'HumanEva',
+    'MPI_HDM05',
+    'MPI_Limits',
+    'MPI_mosh',
+    'SFU',
+    'SOMA', 'SSM_synced', 'TotalCapture', 'Transitions_mocap',
+    'WEIZMANN',
+    'CMU',      # 40 GB memory
+    'DanceDB',      # 40 GB memory
+    'KIT',      # 40 GB memory
 ]
+
 target_frame_rate = 100
 win_len, win_stride = 128, 64
+amass_cut_off_fre = 15
+imu_cut_off_fre = None
+npy_data_path = f'{DATA_PATH}../AMASS_data_cutoff_{amass_cut_off_fre}/'
+
 if __name__ == '__main__':
-    # process_amass_multi_thread()
-    npy_to_h5()
-    npy_to_h5_small_size()
+    process_amass_single_thread()
+    # load_npy_and_to_h5()
+
+    # check_num_of_npy_vs_num_of_npz()
+    # check_extreme_values()
+
 
 
 
