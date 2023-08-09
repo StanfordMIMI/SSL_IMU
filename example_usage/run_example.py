@@ -5,8 +5,6 @@ from torch.nn import TransformerEncoderLayer, TransformerEncoder
 from torch.nn import functional as F
 import torch
 import json
-import random
-from typing import List
 import copy
 import math
 import pytorch_warmup as warmup
@@ -25,32 +23,6 @@ CAMARGO_SUB_HEIGHT_WEIGHT = {
     'AB25': [1.63, 52.2], 'AB27': [1.70, 68.0], 'AB28': [1.69, 62.1], 'AB30': [1.77, 77.0]
 }
 GRAVITY = 9.81
-
-
-# def load_and_process_camargo(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
-#     """
-#     train_sub_ids: a list of subject id for model training
-#     validate_sub_ids: a list of subject id for model validation
-#     test_sub_ids: a list of subject id for model testing
-#     """
-#     self.set_data = {}
-#     with h5py.File('Camargo_levelground.h5', 'r') as hf:
-#         self.data_columns = json.loads(hf.attrs['columns'])
-#         for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
-#             current_set_data_list = []
-#             for sub_id in set_sub_ids:
-#                 sub_data = hf[sub_id][:, :, :]
-#                 sub_weight = CAMARGO_SUB_HEIGHT_WEIGHT[sub_id][1] * GRAVITY
-#                 force_col_loc = [self.data_columns.index(x) for x in ['fx', 'fy', 'fz']]
-#                 sub_data[:, force_col_loc] = sub_data[:, force_col_loc] / sub_weight
-#                 current_set_data_list.append(sub_data)
-#             current_set_data = np.concatenate(current_set_data_list, axis=0)
-#             """ [step, feature, time] """
-#             # use rand noise to replace reduced IMUs
-#             rand_noise = np.random.normal(size=(current_set_data.shape[0], 6, current_set_data.shape[2]))
-#             current_set_data = np.concatenate([current_set_data, rand_noise], axis=1)
-#             self.set_data[data_name] = current_set_data
-#         self.data_columns.extend(['rand_noise' + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
 
 
 class RegressNet(nn.Module):
@@ -323,10 +295,6 @@ def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, show_f
             y_pred = torch.cat(y_pred_list).numpy()
         return y_true, y_pred
 
-    # test_name = 'LinearProb_' + str(linear_protocol) + ', UseSsl_' + str(use_ssl) + \
-    #             ', ratio_' + str(self.config.da_use_ratio) + self.config.FileNameAppendix
-    # if linear_protocol:
-    #     self.set_regress_net_to_post_ssl_state()
     train_data, test_data = data_downstream_dict['tuning'], data_downstream_dict['test']
     train_input_data = [train_data[mod] for mod in ['acc', 'gyr']]
     train_output_data = train_data['output']
@@ -363,16 +331,6 @@ def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, show_f
                       f' train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
             epoch_end_time = time.time()
 
-            # if i_epoch in [0, int(num_of_back_propagation/2), num_of_back_propagation-1] and self.config.log_with_wandb:
-            #     regress_net.eval()
-            #     with torch.no_grad():
-            #         data_ = list(enumerate(test_dl))[0][1]
-            #         xb_mods = [xb_mod.float().type(dtype) for xb_mod in data_[:-2]]
-            #         outputs, _ = regress_net(xb_mods, None)
-                    # show_reconstructed_signal(data_[-2], outputs, f'num_of_back_propagation {i_epoch}',
-                    #                           fig_group=f"use_ssl {use_ssl}, linear {linear_protocol}",
-                    #                           channel_names=self.output_columns)
-
         i_optimize = train_batch(regress_net, train_dl, optimizer, torch.nn.MSELoss(), i_optimize)
 
     if linear_protocol:
@@ -380,8 +338,6 @@ def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, show_f
 
     y_true, y_pred = evaluate_after_training(test_dl)
     y_true, y_pred = inverse_normalize_output(y_true, y_pred)
-    # if linear_protocol:
-    #     save_model_and_results(test_name, y_true, y_pred, test_data['sub_id'], self.regress_net)
     if show_fig:
         plt.figure()
         for i_output in range(y_true.shape[1]):
@@ -390,11 +346,6 @@ def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, show_f
             plt.plot(y_pred[:, i_output].ravel(), '--', color='C'+str(i_output), label=outputs[i_output])
             plt.legend()
         plt.show()
-    # if verbose:
-    #     all_scores = get_scores(y_true, y_pred, outputs[i_output], test_step_lens)
-    #     all_scores = [{'subject': 'all', **scores} for scores in all_scores]
-    #     print_table(all_scores)
-
 
 
 if __name__ == "__main__":
