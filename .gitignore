@@ -2,6 +2,7 @@ temp_data/
 analysisTemp.xml
 *.sto
 *.h5
+!example_usage/Camargo_levelground.h5
 config.py
 runs/
 figures/results/
