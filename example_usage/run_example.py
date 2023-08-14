@@ -34,9 +34,9 @@ class RegressNet(nn.Module):
         self.linear = nn.Linear(self.emb_output_dim, output_dim)
 
     def forward(self, x):
-        batch_size, _, seq_len = x[0].shape
+        batch_size, _, _ = x[0].shape
         mod_all = torch.concat(x, dim=1)
-        mod_outputs, _, _ = self.emb_net(mod_all)
+        mod_outputs = self.emb_net(mod_all)
 
         output = mod_outputs.transpose(1, 2)
         output = self.linear(output)
@@ -72,7 +72,7 @@ class PositionalEncoding(nn.Module):
 class TransformerBase(nn.Module):
     def __init__(self, imu_to_use, device='cuda'):
         super().__init__()
-        imu_to_use_mapped, mask_input_imu_index = self.imu_name_mapping(imu_to_use)
+        imu_to_use_mapped, mask_input_imu_index = imu_name_mapping(imu_to_use)
         x_dim = 48
         patch_len = 8
         patch_step_len = 8
@@ -85,7 +85,6 @@ class TransformerBase(nn.Module):
 
         self.transformer_encoder = TransformerEncoder(encoder_layers, 6)
         self.device = device
-        # self.mask_patch_num = mask_patch_num
         self.ssl_mask_emb = nn.Parameter(torch.zeros([1, x_dim * patch_len]).uniform_() - 0.5)
         self.reduced_imu_mask_emb = nn.Parameter(torch.zeros([48, 128]).uniform_() - 0.5)
         self.mask_input_imu_index = mask_input_imu_index
@@ -95,13 +94,11 @@ class TransformerBase(nn.Module):
     def forward(self, sequence):
         sequence = self.apply_reduced_imu_set_mask(sequence)
         sequence_patch = self.divide_into_patches(sequence)
-        sequence_patch, mask_indices = self.apply_ssl_mask(sequence_patch)
         sequence_patch = self.pos_encoding(sequence_patch)
         sequence_patch = self.transformer_encoder(sequence_patch)
 
         output = self.flat_patches(sequence_patch)
-        mask_indices = self.flat_patches(mask_indices)
-        return output, mask_indices, sequence
+        return output
 
     def divide_into_patches(self, sequence):
         sequence = F.pad(sequence, (0, 0, self.pad_len, self.pad_len))
@@ -127,26 +124,13 @@ class TransformerBase(nn.Module):
         tensor = torch.mul(seq, ~mask_indices) + torch.mul(self.reduced_imu_mask_emb, mask_indices)
         return tensor
 
-    @staticmethod
-    def imu_name_mapping(imu_to_use):
-        standard_list = ('CHEST', 'WAIST', 'R_THIGH', 'L_THIGH', 'R_SHANK', 'L_SHANK', 'R_FOOT', 'L_FOOT')
-        imu_to_use_mapped = []
-        mask_input_imu_index = []
-        for i_imu, imu in enumerate(standard_list):
-            if imu in imu_to_use:
-                imu_to_use_mapped.append(imu)
-            else:
-                imu_to_use_mapped.append('rand_masking')
-                mask_input_imu_index.append(i_imu)
-        return imu_to_use_mapped, mask_input_imu_index
 
-
-def load_data(data_file, imu_to_load, outputs, sub_for_fine_tuning, sub_for_testing):
+def load_data(data_file, imu_to_use, outputs, sub_for_fine_tuning, sub_for_testing):
     data_downstream_dict = {}
     data_scalar = {'base_scalar': StandardScaler}
     with h5py.File(data_file, 'r') as hf:
         data_columns = json.loads(hf.attrs['columns'])
-        data_columns.extend(['rand_noise' + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
+        data_columns.extend(['msk' + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
 
         for set_sub_ids, set_name, norm_method in zip([sub_for_fine_tuning, sub_for_testing], ['tuning', 'test'],
                                                        ['fit_transform', 'transform']):
@@ -163,9 +147,10 @@ def load_data(data_file, imu_to_load, outputs, sub_for_fine_tuning, sub_for_test
             rand_noise = np.random.normal(size=(current_set_data.shape[0], 6, current_set_data.shape[2]))
             current_set_data = np.concatenate([current_set_data, rand_noise], axis=1)
 
+            imu_to_use_mapped, _ = imu_name_mapping(imu_to_use)
             channel_names = {
-                'acc': [segment + '_Accel_' + axis for segment in imu_to_load for axis in ['X', 'Y', 'Z']],
-                'gyr': [segment + '_Gyro_' + axis for segment in imu_to_load for axis in ['X', 'Y', 'Z']]}
+                'acc': [segment + '_Accel_' + axis for segment in imu_to_use_mapped for axis in ['X', 'Y', 'Z']],
+                'gyr': [segment + '_Gyro_' + axis for segment in imu_to_use_mapped for axis in ['X', 'Y', 'Z']]}
 
             sampled_data = copy.deepcopy(current_set_data)
             set_data, data_scalar = preprocess_modality(data_columns, data_scalar, sampled_data, channel_names, norm_method)
@@ -179,6 +164,19 @@ def load_data(data_file, imu_to_load, outputs, sub_for_fine_tuning, sub_for_test
                 set_data['trial_type_id'] = np.zeros([sampled_data.shape[0]])
             data_downstream_dict[set_name] = set_data
     return data_downstream_dict, data_scalar
+
+
+def imu_name_mapping(imu_to_use):
+    standard_list = ('CHEST', 'WAIST', 'R_THIGH', 'L_THIGH', 'R_SHANK', 'L_SHANK', 'R_FOOT', 'L_FOOT')
+    imu_to_use_mapped = []
+    mask_input_imu_index = []
+    for i_imu, imu in enumerate(standard_list):
+        if imu in imu_to_use:
+            imu_to_use_mapped.append(imu)
+        else:
+            imu_to_use_mapped.append('msk')
+            mask_input_imu_index.append(i_imu)
+    return imu_to_use_mapped, mask_input_imu_index
 
 
 def normalize_data(data_scalar, data, name, method, scalar_mode, with_mean=False):
@@ -228,6 +226,7 @@ def get_scores(y_true, y_pred, y_fields, lens):
         scores.append(score_one_field)
     return scores
 
+
 def inverse_normalize_output(y_true, y_pred):
     y_true = normalize_data(data_scalar, y_true, 'output', 'inverse_transform', 'by_each_column')
     y_pred = normalize_data(data_scalar, y_pred, 'output', 'inverse_transform', 'by_each_column')
@@ -250,18 +249,18 @@ def set_dtype_and_model(device, model):
     return dtype, model
 
 
-def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, show_fig=False, verbose=True):
+def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, phase_name, show_fig=False, verbose=True):
     def convert_batch_data(batch_data):
-        xb = [data_.float().type(dtype) for data_ in batch_data[:-2]]
-        yb = batch_data[-2].float().type(dtype)
+        xb = [data_.float().type(dtype) for data_ in batch_data[:-1]]
+        yb = batch_data[-1].float().type(dtype)
         return xb, yb
 
     def train_batch(regress_net, train_dl, optimizer, loss_fn, i_optimize):
         regress_net.train()
         for i_batch, batch_data in enumerate(train_dl):
             optimizer.zero_grad()
-            xb, yb, lens = convert_batch_data(batch_data)
-            y_pred, _ = regress_net(xb, lens)
+            xb, yb = convert_batch_data(batch_data)
+            y_pred, _ = regress_net(xb)
             loss = loss_fn(yb, y_pred)
             loss.backward()
             optimizer.step()
@@ -282,14 +281,14 @@ def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, show_f
                 loss.append(loss_fn(yb, y_pred).item())
         return np.mean(loss)
 
-    def evaluate_after_training(test_dl):
+    def concat_data_after_training(test_dl):
         regress_net.eval()
         with torch.no_grad():
             y_pred_list, y_true_list = [], []
             for i_batch, batch_data in enumerate(test_dl):
-                xb, yb, lens = convert_batch_data(batch_data)
+                xb, yb = convert_batch_data(batch_data)
                 y_true_list.append(yb.detach().cpu())
-                y_pred_batch, mod_outputs_batch = regress_net(xb, lens)
+                y_pred_batch, mod_outputs_batch = regress_net(xb)
                 y_pred_list.append(y_pred_batch.detach().cpu())
             y_true = torch.cat(y_true_list).numpy()
             y_pred = torch.cat(y_pred_list).numpy()
@@ -326,7 +325,7 @@ def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, show_f
             train_loss = eval_during_training(regress_net, train_dl, torch.nn.MSELoss())
             test_loss = eval_during_training(regress_net, test_dl, torch.nn.MSELoss())
             if num_of_back_propagation < 2 or i_epoch % int(num_of_back_propagation / 2) == 0 or i_epoch == num_of_back_propagation - 1:
-                print(f'| Regressibility | num_of_back_propagation{i_epoch:3d}/{num_of_back_propagation:3d} |'
+                print(f'| {phase_name} | num of backpropagation{i_epoch+1:3d}/{num_of_back_propagation:3d} |'
                       f' time: {time.time() - epoch_end_time:5.2f}s |'
                       f' train loss {train_loss:5.3f} | test loss {test_loss:5.3f}')
             epoch_end_time = time.time()
@@ -336,16 +335,17 @@ def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, show_f
     if linear_protocol:
         return regress_net
 
-    y_true, y_pred = evaluate_after_training(test_dl)
+    y_true, y_pred = concat_data_after_training(test_dl)
     y_true, y_pred = inverse_normalize_output(y_true, y_pred)
-    if show_fig:
-        plt.figure()
-        for i_output in range(y_true.shape[1]):
-            plt.title('test set')
-            plt.plot(y_true[:, i_output].ravel(), '-', color='C'+str(i_output), label=outputs[i_output])
-            plt.plot(y_pred[:, i_output].ravel(), '--', color='C'+str(i_output), label=outputs[i_output])
-            plt.legend()
-        plt.show()
+
+    plt.figure()
+    for i_output in range(y_true.shape[1]):
+        plt.plot(y_true[:, i_output].ravel(), '-', color='C'+str(i_output), label='Ground Truth')
+        plt.plot(y_pred[:, i_output].ravel(), '--', color='C'+str(i_output), label='Estimation')
+        plt.xlabel('Time Step')
+        plt.ylabel('Ground Reaction Force (Body Weight)')
+        plt.legend()
+    plt.show()
 
 
 if __name__ == "__main__":
@@ -358,8 +358,8 @@ if __name__ == "__main__":
     regress_net = RegressNet(emb_net, len(outputs))
     set_data, data_scalar = load_data('Camargo_levelground.h5', imu_to_use, outputs, sub_for_fine_tuning, sub_for_testing)
     # First train the last linear layer to preserve representation from pre-training
-    regress_net = model_fine_tuning(True, regress_net, set_data)
-    model_fine_tuning(False, regress_net, set_data, True)
+    regress_net = model_fine_tuning(True, regress_net, set_data, 'Train the last layer')
+    model_fine_tuning(False, regress_net, set_data, 'Fine tune the entire model', True)
 
 
 

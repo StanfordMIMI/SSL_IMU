@@ -14,12 +14,13 @@ Full-length preprint is coming soon.
 ### Environment
 Our code is developed under the following environment. Versions different from ours may still work.
 
-Python 3.8; Pytorch 1.7.0; Cuda 11.0; Cudnn 8.0.4; matplotlib 3.3.2; numpy 1.19.4; h5py 3.0.0; Scikit-learn 0.23.2
+Python 3.8; Pytorch 1.7.0; Cuda 11.0; Cudnn 8.0.4; pytorch_warmup 0.1; matplotlib 3.3.2;
+numpy 1.19.4; h5py 3.0.0; Scikit-learn 0.23.2
 
 ### Example code
 [An example script](./example_usage/run_example.py)
 that loads one [example dataset](./example_usage/Camargo_levelground.h5) [3],
-fine-tunes the pre-trained [transformer model](./example_usage/pretrained_model_weights.pth)., and
+fine-tunes the pre-trained [transformer model](./example_usage/pretrained_model_weights.pth), and
 evaluates the fine-tuned model on the test set.
 
 ### IMUs
