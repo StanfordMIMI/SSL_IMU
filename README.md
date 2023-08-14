@@ -3,7 +3,8 @@
 By Tian (Alan) Tan, Peter Shull, and Akshay Chaudhari
 
 ## Exclusive Summary
-This repository includes the code and models for an abstract presented at ASB2023.
+This repository includes the code and models for an [abstract](./figures/readme_fig/AlanTanASB2023-abstract.pdf) 
+and a [poster](./figures/readme_fig/AlanTanASB2023-poster.pdf) presented at ASB2023.
 Full-length preprint is coming soon.
 
 [//]: # (An [example implementation]&#40;#running-example-code&#41; is provided.)
