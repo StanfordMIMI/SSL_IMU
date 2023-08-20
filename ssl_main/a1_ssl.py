@@ -40,6 +40,8 @@ class FrameworkDownstream:
                                            self.config.FeedForwardDim, mask_input_channel, mask_patch_num=0, patch_len=self.config.PatchLen)
         self.regress_net = RegressNet(self.emb_net, len(STANDARD_IMU_SEQUENCE)+len(STANDARD_IMU_SEQUENCE), len(self.output_columns))
         _, self.regress_net = set_dtype_and_model(self.config.device, self.regress_net)
+        if self.config.log_with_wandb:
+            wandb.watch(self.regress_net, torch.nn.MSELoss(), log='all', log_freq=1)
         self.regress_net_init_state = copy.deepcopy(self.regress_net.state_dict())
 
         post_ssl_emb_net = self.load_post_ssl_emb_net()
@@ -242,7 +244,7 @@ class FrameworkDownstream:
     def set_regress_net_to_post_ssl_state(self):
         self.regress_net.load_state_dict(self.regress_net_post_ssl_state)
 
-    def regressibility(self, linear_protocol, use_ssl, show_fig=False, verbose=True):
+    def regressibility(self, linear_protocol, use_ssl, show_fig=True, verbose=False):
         def convert_batch_data(batch_data):
             xb = [data_.float().type(dtype) for data_ in batch_data[:-2]]
             yb = batch_data[-2].float().type(dtype)
@@ -254,7 +256,7 @@ class FrameworkDownstream:
             for i_batch, batch_data in enumerate(train_dl):
                 optimizer.zero_grad()
                 xb, yb, lens = convert_batch_data(batch_data)
-                y_pred, _ = model(xb, lens)
+                y_pred, _ = model(xb, False, yb)
                 loss = loss_fn(yb, y_pred)
                 if self.config.log_with_wandb:
                     wandb.log({'linear batch loss': loss.item(), 'lr da': optimizer.param_groups[0]['lr']})
@@ -262,10 +264,11 @@ class FrameworkDownstream:
                 optimizer.step()
                 i_optimize += 1
 
-                # plt.figure()
-                # plt.plot(xb[1].detach().cpu().numpy()[:, 18, :].ravel())
-                # plt.plot(yb.detach().cpu().numpy()[:, 1, :].ravel())
-                # plt.show()
+                # if not linear_protocol and i_batch == 0:
+                #     plt.figure()
+                #     plt.plot(y_pred.detach().cpu().numpy()[:, 0, :].ravel())
+                #     plt.plot(yb.detach().cpu().numpy()[:, 0, :].ravel())
+                #     plt.show()
 
                 with warmup_scheduler.dampening():
                     scheduler.step()
@@ -279,7 +282,7 @@ class FrameworkDownstream:
                     if i_batch >= use_batch_num:
                         return np.mean(loss)
                     xb, yb, lens = convert_batch_data(batch_data)
-                    y_pred, _ = model(xb, lens)
+                    y_pred, _ = model(xb, True, yb)
                     loss.append(loss_fn(yb, y_pred).item())
             return np.mean(loss)
 
@@ -288,9 +291,9 @@ class FrameworkDownstream:
             with torch.no_grad():
                 y_pred_list, y_true_list = [], []
                 for i_batch, batch_data in enumerate(test_dl):
-                    xb, yb, lens = convert_batch_data(batch_data)
+                    xb, yb, _ = convert_batch_data(batch_data)
                     y_true_list.append(yb.detach().cpu())
-                    y_pred_batch, mod_outputs_batch = model(xb, lens)
+                    y_pred_batch, mod_outputs_batch = model(xb, True, yb)
                     y_pred_list.append(y_pred_batch.detach().cpu())
                 y_true = torch.cat(y_true_list).numpy()
                 y_pred = torch.cat(y_pred_list).numpy()
@@ -398,7 +401,7 @@ class FrameworkSSL:
 
         self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.nlayers, self.config.nhead,
                                            self.config.FeedForwardDim, [False for _ in range(8)], self.config.MaskPatchNum, self.config.PatchLen)
-        logging.info('# of trainable parameters: {}'.format(sum(p.numel() for p in self.emb_net.transformer_encoder.parameters() if p.requires_grad)))
+        logging.info('# of trainable parameters: {}'.format(sum(p.numel() for p in self.emb_net.transformer.parameters() if p.requires_grad)))
         self._data_scalar = {'base_scalar': StandardScaler}
         fix_seed()
 
@@ -436,8 +439,7 @@ class FrameworkSSL:
             for i_batch, x in enumerate(train_dl):
                 optimizer.zero_grad()
                 xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[:-1]]
-                lens = x[2].float()
-                loss, _, _ = model(xb_mods, lens)
+                loss, _, _ = model(xb_mods, False, xb_mods)
                 if self.config.log_with_wandb:
                     wandb.log({'ssl batch loss': loss.item(), 'lr ssl': optimizer.param_groups[0]['lr']})
                 loss.backward()
@@ -454,8 +456,7 @@ class FrameworkSSL:
                     if i_batch >= use_batch_num:
                         continue
                     xb_mods = [xb_mod.float().type(dtype) for xb_mod in x[:-1]]
-                    lens = x[2].float()
-                    loss, mod_outputs, _ = model(xb_mods, lens)
+                    loss, mod_outputs, _ = model(xb_mods, True)
                     validation_loss.append(loss.item())
                     mod_output_all.append(mod_outputs)
             return np.mean(validation_loss), mod_output_all
@@ -469,7 +470,7 @@ class FrameworkSSL:
 
         train_dl = prepare_dl([train_data[mod] for mod in _mods] + [train_step_lens], int(self.config.BatchSizeSsl), shuffle=True, drop_last=True)
         vali_dl = prepare_dl([vali_data[mod] for mod in _mods] + [vali_step_lens], int(self.config.BatchSizeSsl), shuffle=False, drop_last=True)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.LrSsl, weight_decay=1e-5)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.LrSsl)
 
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.NumGradDeSsl)
         warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.NumGradDeSsl/5))
@@ -585,7 +586,7 @@ DOWNSTREAM_0 = {'_mods': _mods, 'dataset': 'walking_knee_moment', 'output_column
 DOWNSTREAM_1 = {'_mods': _mods, 'dataset': 'Camargo_levelground', 'output_columns': ['fy'],
                  'da_use_ratios': [1], 'imu_segments': ['CHEST', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise', 'R_FOOT', 'rand_noise'], 'data_lost_robustness': 0.}
 DOWNSTREAM_2 = {'_mods': _mods, 'dataset': 'sun_drop_jump', 'output_columns': ['R_GRF_Z'],
-                'da_use_ratios': [1.], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
+                'da_use_ratios': [1], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
 
 DOWNSTREAM_6, DOWNSTREAM_7, DOWNSTREAM_8 = copy.deepcopy(DOWNSTREAM_0), copy.deepcopy(DOWNSTREAM_1), copy.deepcopy(DOWNSTREAM_2)
 log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
@@ -610,7 +611,7 @@ config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.01, 'log_w
 test_name = 'hyper_da'
 test_info = 'full run'
 
-# config['result_dir'] = os.path.join('../figures/results/t04_da_opencap')      # local
+# config['result_dir'] = os.path.join(RESULTS_PATH, '2023_08_17_23_17_48_hyper_da')      # local
 # config['result_dir'] = os.path.join('../../results/2023_07_14_13_47_19_new_amass_copy')      # cluster
 config['result_dir'] = os.path.join(RESULTS_PATH, result_folder() + "_" + test_name)
 config = parse_config(config)

@@ -10,7 +10,7 @@ import math
 import numpy as np
 from utils import fix_seed
 import matplotlib.pyplot as plt
-
+import time
 
 fix_seed()
 
@@ -42,9 +42,11 @@ class SslReconstructNet(nn.Module):
         self.linear = nn.Linear(emb_net.x_dim, emb_net.x_dim)
         self.loss_fn = loss_fn
 
-    def forward(self, mods, lens):
+    def forward(self, mods, lens, tgt=None):
         mod_all = torch.concat(mods, dim=1)
-        mod_outputs, mask_indices, mod_all_expanded = self.emb_net(mod_all, lens)
+        if tgt is not None:
+            tgt = torch.concat(tgt, dim=1)
+        mod_outputs, mask_indices, mod_all_expanded = self.emb_net(mod_all, lens, tgt)
         mod_outputs = self.linear(mod_outputs.transpose(1, 2)).transpose(1, 2)
         loss = self.loss_fn(mod_outputs, mod_all, mask_indices)
         return loss, mod_outputs, mask_indices
@@ -76,10 +78,12 @@ class RegressNet(nn.Module):
 
         self.linear = nn.Linear(self.emb_output_dim, output_dim)
 
-    def forward(self, x, lens):
+    def forward(self, x, lens, tgt=None):
         batch_size, _, seq_len = x[0].shape
         mod_all = torch.concat(x, dim=1)
-        mod_outputs, _, _ = self.emb_net(mod_all, lens)
+        if tgt is not None:
+            tgt = tgt.repeat(1, mod_all.shape[1] // tgt.shape[1], 1)
+        mod_outputs, _, _ = self.emb_net(mod_all, lens, tgt)
 
         output = mod_outputs.transpose(1, 2)
         output = self.linear(output)
@@ -112,7 +116,107 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class TransformerBase(nn.Module):
+class Transformer(nn.Module):
+    def __init__(self, x_dim, mask_input_channel, mask_patch_num, nlayers, nhead, dim_feedforward,
+                 patch_len, patch_step_len, device='cuda'):
+        super().__init__()
+        self.patch_len = patch_len
+        self.patch_step_len = patch_step_len
+        self.pad_len = 0
+        self.x_dim = x_dim
+        self.d_model = int(self.x_dim * patch_len)
+
+        self.device = device
+        self.mask_patch_num = mask_patch_num
+        self.ssl_mask_emb = nn.Parameter(torch.zeros([1, x_dim * patch_len]).uniform_() - 0.5)
+        self.reduced_imu_mask_emb = nn.Parameter(torch.zeros([48, 128]).uniform_() - 0.5)
+        self.mask_input_channel = mask_input_channel
+        self.patch_num = int(128 / self.patch_len)
+        self.pos_encoding = PositionalEncoding(x_dim * patch_len, self.patch_num + 2)
+
+        self.transformer = nn.Transformer(d_model=self.d_model, nhead=nhead, num_encoder_layers=nlayers,
+                                          num_decoder_layers=nlayers, dim_feedforward=dim_feedforward,
+                                          dropout=0.0, batch_first=True)
+
+    def forward(self, sequence, test_flag, tgt):
+        sequence = self.apply_reduced_imu_set_mask(sequence)
+        sequence_patch = self.divide_into_patches(sequence)
+        sequence_patch, mask_indices = self.apply_ssl_mask(sequence_patch)
+        sequence_patch = self.add_end_token(sequence_patch)
+        sequence_patch = self.pos_encoding(sequence_patch)
+
+        if test_flag:     # inference
+            tgt = sequence_patch[:, :1, :]      # only keep the first all-zero patch
+            for i_patch in range(sequence_patch.shape[1]-1):
+                tgt = self.pos_encoding(tgt)
+                output = self.transformer(sequence_patch, tgt)
+                tgt = torch.cat((tgt, output[:, -1:]), dim=1)
+            output = tgt[:, 1:, :]
+
+        else:       # Teacher forcing
+            tgt = self.divide_into_patches(tgt)
+            tgt = self.add_start_token(tgt)
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1]).to('cuda')
+            tgt = self.pos_encoding(tgt)
+            output = self.transformer(sequence_patch, tgt, tgt_mask=tgt_mask)
+            output = output[:, :-1, :]
+
+        output = self.flat_patches(output)
+        mask_indices = self.flat_patches(mask_indices)
+        return output, mask_indices, sequence          # !!! - output
+
+    def add_start_token(self, sequence):
+        sequence = F.pad(sequence, (0, 0, 1, 0))
+        return sequence
+
+    def add_end_token(self, sequence):
+        sequence = F.pad(sequence, (0, 0, 0, 1))
+        return sequence
+
+    def divide_into_patches(self, sequence):
+        sequence = F.pad(sequence, (0, 0, self.pad_len, self.pad_len))
+        sequence = sequence.unfold(2, self.patch_len, self.patch_step_len)
+        sequence = sequence.transpose(1, 2).flatten(start_dim=2)
+        return sequence
+
+    def flat_patches(self, sequence):
+        sequence = sequence.view([*sequence.shape[:2], -1, self.patch_len])
+        sequence = sequence.transpose(1, 2).flatten(start_dim=2)
+        return sequence
+
+    def apply_reduced_imu_set_mask(self, seq):
+        bs, patch_emb, length = seq.shape
+        mask_indices_np = np.full((bs, patch_emb), False)
+        for i_channel in range(8):
+            if self.mask_input_channel[i_channel]:
+                mask_indices_np[:, i_channel*3:(i_channel+1)*3] = True
+                mask_indices_np[:, i_channel*3+24:(i_channel+1)*3+24] = True
+        mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
+        mask_indices = mask_indices.unsqueeze(-1).expand_as(seq)
+        tensor = torch.mul(seq, ~mask_indices) + torch.mul(self.reduced_imu_mask_emb, mask_indices)
+        return tensor
+
+    def apply_ssl_mask(self, seq):
+        """
+
+        :param seq: [bs, embedding, time]
+        :param mask_type: 0 for mask random samples, 1 for mask one entire patch, 2 for testing
+        :return:
+        """
+        bs, patch_num, emb_dim = seq.shape
+        mask_indices_np = np.full((bs, patch_num), False)
+        for i_row in range(mask_indices_np.shape[0]):
+            len_to_mask = [self.mask_patch_num]     # [self.mask_patch_num]   [int(0.5*self.mask_patch_num), int(0.5*self.mask_patch_num)]
+            for len_ in len_to_mask:
+                masked_loc = random.sample(range(self.patch_num - len_ + 1), 1)[0]
+                mask_indices_np[i_row, masked_loc:masked_loc+len_] = True
+        mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
+        mask_indices = mask_indices.unsqueeze(2).expand_as(seq)
+        tensor = torch.mul(seq, ~mask_indices) + torch.mul(self.ssl_mask_emb, mask_indices)
+        return tensor, mask_indices
+
+
+class TransformerEncoderOnly(nn.Module):
     def __init__(self, x_dim, mask_input_channel, mask_patch_num, nlayers, nhead, dim_feedforward,
                  patch_len, patch_step_len, device='cuda'):
         super().__init__()
@@ -123,7 +227,7 @@ class TransformerBase(nn.Module):
         self.d_model = int(self.x_dim * patch_len)
         encoder_layers = TransformerEncoderLayer(self.d_model, nhead, dim_feedforward, batch_first=True)
 
-        self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
+        self.transformer = TransformerEncoder(encoder_layers, nlayers)
         self.device = device
         self.mask_patch_num = mask_patch_num
         self.ssl_mask_emb = nn.Parameter(torch.zeros([1, x_dim * patch_len]).uniform_() - 0.5)
@@ -132,12 +236,12 @@ class TransformerBase(nn.Module):
         self.patch_num = int(128 / self.patch_len)
         self.pos_encoding = PositionalEncoding(x_dim * patch_len, self.patch_num)
 
-    def forward(self, sequence, lens):
+    def forward(self, sequence, test_flag, _):
         sequence = self.apply_reduced_imu_set_mask(sequence)
         sequence_patch = self.divide_into_patches(sequence)
         sequence_patch, mask_indices = self.apply_ssl_mask(sequence_patch)
         sequence_patch = self.pos_encoding(sequence_patch)
-        sequence_patch = self.transformer_encoder(sequence_patch)
+        sequence_patch = self.transformer(sequence_patch)
 
         output = self.flat_patches(sequence_patch)
         mask_indices = self.flat_patches(mask_indices)
@@ -193,106 +297,8 @@ class TransformerBase(nn.Module):
 
 
 def transformer(x_dim, nlayers, nhead, dim_feedforward, mask_input_channel, mask_patch_num, patch_len):
-    return TransformerBase(x_dim, mask_input_channel=mask_input_channel,
-                           mask_patch_num=mask_patch_num, nlayers=nlayers, nhead=nhead, dim_feedforward=dim_feedforward,
-                           patch_len=patch_len, patch_step_len=patch_len)
+    # return Transformer(x_dim, mask_input_channel=mask_input_channel,
+    return TransformerEncoderOnly(x_dim, mask_input_channel=mask_input_channel,
+                       mask_patch_num=mask_patch_num, nlayers=nlayers, nhead=nhead, dim_feedforward=dim_feedforward,
+                       patch_len=patch_len, patch_step_len=patch_len)
 
-
-class RestNetBasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, out_length):
-        super(RestNetBasicBlock, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=9, stride=1, padding=4)
-        self.ln1 = nn.LayerNorm(out_length)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=9, stride=1, padding=4)
-        self.ln2 = nn.LayerNorm(out_length)
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        output = self.conv1(x)
-        output = F.relu(self.ln1(output))
-        output = self.conv2(output)
-        output = self.ln2(output)
-        return self.relu(x + output)
-
-
-class RestNetDownBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride, out_length):
-        super(RestNetDownBlock, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=9, stride=stride[0], padding=4)
-        self.ln1 = nn.LayerNorm(out_length)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=9, stride=stride[1], padding=4)
-        self.ln2 = nn.LayerNorm(out_length)
-        self.extra = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride[0], padding=0),
-            nn.LayerNorm(out_length)
-        )
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        extra_x = self.extra(x)
-        output = self.conv1(x)
-        out = F.relu(self.ln1(output))
-
-        out = self.conv2(out)
-        out = self.ln2(out)
-        return self.relu(extra_x + out)
-
-
-class ResNetBase(nn.Module):
-    def __init__(self, x_dim, output_dim, net_name, layer_nums):
-        super(ResNetBase, self).__init__()
-        gate_size = 16
-        kernel_depths = [16, 32, 64, output_dim]
-        out_lengths = [64, 32, 16, 8, 4]
-        self.conv1 = nn.Conv1d(x_dim, gate_size, kernel_size=49, stride=2, padding=24)
-        self.ln1 = nn.LayerNorm(out_lengths[0])
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
-        self.output_dim = output_dim
-        self.net_name = net_name
-
-        self.layers = nn.ModuleList()
-        block_list = [RestNetBasicBlock(gate_size, kernel_depths[0], out_lengths[1])] + \
-                     [RestNetBasicBlock(kernel_depths[0], kernel_depths[0], out_lengths[1]) for _ in range(layer_nums[0]-1)]
-        self.layers.append(nn.Sequential(*block_list))
-        for i_layer in range(1, 4):
-            block_list = [RestNetDownBlock(kernel_depths[i_layer-1], kernel_depths[i_layer], [2, 1], out_lengths[i_layer+1])] +\
-                         [RestNetBasicBlock(kernel_depths[i_layer], kernel_depths[i_layer], out_lengths[i_layer+1]) for _ in range(layer_nums[i_layer]-1)]
-            self.layers.append(nn.Sequential(*block_list))
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
-
-    def __str__(self):
-        return self.net_name
-
-    def forward(self, sequence, lens):
-        out = sequence.transpose(-1, -2)
-        # print(out.shape[1:])
-        out = self.relu(self.ln1(self.conv1(out)))
-        # print(out.shape[1:])
-        out = self.maxpool(out)
-        out = self.layers[0](out)
-        # print(out.shape[1:])
-        out = self.layers[1](out)
-        # print(out.shape[1:])
-        out = self.layers[2](out)
-        # print(out.shape[1:])
-        out = self.layers[3](out)
-        # print(out.shape[1:])
-        out = self.avgpool(out)
-        # print(out.shape[1:])
-        return out.squeeze(dim=-1), None
-
-
-def resnet18(x_dim, output_dim):
-    layer_nums = [2, 2, 2, 2]
-    return ResNetBase(x_dim, output_dim, 'resnet18', layer_nums)
-
-
-def resnet50(x_dim, output_dim):
-    layer_nums = [3, 4, 6, 3]
-    return ResNetBase(x_dim, output_dim, 'resnet50', layer_nums)
-
-
-def resnet101(x_dim, output_dim):
-    layer_nums = [3, 4, 32, 3]
-    return ResNetBase(x_dim, output_dim, 'resnet50', layer_nums)
