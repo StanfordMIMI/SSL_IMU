@@ -77,11 +77,6 @@ def results_to_pd_summary_only_peaks(result_all_tests, result_field_id, sign_of_
         for sub_name, subject_data in test_results.items():
             sub_id = int(sub_name[4:])
             data_true, data_pred = subject_data[:, result_field_id], subject_data[:, result_field_id+int(subject_data.shape[1]/2)]
-            # if len(data_true) <= 1:
-            #     continue
-            # if sub_id == 18:
-            #     x=1
-
             peaks = np.array([[np.max(sign_of_peak * data_step_true), np.max(sign_of_peak * data_step_pred)]
                               for data_step_true, data_step_pred in zip(data_true, data_pred)])
             rmse = np.sqrt(mse(peaks[:, 0], peaks[:, 1]))

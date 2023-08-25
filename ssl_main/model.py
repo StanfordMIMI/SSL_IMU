@@ -39,7 +39,7 @@ class SslReconstructNet(nn.Module):
     def __init__(self, emb_net, loss_fn):
         super(SslReconstructNet, self).__init__()
         self.emb_net = emb_net
-        self.linear = nn.Linear(emb_net.x_dim, emb_net.x_dim)
+        self.linear = nn.Linear(emb_net.embedding_dim, emb_net.x_dim * emb_net.patch_len)
         self.loss_fn = loss_fn
 
     def forward(self, mods, lens, tgt=None):
@@ -47,7 +47,8 @@ class SslReconstructNet(nn.Module):
         if tgt is not None:
             tgt = torch.concat(tgt, dim=1)
         mod_outputs, mask_indices, mod_all_expanded = self.emb_net(mod_all, lens, tgt)
-        mod_outputs = self.linear(mod_outputs.transpose(1, 2)).transpose(1, 2)
+        mask_indices = mask_indices.view([*mod_outputs.shape[:2], -1, mod_all.shape[1]]).flatten(1, 2).transpose(1, 2)
+        mod_outputs = self.linear(mod_outputs).view([*mod_outputs.shape[:2], -1, mod_all.shape[1]]).flatten(1, 2).transpose(1, 2)
         loss = self.loss_fn(mod_outputs, mod_all, mask_indices)
         return loss, mod_outputs, mask_indices
 
@@ -73,21 +74,16 @@ class RegressNet(nn.Module):
     def __init__(self, emb_net, mod_channel_num, output_dim):
         super(RegressNet, self).__init__()
         self.emb_net = emb_net
-        self.emb_output_dim = emb_net.x_dim
         self.output_dim = output_dim
+        self.linear = nn.Linear(emb_net.embedding_dim, output_dim * emb_net.patch_len)
 
-        self.linear = nn.Linear(self.emb_output_dim, output_dim)
-
-    def forward(self, x, lens, tgt=None):
+    def forward(self, x, test_flag, tgt=None):
         batch_size, _, seq_len = x[0].shape
         mod_all = torch.concat(x, dim=1)
-        if tgt is not None:
-            tgt = tgt.repeat(1, mod_all.shape[1] // tgt.shape[1], 1)
-        mod_outputs, _, _ = self.emb_net(mod_all, lens, tgt)
-
-        output = mod_outputs.transpose(1, 2)
-        output = self.linear(output)
-        output = output.transpose(1, 2)
+        # if tgt is not None:       # This is for an encoder-decoder TF
+        #     tgt = tgt.repeat(1, mod_all.shape[1] // tgt.shape[1], 1)
+        mod_outputs, _, _ = self.emb_net(mod_all, test_flag, tgt)
+        output = self.linear(mod_outputs).view([*mod_outputs.shape[:2], -1, self.output_dim]).flatten(1, 2).transpose(1, 2)
         return output, mod_outputs
 
 
@@ -224,7 +220,9 @@ class TransformerEncoderOnly(nn.Module):
         self.patch_step_len = patch_step_len
         self.pad_len = 0
         self.x_dim = x_dim
-        self.d_model = int(self.x_dim * patch_len)
+        self.embedding_dim = 192
+        self.input_to_embedding = nn.Linear(x_dim * patch_len, self.embedding_dim)
+        self.d_model = int(self.embedding_dim)
         encoder_layers = TransformerEncoderLayer(self.d_model, nhead, dim_feedforward, batch_first=True)
 
         self.transformer = TransformerEncoder(encoder_layers, nlayers)
@@ -234,27 +232,20 @@ class TransformerEncoderOnly(nn.Module):
         self.reduced_imu_mask_emb = nn.Parameter(torch.zeros([48, 128]).uniform_() - 0.5)
         self.mask_input_channel = mask_input_channel
         self.patch_num = int(128 / self.patch_len)
-        self.pos_encoding = PositionalEncoding(x_dim * patch_len, self.patch_num)
+        self.pos_encoding = PositionalEncoding(self.embedding_dim, self.patch_num)
 
     def forward(self, sequence, test_flag, _):
         sequence = self.apply_reduced_imu_set_mask(sequence)
         sequence_patch = self.divide_into_patches(sequence)
         sequence_patch, mask_indices = self.apply_ssl_mask(sequence_patch)
+        sequence_patch = self.input_to_embedding(sequence_patch)
         sequence_patch = self.pos_encoding(sequence_patch)
-        sequence_patch = self.transformer(sequence_patch)
-
-        output = self.flat_patches(sequence_patch)
-        mask_indices = self.flat_patches(mask_indices)
+        output = self.transformer(sequence_patch)
         return output, mask_indices, sequence
 
     def divide_into_patches(self, sequence):
         sequence = F.pad(sequence, (0, 0, self.pad_len, self.pad_len))
         sequence = sequence.unfold(2, self.patch_len, self.patch_step_len)
-        sequence = sequence.transpose(1, 2).flatten(start_dim=2)
-        return sequence
-
-    def flat_patches(self, sequence):
-        sequence = sequence.view([*sequence.shape[:2], -1, self.patch_len])
         sequence = sequence.transpose(1, 2).flatten(start_dim=2)
         return sequence
 

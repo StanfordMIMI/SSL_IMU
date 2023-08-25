@@ -3,7 +3,7 @@ import numpy as np
 import ast
 import pandas as pd
 import matplotlib.pyplot as plt
-from const import TRIAL_TYPES, GRAVITY, STANDARD_IMU_SEQUENCE, DICT_TRIAL_MOVI
+from const import STANDARD_IMU_SEQUENCE, GRAVITY, STANDARD_IMU_SEQUENCE, DICT_TRIAL_MOVI
 from utils import resample_to_target_fre
 from a0_process_camargo import DataStruct, BaseSegmentation
 DATA_PATH_MOVI = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/MoVi/data_processed/'
@@ -77,8 +77,10 @@ class ContinuousDatasetLoader:
                 self.columns = self.update_imu_name(self.columns)
                 trial_data = self.calibrate_imu_orientation(trial_data, self.columns)
                 for method in segment_methods:
-                    method.start_segment(trial_data)
+                    method.start_segment(trial_data, self.columns)
             [method.export(self.columns, subject) for method in segment_methods]
+        [print(method.num_of_static_win, method.num_of_all_win, method.num_of_static_win/method.num_of_all_win)
+         for method in segment_methods]
 
 
 def compare_real_synthetic_movi():
@@ -114,24 +116,29 @@ def compare_real_synthetic_movi():
     plt.show()
 
 
-class WindowSegmentation(BaseSegmentation):
+class MoviWindowSegmentation(BaseSegmentation):
     def __init__(self, win_len, name='UnivariantWinTest', imu_num=17):
         self.imu_num = imu_num
         self.win_len = win_len
         self.name = name
         # self.win_step = int(self.win_len/4)
         self.win_step = win_len
+        self.num_of_static_win = 0
+        self.num_of_all_win = 0
 
-    def start_segment(self, trial_data):
+    def start_segment(self, trial_data, trial_columns):
         trial_len = trial_data.shape[0]
         i_current = 0
-        acc_cols = [6*i for i in range(self.imu_num)] + [6*i + 1 for i in range(self.imu_num)] + [6*i + 2 for i in range(self.imu_num)]
+        acc_cols = [trial_columns.index(imu + '_Accel_' + axis) for imu in STANDARD_IMU_SEQUENCE for axis in ['X', 'Y', 'Z']]
         acc_cols.sort()
         while i_current+self.win_len < trial_len:
             data_ = trial_data[i_current:i_current+self.win_len]
             acc_std = np.std(data_[:, acc_cols], axis=0)
-            if acc_std.mean() >= 0.5:
+            self.num_of_all_win += 1
+            if acc_std.mean() >= 0.2:
                 self.data_struct.add_new_step(data_)
+            else:
+                self.num_of_static_win += 1
             i_current += self.win_step
 
 
@@ -141,13 +148,14 @@ movi_orientation_transform_mat = {
     'R_SHANK': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]), 'L_SHANK': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]),
     'R_FOOT': np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]]), 'L_FOOT': np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]])}
 
+
 if __name__ == '__main__':
     sub_list = ['sub_' + str(i+1) for i in range(88)]
 
-    compare_real_synthetic_movi()
+    # compare_real_synthetic_movi()
 
-    # data_reader = ContinuousDatasetLoader(sub_list, 100)
-    # data_reader.loop_all_the_trials([WindowSegmentation(128, 'MoVi')])
+    data_reader = ContinuousDatasetLoader(sub_list, 100)
+    data_reader.loop_all_the_trials([MoviWindowSegmentation(128, 'MoVi')])
 
 
 

@@ -87,6 +87,7 @@ if __name__ == "__main__":
     rc('font', family='Arial')
     bars = []
     fig = plt.figure()
+    rmse_value = []
     for i_da, (da_name, sign_of_peak) in enumerate(zip(da_names, da_sign_of_peak)):
         values_for_anova = []
         for i_test, test_folder in enumerate(test_folders):
@@ -107,6 +108,10 @@ if __name__ == "__main__":
             result_df = results_to_pd_summary_only_peaks(results_task, 0, sign_of_peak)
             bars.append(draw_box(result_df, i_da, i_test))
             values_for_anova.append(result_df[metric].values)
+
+            # record rmse of models pretrained on AMASS
+            if i_test == 1:
+                rmse_value.append(result_df['rmse'].values * 9.81)
         if i_da == 1:
             draw_error_bars(values_for_anova)
         values_for_anova_np = np.array(values_for_anova)
@@ -118,5 +123,6 @@ if __name__ == "__main__":
     fig.lines.extend([l1, l2])
     finalize_fig(bars)
 
+    [print(str(np.round(np.mean(data_), 2)) + ' \pm ' + str(np.round(np.std(data_), 2))) for data_ in rmse_value]
 
 

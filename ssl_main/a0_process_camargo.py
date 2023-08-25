@@ -204,6 +204,7 @@ class ContinuousDatasetLoader:
                 for method in segment_methods:
                     method.start_segment(trial_data, self.columns)
             [method.export(self.columns, subject) for method in segment_methods]
+            [print(method.num_of_all_win) for method in segment_methods]
 
 
 class DataStruct:
@@ -245,7 +246,8 @@ class HasDataSegmentation(BaseSegmentation):
     def __init__(self, name='Camargo'):
         self.win_len = self.data_len = 128
         self.name = name
-        self.win_step = self.win_len
+        self.win_step = int(self.win_len / 2)
+        self.num_of_all_win = 0
 
     def start_segment(self, trial_data, columns):
         trial_len = trial_data.shape[0]
@@ -255,12 +257,11 @@ class HasDataSegmentation(BaseSegmentation):
         grf_margin = 40
         grf_start = np.where(grf_bool[1:] & ~grf_bool[:-1])[0] + 1 - grf_margin
         for i_start in grf_start:
-            i_current = i_start
-            while i_current+self.win_len < trial_len and walking_turning_stair_ramp_treadmill[i_current:i_current+self.win_len].all() and \
-                    grf_bool[i_current+grf_margin:i_current+self.win_len-grf_margin].all():
-                data_ = trial_data[i_current:i_current+self.win_len]
+            if i_start+self.win_len < trial_len and walking_turning_stair_ramp_treadmill[i_start:i_start+self.win_len].all() and \
+                    grf_bool[i_start+grf_margin:i_start+self.win_len-grf_margin].all():
+                self.num_of_all_win += 1
+                data_ = trial_data[i_start:i_start+self.win_len]
                 self.data_struct.add_new_step(data_)
-                i_current += self.win_step
 
 
 class WindowSegmentation(BaseSegmentation):

@@ -244,7 +244,7 @@ class FrameworkDownstream:
     def set_regress_net_to_post_ssl_state(self):
         self.regress_net.load_state_dict(self.regress_net_post_ssl_state)
 
-    def regressibility(self, linear_protocol, use_ssl, show_fig=True, verbose=False):
+    def regressibility(self, linear_protocol, use_ssl, show_fig=False, verbose=True):
         def convert_batch_data(batch_data):
             xb = [data_.float().type(dtype) for data_ in batch_data[:-2]]
             yb = batch_data[-2].float().type(dtype)
@@ -603,13 +603,13 @@ SSL_MOVI = {'ssl_file_names': ['MoVi'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 SSL_AMASS = {'ssl_file_names': ['amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 SSL_COMBINED = {'ssl_file_names': ['MoVi', 'amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 
-# config = {'NumGradDeSsl': 1e4, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
-config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.01, 'log_with_wandb': False,
+config = {'NumGradDeSsl': 1e4, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
+# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 0.01, 'log_with_wandb': False,
           'BatchSizeSsl': 64, 'BatchSizeLinear': 64, 'LrSsl': 1e-4, 'LrDa': 1e-4, 'FeedForwardDim': 512,
           'nlayers': 6, 'nhead': 48, 'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 
-test_name = 'hyper_da'
-test_info = 'full run'
+test_name = 'TF encoder'
+test_info = 'nhead=48'
 
 # config['result_dir'] = os.path.join(RESULTS_PATH, '2023_08_17_23_17_48_hyper_da')      # local
 # config['result_dir'] = os.path.join('../../results/2023_07_14_13_47_19_new_amass_copy')      # cluster
@@ -627,8 +627,8 @@ if __name__ == '__main__':
     # tune_ssl_hyper()
     # tune_da_hyper()
 
-    coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {8: [6]})
-    # coupled_hypers = (['PatchLen', 'MaskPatchNum'], {1: [16, 32, 48, 64, 80], 2: [8, 16, 24, 32, 40], 4: [4, 8, 12, 16, 20], 8: [2, 4, 6, 8, 10], 16: [1, 2, 3, 4, 5]})
+    coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {1: [16]})
+    # coupled_hypers = (['PatchLen', 'MaskPatchNum'], {1: [16, 32, 48, 64, 80], 2: [8, 16, 24, 32, 40], 4: [4, 8, 12, 16, 20], 8: [2, 4, 6, 8, 10]})
     independent_hyper = ('NumGradDeSsl', [config['NumGradDeSsl']])
 
     for indep_hyper_val in independent_hyper[1]:

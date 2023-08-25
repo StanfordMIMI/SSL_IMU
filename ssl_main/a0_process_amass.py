@@ -11,10 +11,8 @@ import matplotlib.pyplot as plt
 import os
 import torch
 import scipy.interpolate as interpo
-from a0_process_MoVi import ContinuousDatasetLoader, WindowSegmentation
 import h5py, json
 from config import AMASS_PATH, DATA_PATH
-from multiprocessing import Pool, cpu_count
 import time
 import random
 
@@ -204,12 +202,12 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, t
 def load_npy_and_to_h5():
     with h5py.File(DATA_PATH + 'amass_with_extreme_values.h5', 'w') as hf:
         hf.attrs['columns'] = json.dumps(columns)
+        num_of_removed_static, num_of_removed_extreme, num_of_windows_all = 0, 0, 0
         for dset_name in next(os.walk(npy_data_path))[1]:
 
             dset_wins = []
             temp_files = glob.glob(os.path.join(npy_data_path, dset_name, '*.npy'))
             print(f'Saving dset: {dset_name}, {len(temp_files)} trials')
-            num_of_removed_static, num_of_removed_extreme = 0, 0
             for temp_file in temp_files:
                 with open(temp_file, 'rb') as f:
                     trial_data_continuous = np.load(f)
@@ -223,6 +221,7 @@ def load_npy_and_to_h5():
                         win_data = trial_data_continuous[:, i_:i_+win_len]
                         acc_std = np.std(win_data[acc_cols], axis=1)
 
+                        num_of_windows_all += 1
                         if acc_std.mean() < 2:
                             num_of_removed_static += 1
                             continue
@@ -235,6 +234,10 @@ def load_npy_and_to_h5():
             if len(dset_wins) > 0:
                 dset_data = np.stack(dset_wins)
                 dset = hf.create_dataset(dset_name, dset_data.shape, data=dset_data)
+        print(f'{num_of_removed_static} / {num_of_removed_extreme} / {num_of_windows_all},'
+              f' {num_of_removed_static / num_of_windows_all * 100:.1f}% static, '
+              f' {num_of_removed_extreme / num_of_windows_all * 100:.1f}% extreme'
+              f' {num_of_windows_all - num_of_removed_extreme - num_of_removed_static}% kept')
 
 
 def npy_to_h5_small_size():
@@ -335,8 +338,8 @@ imu_cut_off_fre = None
 npy_data_path = f'{DATA_PATH}../AMASS_data_cutoff_{amass_cut_off_fre}/'
 
 if __name__ == '__main__':
-    process_amass_single_thread()
-    # load_npy_and_to_h5()
+    # process_amass_single_thread()
+    load_npy_and_to_h5()
 
     # check_num_of_npy_vs_num_of_npz()
     # check_extreme_values()

@@ -65,20 +65,21 @@ def plot_curve(i_da, data_all, x_ticks, curve_labels):
         ax.plot(data_combined[:, i_col], color=colors[i_col], marker="o", markersize=4, linewidth=LINE_WIDTH_THICK)
     ax.set_xlabel('Percentage of Masking (%)', fontdict=FONT_DICT, labelpad=5)
     ax.set_xticks(range(len(x_ticks)))
+    ax.set_xlim(-0.1, len(x_ticks) - 0.9)
     ax.set_xticklabels(x_ticks, fontdict=FONT_DICT)
     ax.set_ylabel(r'$R^2$', fontdict=FONT_DICT)
-    if i_da == 0:
-        ax.set_yticks([0.6, 0.7, 0.8, 0.9])
-        ax.set_yticklabels([0.6, 0.7, 0.8, 0.9], fontdict=FONT_DICT)
-        ax.set_ylim(0.6, 0.9)
-    elif i_da == 1:
-        ax.set_yticks([0.86, 0.88, 0.9, 0.92])
-        ax.set_yticklabels([0.86, 0.88, 0.9, 0.92], fontdict=FONT_DICT)
-        ax.set_ylim(0.86, 0.92)
-    elif i_da == 2:
-        ax.set_yticks([0.6, 0.7, 0.8, 0.9])
-        ax.set_yticklabels([0.6, 0.7, 0.8, 0.9], fontdict=FONT_DICT)
-        ax.set_ylim(0.6, 0.9)
+    # if i_da == 0:
+    #     ax.set_yticks([0.6, 0.7, 0.8, 0.9])
+    #     ax.set_yticklabels([0.6, 0.7, 0.8, 0.9], fontdict=FONT_DICT)
+    #     ax.set_ylim(0.6, 0.9)
+    # elif i_da == 1:
+    #     ax.set_yticks([0.86, 0.88, 0.9, 0.92])
+    #     ax.set_yticklabels([0.86, 0.88, 0.9, 0.92], fontdict=FONT_DICT)
+    #     ax.set_ylim(0.86, 0.92)
+    # elif i_da == 2:
+    #     ax.set_yticks([0.6, 0.7, 0.8, 0.9])
+    #     ax.set_yticklabels([0.6, 0.7, 0.8, 0.9], fontdict=FONT_DICT)
+    #     ax.set_ylim(0.6, 0.9)
 
     # ax.set_yticks(plt.yticks(), fontdict=FONT_DICT)
     # ax.tick_params(axis='y', which='major', fontdict=FONT_DICT)
@@ -107,20 +108,20 @@ if __name__ == "__main__":
     test_names = ['/Camargo_levelground', '/walking_knee_moment', '/sun_drop_jump']
     test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking',
                         'Task 3 - Drop Jump')
-    test_folder = '2023_05_21_15_03_25_SSL_COMBINED_f2'
+    test_folder = '2023_08_22_22_55_56_TF encoder'
     data_path = RESULTS_PATH + test_folder
     if plot_type == 'curve':
         fig = plt.figure(figsize=(12, 4.5))
     else:
         fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(8, 3.5), height_ratios=[3, 1])
-    metric = 'correlation'
+    metric = 'r2'
     for i_da, test_name in enumerate(test_names):
         plt.subplot(1, 3, i_da + 1)
         results_task = load_da_data(data_path + test_name + '_output' + '.h5')
         result_df = results_to_pd_summary(results_task, 0)
         result_df['PercentOfMasking'] = result_df['MaskPatchNum'] / (128 / result_df['PatchLen'])
 
-        patch_len_list = np.sort(list(set(result_df['PatchLen'])))[:-1]     #        # !!!
+        patch_len_list = np.sort(list(set(result_df['PatchLen'])))     #        # !!!
         percent_of_masking_list = np.sort(list(set(result_df['PercentOfMasking'])))
         percent_of_masking_list_str = [str(round(i * 100, 1)) + '' for i in percent_of_masking_list]
         result_mean_map = np.zeros([2, len(patch_len_list), len(percent_of_masking_list)])
@@ -135,6 +136,7 @@ if __name__ == "__main__":
             plot_curve(i_da, result_mean_map, ['0\n(baseline)'] + percent_of_masking_list_str, patch_len_list)
         else:
             plot_map(i_da, result_mean_map, patch_len_list, percent_of_masking_list_str)
+        plt.grid(True, linewidth=1, alpha=0.5)
     save_fig('f3')
     plt.show()
 
