@@ -335,12 +335,12 @@ class FrameworkDownstream:
         else:
             param_to_train = model.parameters()
 
-        optimizer = torch.optim.AdamW(param_to_train, lr_)      # !!! , weight_decay=1e-5
+        optimizer = torch.optim.AdamW(param_to_train, lr_)
         epoch_end_time = time.time()
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.NumGradDeDa)
-        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.NumGradDeDa/5))
-
         epoch = int(np.ceil(self.config.NumGradDeDa / len(train_dl)))
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epoch*len(train_dl))
+        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(epoch*len(train_dl)/5))
+
         i_optimize = 0
         for i_epoch in range(epoch):
             if verbose:
@@ -472,11 +472,13 @@ class FrameworkSSL:
         vali_dl = prepare_dl([vali_data[mod] for mod in _mods] + [vali_step_lens], int(self.config.BatchSizeSsl), shuffle=False, drop_last=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.LrSsl)
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config.NumGradDeSsl)
-        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(self.config.NumGradDeSsl/5))
         dtype, model = set_dtype_and_model(self.config.device, model)
         epoch_end_time = time.time()
         epoch = int(np.ceil(self.config.NumGradDeSsl / len(train_dl)))
+
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epoch*len(train_dl))
+        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(epoch*len(train_dl)/5))
+
         _, mod_output_all = eval_during_training(model, vali_dl, np.nan)
         for i_epoch in range(epoch):
             train_loss, _ = eval_during_training(model, train_dl)
@@ -524,7 +526,7 @@ def parse_config(config):
     return config
 
 
-def run_da(da_frameworks, fold_num=5):
+def run_da(da_frameworks, fold_num=5, run_baseline=True):
     for da_framework in da_frameworks:
         dataset_name = da_framework.da_task['dataset']
         sub_ids = SUB_ID_ALL_DATASETS[dataset_name]
@@ -539,9 +541,11 @@ def run_da(da_frameworks, fold_num=5):
                 da_framework.config = SimpleNamespace(**config)
                 da_framework.sample_and_normalize_data()
                 da_framework.regressibility(linear_protocol=True, use_ssl=True)
-                da_framework.regressibility(linear_protocol=True, use_ssl=False)
+                if run_baseline:
+                    da_framework.regressibility(linear_protocol=True, use_ssl=False)
                 da_framework.regressibility(linear_protocol=False, use_ssl=True)
-                da_framework.regressibility(linear_protocol=False, use_ssl=False)
+                if run_baseline:
+                    da_framework.regressibility(linear_protocol=False, use_ssl=False)
                 plt.close("all")
 
 
@@ -604,12 +608,12 @@ SSL_AMASS = {'ssl_file_names': ['amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 SSL_COMBINED = {'ssl_file_names': ['MoVi', 'amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 
 config = {'NumGradDeSsl': 1e4, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
-# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 0.01, 'log_with_wandb': False,
+# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.01, 'log_with_wandb': False,
           'BatchSizeSsl': 64, 'BatchSizeLinear': 64, 'LrSsl': 1e-4, 'LrDa': 1e-4, 'FeedForwardDim': 512,
-          'nlayers': 6, 'nhead': 48, 'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
+          'nlayers': 6, 'nhead': 8, 'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 
-test_name = 'TF encoder'
-test_info = 'nhead=48'
+test_name = 'mask_ratio'
+test_info = ''
 
 # config['result_dir'] = os.path.join(RESULTS_PATH, '2023_08_17_23_17_48_hyper_da')      # local
 # config['result_dir'] = os.path.join('../../results/2023_07_14_13_47_19_new_amass_copy')      # cluster
@@ -627,8 +631,8 @@ if __name__ == '__main__':
     # tune_ssl_hyper()
     # tune_da_hyper()
 
-    coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {1: [16]})
-    # coupled_hypers = (['PatchLen', 'MaskPatchNum'], {1: [16, 32, 48, 64, 80], 2: [8, 16, 24, 32, 40], 4: [4, 8, 12, 16, 20], 8: [2, 4, 6, 8, 10]})
+    # coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {1: [16]})
+    coupled_hypers = (['PatchLen', 'MaskPatchNum'], {1: [8, 16, 32, 48, 64, 80], 2: [4, 8, 16, 24, 32, 40], 4: [2, 4, 8, 12, 16, 20], 8: [1, 2, 4, 6, 8, 10]})
     independent_hyper = ('NumGradDeSsl', [config['NumGradDeSsl']])
 
     for indep_hyper_val in independent_hyper[1]:

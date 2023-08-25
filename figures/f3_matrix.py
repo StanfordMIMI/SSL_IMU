@@ -108,13 +108,13 @@ if __name__ == "__main__":
     test_names = ['/Camargo_levelground', '/walking_knee_moment', '/sun_drop_jump']
     test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking',
                         'Task 3 - Drop Jump')
-    test_folder = '2023_08_22_22_55_56_TF encoder'
+    test_folder = '2023_08_24_16_07_22_mask ratio'
     data_path = RESULTS_PATH + test_folder
     if plot_type == 'curve':
         fig = plt.figure(figsize=(12, 4.5))
     else:
         fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(8, 3.5), height_ratios=[3, 1])
-    metric = 'r2'
+    metric = 'correlation'
     for i_da, test_name in enumerate(test_names):
         plt.subplot(1, 3, i_da + 1)
         results_task = load_da_data(data_path + test_name + '_output' + '.h5')
@@ -127,7 +127,7 @@ if __name__ == "__main__":
         result_mean_map = np.zeros([2, len(patch_len_list), len(percent_of_masking_list)])
         for i_patch, patch_len in enumerate(patch_len_list):
             for i_percent, percent_of_masking in enumerate(percent_of_masking_list):
-                data_cond = result_df[(result_df['PatchLen'] == patch_len) & (result_df['PercentOfMasking'] == percent_of_masking) & (result_df['NumGradDeSsl'] == 10000)]
+                data_cond = result_df[(result_df['PatchLen'] == patch_len) & (result_df['PercentOfMasking'] == percent_of_masking)]
                 data_cond_0 = data_cond[~data_cond['LinearProb']&data_cond['UseSsl']]
                 result_mean_map[0, i_patch, i_percent] = np.mean(data_cond_0[metric])
                 data_cond_2 = data_cond[~data_cond['LinearProb']&~data_cond['UseSsl']]
