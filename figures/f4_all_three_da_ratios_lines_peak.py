@@ -59,13 +59,13 @@ def draw_line_0_2(line_config, amount_list):
         ax.set_xticklabels(x_ticks_label, fontdict=FONT_DICT)
 
         if i_da == 0:
-            ax.set_ylim(0.89, 0.94)
-            ax.set_yticks([0.89, 0.9, 0.91, 0.92, 0.93, 0.94])
-            ax.set_yticklabels([0.89, 0.9, 0.91, 0.92, 0.93, 0.94], fontdict=FONT_DICT)
+            ax.set_ylim(0.91, 0.951)
+            ax.set_yticks([0.91, 0.92, 0.93, 0.94, 0.95])
+            ax.set_yticklabels([0.91, 0.92, 0.93, 0.94, 0.95], fontdict=FONT_DICT)
         elif i_da == 2:
-            ax.set_ylim(0.89, 0.92)
-            ax.set_yticks([0.88, 0.89, 0.9, 0.91, 0.92])
-            ax.set_yticklabels([0.88, 0.89, 0.9, 0.91, 0.92], fontdict=FONT_DICT)
+            ax.set_ylim(0.91, 0.95)
+            ax.set_yticks([0.91, 0.92, 0.93, 0.94, 0.95])
+            ax.set_yticklabels([0.91, 0.92, 0.93, 0.94, 0.95], fontdict=FONT_DICT)
 
         plt.title(test_names_print[i_da], fontdict=FONT_DICT, pad=15)
 
@@ -93,11 +93,11 @@ if __name__ == "__main__":
     colors = [np.array(x) / 255 for x in [[96, 201, 230], [8, 141, 175], [2, 83, 100], [180, 180, 180]]]
     metric = 'correlation'
     target_param = 'ratio'
-    patch_len = 8
-    mask_patch_num = 6
+    patch_len = 1
+    mask_patch_num = 16
 
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
-    test_folders = ['2023_07_17_11_07_10_SSL_MOVI', '2023_07_17_11_12_25_SSL_AMASS', '2023_07_17_15_28_20_SSL_COMBINED', 'baseline']
+    test_folders = ['2023_08_25_12_05_00_data_ratio_MOVI', '2023_08_25_12_05_33_data_ratio_amass', '2023_08_25_09_11_52_data_ratio_combined', 'baseline']
     test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking', 'Task 3 - Drop Landing')
 
     rc('font', family='Arial')

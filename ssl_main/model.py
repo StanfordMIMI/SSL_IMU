@@ -159,7 +159,7 @@ class Transformer(nn.Module):
 
         output = self.flat_patches(output)
         mask_indices = self.flat_patches(mask_indices)
-        return output, mask_indices, sequence          # !!! - output
+        return output, mask_indices, sequence          # use -output might make convergence faster
 
     def add_start_token(self, sequence):
         sequence = F.pad(sequence, (0, 0, 1, 0))

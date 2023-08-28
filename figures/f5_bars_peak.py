@@ -1,7 +1,5 @@
-from scipy.stats import ttest_rel
 from ssl_main.const import LINE_WIDTH, FONT_DICT
 from figures.PaperFigures import save_fig, load_da_data, results_dict_to_pd, format_axis
-from matplotlib.patches import Patch
 import os, sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
@@ -77,12 +75,12 @@ colors = [np.array(x) / 255 for x in [[76, 181, 210], [3, 136, 170], [2, 83, 100
 
 if __name__ == "__main__":
     metric = 'correlation'
-    patch_len = 8
-    mask_patch_num = 6
+    patch_len = 1
+    mask_patch_num = 16
 
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
     da_sign_of_peak = [1, -1, 1]
-    test_folders = ['2023_07_17_11_07_10_SSL_MOVI', '2023_07_17_11_12_25_SSL_AMASS', '2023_07_17_15_28_20_SSL_COMBINED', 'baseline']
+    test_folders = ['2023_08_25_12_05_00_data_ratio_MOVI', '2023_08_25_12_05_33_data_ratio_amass', '2023_08_25_09_11_52_data_ratio_combined', 'baseline']
 
     rc('font', family='Arial')
     bars = []

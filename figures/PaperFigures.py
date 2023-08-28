@@ -82,7 +82,10 @@ def results_to_pd_summary_only_peaks(result_all_tests, result_field_id, sign_of_
             rmse = np.sqrt(mse(peaks[:, 0], peaks[:, 1]))
             r_rmse = rmse / (np.max(peaks[:, 0]) - np.min(peaks[:, 0])) * 100
             r2 = r2_score(peaks[:, 0], peaks[:, 1])
-            correlation, _ = pearsonr(peaks[:, 0], peaks[:, 1])
+            try:
+                correlation, _ = pearsonr(peaks[:, 0], peaks[:, 1])
+            except:
+                correlation = np.nan
             result_list.append([param_tuple[1] for param_tuple in param_tuples] + [sub_id, rmse, r_rmse, r2, correlation])
     result_df = pd.DataFrame(result_list, columns=[param_tuple[0] for param_tuple in param_tuples] + ['sub_id', 'rmse', 'r_rmse', 'r2', 'correlation'])
     return result_df

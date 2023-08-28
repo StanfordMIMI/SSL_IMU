@@ -17,7 +17,7 @@ def plot_spectrum(results_task):
         ax.set_xticklabels(range(10, 51, 10), fontdict=FONT_DICT)
         ax.set_xlabel('Frequency (Hz)', fontdict=FONT_DICT)
 
-        ax.set_ylabel('vGRF Error (BW)', fontdict=FONT_DICT)
+        ax.set_ylabel('vGRF Error (N/kg)', fontdict=FONT_DICT)
         if i_da == 0 or i_da == 1:
             ax.set_yticks([0., 0.2, 0.4, 0.6, 0.8, 1])
             ax.set_yticklabels([0., 0.2, 0.4, 0.6, 0.8, 1.], fontdict=FONT_DICT)
@@ -73,7 +73,7 @@ colors = [np.array(x) / 255 for x in [[110, 110, 110], [3, 136, 170]]]
 
 if __name__ == "__main__":
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
-    test_folder = '2023_07_17_11_12_25_SSL_AMASS'
+    test_folder = '2023_08_25_12_05_33_data_ratio_amass'
     test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking', 'Task 3 - Drop Landing')
     data_path = RESULTS_PATH + test_folder + '/'
     plt.figure(figsize=(12, 4))
@@ -82,7 +82,7 @@ if __name__ == "__main__":
         plt.subplot(1, 3, i_da + 1)
         results_task = load_da_data(data_path + da_name + '.h5')
         results_task_ = {key_: value_ for key_, value_ in results_task.items()
-                         if 'PatchLen_8' in key_ and 'MaskPatchNum_6' in key_ and 'LinearProb_False' in key_ and
+                         if 'PatchLen_1' in key_ and 'MaskPatchNum_16' in key_ and 'LinearProb_False' in key_ and
                          'ratio_1' in key_}
         lines_handle, fill_handle = plot_spectrum(results_task_)
         # plot_example_windows(axes[1, i_da], results_task_)

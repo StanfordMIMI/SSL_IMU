@@ -612,7 +612,7 @@ config = {'NumGradDeSsl': 1e4, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 1, 'log_with
           'BatchSizeSsl': 64, 'BatchSizeLinear': 64, 'LrSsl': 1e-4, 'LrDa': 1e-4, 'FeedForwardDim': 512,
           'nlayers': 6, 'nhead': 8, 'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 
-test_name = 'mask_ratio'
+test_name = 'AMASS'
 test_info = ''
 
 # config['result_dir'] = os.path.join(RESULTS_PATH, '2023_08_17_23_17_48_hyper_da')      # local
@@ -631,8 +631,8 @@ if __name__ == '__main__':
     # tune_ssl_hyper()
     # tune_da_hyper()
 
-    # coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {1: [16]})
-    coupled_hypers = (['PatchLen', 'MaskPatchNum'], {1: [8, 16, 32, 48, 64, 80], 2: [4, 8, 16, 24, 32, 40], 4: [2, 4, 8, 12, 16, 20], 8: [1, 2, 4, 6, 8, 10]})
+    coupled_hypers = (['PatchLen', 'MaskPatchNum'],  {1: [16]})
+    # coupled_hypers = (['PatchLen', 'MaskPatchNum'], {1: [8, 16, 32, 48, 64, 80], 2: [4, 8, 16, 24, 32, 40], 4: [2, 4, 8, 12, 16, 20], 8: [1, 2, 4, 6, 8, 10]})
     independent_hyper = ('NumGradDeSsl', [config['NumGradDeSsl']])
 
     for indep_hyper_val in independent_hyper[1]:
@@ -647,7 +647,7 @@ if __name__ == '__main__':
                 logging.info(config['FileNameAppendix'])
                 logging.info(config)
 
-                FrameworkSSL(config, SSL_COMBINED).run_ssl()
+                FrameworkSSL(config, SSL_AMASS).run_ssl()
                 da_frameworks = [FrameworkDownstream(config, da_task) for da_task in
                                  [DOWNSTREAM_0, DOWNSTREAM_1, DOWNSTREAM_2]]
                                  # [DOWNSTREAM_6, DOWNSTREAM_7, DOWNSTREAM_8]]

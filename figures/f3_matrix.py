@@ -1,5 +1,6 @@
 import os, sys
 from ssl_main.const import FONT_DICT, LINE_WIDTH_THICK
+import copy
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
 import tempfile
@@ -53,7 +54,7 @@ def plot_map(i_da, data_all, x_ticks, y_ticks):
         ax.set_yticklabels([])
         ax.tick_params(axis='y', which='both', left=False,  right=False)
 
-    plt.tight_layout(rect=[0.1, 0., 1., 1.], h_pad=-0.1)
+    plt.tight_layout(rect=[0.1, 0., 1., 1.], w_pad=0.2, h_pad=-0.1)
 
 
 def plot_curve(i_da, data_all, x_ticks, curve_labels):
@@ -62,27 +63,26 @@ def plot_curve(i_da, data_all, x_ticks, curve_labels):
     data_combined = np.flip(data_combined, axis=1)
     curve_labels = reversed(curve_labels)
     for i_col in range(data_combined.shape[1]):
-        ax.plot(data_combined[:, i_col], color=colors[i_col], marker="o", markersize=4, linewidth=LINE_WIDTH_THICK)
+        ax.plot([float(ele.split('\n')[0]) for ele in x_ticks],
+                data_combined[:, i_col], color=colors[i_col], marker="o", markersize=4, linewidth=LINE_WIDTH_THICK)
     ax.set_xlabel('Percentage of Masking (%)', fontdict=FONT_DICT, labelpad=5)
-    ax.set_xticks(range(len(x_ticks)))
-    ax.set_xlim(-0.1, len(x_ticks) - 0.9)
-    ax.set_xticklabels(x_ticks, fontdict=FONT_DICT)
-    ax.set_ylabel(r'$R^2$', fontdict=FONT_DICT)
-    # if i_da == 0:
-    #     ax.set_yticks([0.6, 0.7, 0.8, 0.9])
-    #     ax.set_yticklabels([0.6, 0.7, 0.8, 0.9], fontdict=FONT_DICT)
-    #     ax.set_ylim(0.6, 0.9)
-    # elif i_da == 1:
-    #     ax.set_yticks([0.86, 0.88, 0.9, 0.92])
-    #     ax.set_yticklabels([0.86, 0.88, 0.9, 0.92], fontdict=FONT_DICT)
-    #     ax.set_ylim(0.86, 0.92)
-    # elif i_da == 2:
-    #     ax.set_yticks([0.6, 0.7, 0.8, 0.9])
-    #     ax.set_yticklabels([0.6, 0.7, 0.8, 0.9], fontdict=FONT_DICT)
-    #     ax.set_ylim(0.6, 0.9)
+    ax.set_xticks([float(ele.split('\n')[0]) for ele in x_ticks[:1]+x_ticks[2:]])
+    ax.set_xlim(-1, float(x_ticks[-1]) + 1)
+    ax.set_xticklabels(x_ticks[:1]+x_ticks[2:], fontdict=FONT_DICT)
+    ax.set_ylabel('Correlation Coefficients - vGRF Profile', fontdict=FONT_DICT)
 
-    # ax.set_yticks(plt.yticks(), fontdict=FONT_DICT)
-    # ax.tick_params(axis='y', which='major', fontdict=FONT_DICT)
+    if i_da == 0:
+        ax.set_yticks([0.92, 0.93, 0.94, 0.95])
+        ax.set_yticklabels([0.92, 0.93, 0.94, 0.95], fontdict=FONT_DICT)
+        ax.set_ylim(0.92, 0.95)
+    elif i_da == 1:
+        ax.set_yticks([0.94, 0.95, 0.96, 0.97, 0.98])
+        ax.set_yticklabels([0.94, 0.95, 0.96, 0.97, 0.98], fontdict=FONT_DICT)
+        ax.set_ylim(0.938, 0.98)
+    elif i_da == 2:
+        ax.set_yticks([0.88, 0.9, 0.92, 0.94])
+        ax.set_yticklabels([0.88, 0.9, 0.92, 0.94], fontdict=FONT_DICT)
+        ax.set_ylim(0.88, 0.94)
 
     plt.title(test_names_print[i_da], fontdict=FONT_DICT, pad=15)
     plt.tight_layout(rect=[0., 0., 1., 0.87], h_pad=2)
@@ -108,7 +108,7 @@ if __name__ == "__main__":
     test_names = ['/Camargo_levelground', '/walking_knee_moment', '/sun_drop_jump']
     test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking',
                         'Task 3 - Drop Jump')
-    test_folder = '2023_08_24_16_07_22_mask ratio'
+    test_folder = '2023_08_24_16_57_19_mask_ratio'
     data_path = RESULTS_PATH + test_folder
     if plot_type == 'curve':
         fig = plt.figure(figsize=(12, 4.5))
