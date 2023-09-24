@@ -29,18 +29,14 @@ class RegressNet(nn.Module):
     def __init__(self, emb_net, output_dim):
         super(RegressNet, self).__init__()
         self.emb_net = emb_net
-        self.emb_output_dim = emb_net.x_dim
         self.output_dim = output_dim
-        self.linear = nn.Linear(self.emb_output_dim, output_dim)
+        self.linear = nn.Linear(emb_net.embedding_dim, output_dim * emb_net.patch_len)
 
     def forward(self, x):
-        batch_size, _, _ = x[0].shape
+        batch_size, _, seq_len = x[0].shape
         mod_all = torch.concat(x, dim=1)
         mod_outputs = self.emb_net(mod_all)
-
-        output = mod_outputs.transpose(1, 2)
-        output = self.linear(output)
-        output = output.transpose(1, 2)
+        output = self.linear(mod_outputs).view([*mod_outputs.shape[:2], -1, self.output_dim]).flatten(1, 2).transpose(1, 2)
         return output, mod_outputs
 
 
@@ -69,45 +65,94 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class TransformerBase(nn.Module):
-    def __init__(self, imu_to_use, device='cuda'):
+# class TransformerBase(nn.Module):
+#     def __init__(self, imu_to_use, device='cuda'):
+#         super().__init__()
+#         imu_to_use_mapped, mask_input_imu_index = imu_name_mapping(imu_to_use)
+#         x_dim = 48
+#         patch_len = 8
+#         patch_step_len = 8
+#         self.patch_len = patch_len
+#         self.patch_step_len = patch_step_len
+#         self.pad_len = 0
+#         self.x_dim = x_dim
+#         self.d_model = int(self.x_dim * patch_len)
+#         encoder_layers = TransformerEncoderLayer(self.d_model, 48, 512, batch_first=True)
+#
+#         self.transformer_encoder = TransformerEncoder(encoder_layers, 6)
+#         self.device = device
+#         self.ssl_mask_emb = nn.Parameter(torch.zeros([1, x_dim * patch_len]).uniform_() - 0.5)
+#         self.reduced_imu_mask_emb = nn.Parameter(torch.zeros([48, 128]).uniform_() - 0.5)
+#         self.mask_input_imu_index = mask_input_imu_index
+#         self.patch_num = int(128 / self.patch_len)
+#         self.pos_encoding = PositionalEncoding(x_dim * patch_len, self.patch_num)
+#
+#     def forward(self, sequence):
+#         sequence = self.apply_reduced_imu_set_mask(sequence)
+#         sequence_patch = self.divide_into_patches(sequence)
+#         sequence_patch = self.pos_encoding(sequence_patch)
+#         sequence_patch = self.transformer_encoder(sequence_patch)
+#
+#         output = self.flat_patches(sequence_patch)
+#         return output
+#
+#     def divide_into_patches(self, sequence):
+#         sequence = F.pad(sequence, (0, 0, self.pad_len, self.pad_len))
+#         sequence = sequence.unfold(2, self.patch_len, self.patch_step_len)
+#         sequence = sequence.transpose(1, 2).flatten(start_dim=2)
+#         return sequence
+#
+#     def flat_patches(self, sequence):
+#         sequence = sequence.view([*sequence.shape[:2], -1, self.patch_len])
+#         sequence = sequence.transpose(1, 2).flatten(start_dim=2)
+#         return sequence
+#
+#     def apply_reduced_imu_set_mask(self, seq):
+#         bs, patch_emb, length = seq.shape
+#         mask_indices_np = np.full((bs, patch_emb), False)
+#         for i_imu in range(8):
+#             if i_imu in self.mask_input_imu_index:
+#                 mask_indices_np[:, i_imu*3:(i_imu+1)*3] = True
+#                 mask_indices_np[:, i_imu*3+24:(i_imu+1)*3+24] = True
+#         mask_indices = torch.from_numpy(mask_indices_np).to(seq.device)
+#         mask_indices = mask_indices.unsqueeze(-1).expand_as(seq)
+#
+#         tensor = torch.mul(seq, ~mask_indices) + torch.mul(self.reduced_imu_mask_emb, mask_indices)
+#         return tensor
+
+class TransformerEncoderOnly(nn.Module):
+    def __init__(self, imu_to_use, device='cpu'):
         super().__init__()
         imu_to_use_mapped, mask_input_imu_index = imu_name_mapping(imu_to_use)
         x_dim = 48
-        patch_len = 8
-        patch_step_len = 8
-        self.patch_len = patch_len
-        self.patch_step_len = patch_step_len
-        self.pad_len = 0
+        self.patch_step_len = 1
+        self.patch_len = 1
         self.x_dim = x_dim
-        self.d_model = int(self.x_dim * patch_len)
+        self.pad_len = 0
+        self.embedding_dim = 192
+        self.input_to_embedding = nn.Linear(x_dim * self.patch_len, self.embedding_dim)
+        self.d_model = int(self.embedding_dim)
         encoder_layers = TransformerEncoderLayer(self.d_model, 48, 512, batch_first=True)
 
-        self.transformer_encoder = TransformerEncoder(encoder_layers, 6)
+        self.transformer = TransformerEncoder(encoder_layers, 6)
         self.device = device
-        self.ssl_mask_emb = nn.Parameter(torch.zeros([1, x_dim * patch_len]).uniform_() - 0.5)
+        self.ssl_mask_emb = nn.Parameter(torch.zeros([1, x_dim * self.patch_len]).uniform_() - 0.5)
         self.reduced_imu_mask_emb = nn.Parameter(torch.zeros([48, 128]).uniform_() - 0.5)
         self.mask_input_imu_index = mask_input_imu_index
         self.patch_num = int(128 / self.patch_len)
-        self.pos_encoding = PositionalEncoding(x_dim * patch_len, self.patch_num)
+        self.pos_encoding = PositionalEncoding(self.embedding_dim, self.patch_num)
 
     def forward(self, sequence):
         sequence = self.apply_reduced_imu_set_mask(sequence)
         sequence_patch = self.divide_into_patches(sequence)
+        sequence_patch = self.input_to_embedding(sequence_patch)
         sequence_patch = self.pos_encoding(sequence_patch)
-        sequence_patch = self.transformer_encoder(sequence_patch)
-
-        output = self.flat_patches(sequence_patch)
+        output = self.transformer(sequence_patch)
         return output
 
     def divide_into_patches(self, sequence):
         sequence = F.pad(sequence, (0, 0, self.pad_len, self.pad_len))
         sequence = sequence.unfold(2, self.patch_len, self.patch_step_len)
-        sequence = sequence.transpose(1, 2).flatten(start_dim=2)
-        return sequence
-
-    def flat_patches(self, sequence):
-        sequence = sequence.view([*sequence.shape[:2], -1, self.patch_len])
         sequence = sequence.transpose(1, 2).flatten(start_dim=2)
         return sequence
 
@@ -303,7 +348,7 @@ def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, phase_
     test_output_data = test_data['output']
     # test_step_lens = get_step_len(test_input_data[0])
     test_dl = prepare_dl([*test_input_data, test_output_data], 64, shuffle=False)
-    dtype, regress_net = set_dtype_and_model('cuda', regress_net)
+    dtype, regress_net = set_dtype_and_model('cpu', regress_net)
 
     if linear_protocol:
         lr_ = 1e-3
@@ -314,10 +359,9 @@ def model_fine_tuning(linear_protocol, regress_net, data_downstream_dict, phase_
 
     optimizer = torch.optim.AdamW(param_to_train, lr_)
     epoch_end_time = time.time()
-    num_of_back_propagation = 300
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=300)
-    warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(300/5))
+    num_of_back_propagation = 20
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_of_back_propagation)
+    warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=int(num_of_back_propagation/5))
 
     i_optimize = 0
     for i_epoch in range(num_of_back_propagation):
@@ -353,7 +397,7 @@ if __name__ == "__main__":
     sub_for_fine_tuning = list(CAMARGO_SUB_HEIGHT_WEIGHT.keys())[:-3]
     sub_for_testing = list(CAMARGO_SUB_HEIGHT_WEIGHT.keys())[-3:]
     outputs = ['fy']
-    emb_net = TransformerBase(imu_to_use)
+    emb_net = TransformerEncoderOnly(imu_to_use)
     emb_net.load_state_dict(torch.load('pretrained_model_weights.pth'))
     regress_net = RegressNet(emb_net, len(outputs))
     set_data, data_scalar = load_data('Camargo_levelground.h5', imu_to_use, outputs, sub_for_fine_tuning, sub_for_testing)
