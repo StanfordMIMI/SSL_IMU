@@ -59,36 +59,39 @@ def plot_map(i_da, data_all, x_ticks, y_ticks):
 
 def plot_curve(i_da, data_all, x_ticks, curve_labels):
     ax = plt.gca()
-    data_combined = np.concatenate([data_all[1, :, :1], data_all[0]], axis=1).T
+    data_combined = data_all[0].T
+    # xx = data_all[1, :, :1]
     data_combined = np.flip(data_combined, axis=1)
     curve_labels = reversed(curve_labels)
     for i_col in range(data_combined.shape[1]):
         ax.plot([float(ele.split('\n')[0]) for ele in x_ticks],
-                data_combined[:, i_col], color=colors[i_col], marker="o", markersize=4, linewidth=LINE_WIDTH_THICK)
+                data_combined[:, i_col], color=colors[i_col], marker="o", markersize=6, linewidth=LINE_WIDTH_THICK)
+        # ax.plot([float(ele.split('\n')[0]) for ele in [x_ticks[0], x_ticks[-1]]],
+        #         [xx[i_col], xx[i_col]], '--', color=colors[i_col], linewidth=LINE_WIDTH_THICK)
     ax.set_xlabel('Percentage of Masking (%)', fontdict=FONT_DICT, labelpad=5)
-    ax.set_xticks([float(ele.split('\n')[0]) for ele in x_ticks[:1]+x_ticks[2:]])
-    ax.set_xlim(-1, float(x_ticks[-1]) + 1)
-    ax.set_xticklabels(x_ticks[:1]+x_ticks[2:], fontdict=FONT_DICT)
+    ax.set_xticks([float(ele.split('\n')[0]) for ele in x_ticks])
+    ax.set_xlim(5.25, float(x_ticks[-1]) + 1)
+    ax.set_xticklabels(x_ticks, fontdict=FONT_DICT)
     ax.set_ylabel('Correlation Coefficients - vGRF Profile', fontdict=FONT_DICT)
 
     if i_da == 0:
-        ax.set_yticks([0.92, 0.93, 0.94, 0.95])
-        ax.set_yticklabels([0.92, 0.93, 0.94, 0.95], fontdict=FONT_DICT)
-        ax.set_ylim(0.92, 0.95)
+        ax.set_yticks([0.93, .935, 0.94, .945, 0.95])
+        ax.set_yticklabels([0.93, .935, 0.94, .945, 0.95], fontdict=FONT_DICT)
+        ax.set_ylim(0.928, 0.95)
     elif i_da == 1:
-        ax.set_yticks([0.94, 0.95, 0.96, 0.97, 0.98])
-        ax.set_yticklabels([0.94, 0.95, 0.96, 0.97, 0.98], fontdict=FONT_DICT)
-        ax.set_ylim(0.938, 0.98)
+        ax.set_yticks([0.955, 0.96, 0.965, 0.97, 0.975])
+        ax.set_yticklabels([0.955, 0.96, 0.965, 0.97, 0.975], fontdict=FONT_DICT)
+        ax.set_ylim(0.955, 0.976)
     elif i_da == 2:
-        ax.set_yticks([0.88, 0.9, 0.92, 0.94])
-        ax.set_yticklabels([0.88, 0.9, 0.92, 0.94], fontdict=FONT_DICT)
-        ax.set_ylim(0.88, 0.94)
+        ax.set_yticks([0.89, 0.9, 0.91, 0.92, 0.93, 0.94])
+        ax.set_yticklabels([0.89, 0.9, 0.91, 0.92, 0.93, 0.94], fontdict=FONT_DICT)
+        ax.set_ylim(0.89, 0.94)
 
     plt.title(test_names_print[i_da], fontdict=FONT_DICT, pad=15)
     plt.tight_layout(rect=[0., 0., 1., 0.87], h_pad=2)
     if i_da == 2:
         plt.legend([f'Patch Length = {int(x)}' for x in curve_labels], frameon=False,
-                   bbox_to_anchor=(0.8, 1.4), ncol=4, fontsize=FONT_DICT['fontsize'])
+                   bbox_to_anchor=(0.8, 1.35), ncol=4, fontsize=FONT_DICT['fontsize'])
     format_axis()
 
 
@@ -121,9 +124,9 @@ if __name__ == "__main__":
         result_df = results_to_pd_summary(results_task, 0)
         result_df['PercentOfMasking'] = result_df['MaskPatchNum'] / (128 / result_df['PatchLen'])
 
-        patch_len_list = np.sort(list(set(result_df['PatchLen'])))     #        # !!!
+        patch_len_list = np.sort(list(set(result_df['PatchLen'])))
         percent_of_masking_list = np.sort(list(set(result_df['PercentOfMasking'])))
-        percent_of_masking_list_str = [str(round(i * 100, 1)) + '' for i in percent_of_masking_list]
+        percent_of_masking_list_str = [str(round(i * 100 + 1e-5, 1)) + '' for i in percent_of_masking_list]
         result_mean_map = np.zeros([2, len(patch_len_list), len(percent_of_masking_list)])
         for i_patch, patch_len in enumerate(patch_len_list):
             for i_percent, percent_of_masking in enumerate(percent_of_masking_list):
@@ -133,7 +136,7 @@ if __name__ == "__main__":
                 data_cond_2 = data_cond[~data_cond['LinearProb']&~data_cond['UseSsl']]
                 result_mean_map[1, i_patch, i_percent] = np.mean(data_cond_2[metric])
         if plot_type == 'curve':
-            plot_curve(i_da, result_mean_map, ['0\n(baseline)'] + percent_of_masking_list_str, patch_len_list)
+            plot_curve(i_da, result_mean_map, percent_of_masking_list_str, patch_len_list)
         else:
             plot_map(i_da, result_mean_map, patch_len_list, percent_of_masking_list_str)
         plt.grid(True, linewidth=1, alpha=0.5)

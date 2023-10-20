@@ -19,18 +19,19 @@ Python 3.8; Pytorch 1.7.0; Cuda 11.0; Cudnn 8.0.4; pytorch_warmup 0.1; matplotli
 numpy 1.19.4; h5py 3.0.0; Scikit-learn 0.23.2
 
 ### Example code
-[An example script](./example_usage/run_example.py)
+[A Google Colab notebook](https://colab.research.google.com/drive/1rlrBG2v94YzOYi1Lxq6OQ6b3ZcKmzYCn?usp=sharing)
 that loads one [example dataset](./example_usage/Camargo_levelground.h5) [3],
 fine-tunes the pre-trained [transformer model](./example_usage/pretrained_model_weights.pth), and
 evaluates the fine-tuned model on the test set.
 
 ### IMUs
-One to eight IMUs should be placed on the body as shown in the figure below.
-When using less than eight IMUs, specify the IMU indices in the `--imu_idx` argument.
+Place one to eight IMUs on the body as depicted in the figure below.
+Ensure that the IMU data are labeled in accordance with the figure below.
+In cases where fewer than eight IMUs are utilized, simply omit the names of the unused IMUs from the variable 'imu_to_use'.
 Each IMU's z-axis is aligned with the body segment surface normal, y-axis points upwards,
 and x-axis being perpendicular to the y and z axes following the right-hand rule.
 
-<img src="figures/readme_fig/imu_position_and_orientation.png" width="200">
+<img src="figures/readme_fig/imu_position_and_orientation.png" width="300">
 
 ## SSL datasets
 [AMASS](https://amass.is.tue.mpg.de/download.php)

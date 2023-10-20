@@ -57,7 +57,7 @@ class ContinuousDatasetLoader:
 
     @staticmethod
     def update_column_names(columns):
-        column_name_map = {'trunk': 'CHEST', 'thigh': 'R_THIGH', 'shank': 'R_SHANK', 'foot': 'R_FOOT'}
+        column_name_map = {'trunk': 'TRUNK', 'thigh': 'R_THIGH', 'shank': 'R_SHANK', 'foot': 'R_FOOT'}
         for key in column_name_map.keys():
             for column in columns:
                 if key in column:

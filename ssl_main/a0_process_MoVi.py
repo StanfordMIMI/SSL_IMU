@@ -61,7 +61,7 @@ class ContinuousDatasetLoader:
 
     @staticmethod
     def update_imu_name(columns):
-        name_map = {'Spine1': 'CHEST', 'Hip': 'WAIST', 'RightUpLeg': 'R_THIGH', 'LeftUpLeg': 'L_THIGH',
+        name_map = {'Spine1': 'TRUNK', 'Hip': 'PELVIS', 'RightUpLeg': 'R_THIGH', 'LeftUpLeg': 'L_THIGH',
                     'RightLeg': 'R_SHANK', 'LeftLeg': 'L_SHANK', 'RightFoot': 'R_FOOT', 'LeftFoot': 'L_FOOT'}
         old_name_list = list(name_map.keys())
         for i_col, col in enumerate(columns):
@@ -85,8 +85,8 @@ class ContinuousDatasetLoader:
 
 def compare_real_synthetic_movi():
     IMU_CONFIGS = {
-        'CHEST': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 1329, 'ji_sel': 9},
-        'WAIST': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 3147, 'ji_sel': 0},
+        'TRUNK': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 1329, 'ji_sel': 9},
+        'PELVIS': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 3147, 'ji_sel': 0},
         'L_THIGH': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 4434, 'ji_sel': 2},
         'R_THIGH': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 945, 'ji_sel': 1},
         'L_SHANK': {'R_sw': np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), 'vi_sel': 4563, 'ji_sel': 5},
@@ -143,7 +143,7 @@ class MoviWindowSegmentation(BaseSegmentation):
 
 
 movi_orientation_transform_mat = {
-    'CHEST': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]), 'WAIST': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]),
+    'TRUNK': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]), 'PELVIS': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]),
     'R_THIGH': np.array([[0, 0, 1], [-1, 0, 0], [0, -1, 0]]), 'L_THIGH': np.array([[0, 0, -1], [-1, 0, 0], [0, 1, 0]]),
     'R_SHANK': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]), 'L_SHANK': np.array([[0, -1, 0], [-1, 0, 0], [0, 0, -1]]),
     'R_FOOT': np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]]), 'L_FOOT': np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]])}

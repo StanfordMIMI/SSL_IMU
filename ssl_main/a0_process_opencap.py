@@ -228,13 +228,13 @@ opencap_data_path = 'D:/Local/Data/DataOpenCap/LabValidation_withoutVideos/'
 export_dir = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/data_processed/'
 
 opencap_to_opensim_body_name_map = {
-    'STERN': 'CHEST', 'PELV': 'WAIST', 'ULEG R': 'R_THIGH', 'ULEG L': 'L_THIGH',
+    'STERN': 'TRUNK', 'PELV': 'PELVIS', 'ULEG R': 'R_THIGH', 'ULEG L': 'L_THIGH',
     'LLEG R': 'R_SHANK', 'LLEG L': 'L_SHANK', 'FOOT R': 'R_FOOT', 'FOOT L': 'L_FOOT'}
 body_marker_map = {'R_SHANK': ['r_knee', 'r_shank_antsup', 'r_sh2', 'r_sh3', 'r_sh4'],
                    'R_THIGH': ['r_thigh1', 'r_thigh2', 'r_thigh3', 'r_thigh4', 'r_thigh5']}
 
 xsens_orientation_transform_mat = {
-    'CHEST': np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]]), 'WAIST': np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]]),
+    'TRUNK': np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]]), 'PELVIS': np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]]),
     'R_THIGH': np.array([[0, 0, 1], [1, 0, 0], [0, 1, 0]]), 'L_THIGH': np.array([[0, 0, 1], [1, 0, 0], [0, 1, 0]]),
     'R_SHANK': np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]]), 'L_SHANK': np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]]),
     'R_FOOT': np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]]), 'L_FOOT': np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]])}

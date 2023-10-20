@@ -8,12 +8,12 @@ DICT_TRIAL_MOVI = {index: i for i, index in enumerate(['I1', 'I2', 'S1', 'S2'])}
 
 CODE_PATH = os.path.dirname(os.path.abspath(__file__))
 
-STANDARD_IMU_SEQUENCE = ['CHEST', 'WAIST', 'R_THIGH', 'L_THIGH', 'R_SHANK', 'L_SHANK', 'R_FOOT', 'L_FOOT']
+STANDARD_IMU_SEQUENCE = ['TRUNK', 'PELVIS', 'R_THIGH', 'L_THIGH', 'R_SHANK', 'L_SHANK', 'R_FOOT', 'L_FOOT']
 
 DATA_PATH_CAMARGO_WIN = 'D:/OneDrive - sjtu.edu.cn/MyProjects/2023_SSL/data/camargo/data_processed/'
 RESULTS_PATH = '../../results/'
 TRIAL_TYPES = ['LevelGround', 'Treadmill', 'Stair', 'Ramp']
-IMU_CAMARGO_SEGMENT_LIST = ['CHEST', 'R_THIGH', 'R_SHANK', 'R_FOOT']
+IMU_CAMARGO_SEGMENT_LIST = ['TRUNK', 'R_THIGH', 'R_SHANK', 'R_FOOT']
 
 DICT_TRIAL_TYPE_ID = {type: i for i, type in enumerate(TRIAL_TYPES)}
 DICT_LABEL = {'treadmill_walking': -1, 'walk': 0, 'idle': 1, 'stand-walk': 2, 'turn': 3, 'rampascent': 4, 'rampdescent': 5,
@@ -112,21 +112,15 @@ DICT_SUBJECT_ID = {subject: i for i, subject in enumerate(SUB_ID_ALL_DATASETS['C
 
 
 DSET_SUBS_FOR_SSL_TEST = {
-    'walking_knee_moment': ['subject_17'],
-    'filtered_walking_knee_moment': ['subject_17'],
-    'Camargo': ['AB07'],
     'Combined': ['dset' + str(i) for i in range(13, 14)],
     'amass': ['ACCAD'],
     'MoVi': ['sub_88'],
 }
 
 DSET_SUBS_FOR_SSL_TRAINING = {
-    'walking_knee_moment': [element for element in SUB_ID_ALL_DATASETS['walking_knee_moment'] if element not in DSET_SUBS_FOR_SSL_TEST['walking_knee_moment']],
-    'filtered_walking_knee_moment': [element for element in SUB_ID_ALL_DATASETS['walking_knee_moment'] if element not in DSET_SUBS_FOR_SSL_TEST['walking_knee_moment']],
-    'Camargo': [element for element in SUB_ID_ALL_DATASETS['walking_knee_moment'] if element not in DSET_SUBS_FOR_SSL_TEST['Camargo']],
-    'Combined': ['except test'],
-    'amass': ['except test'],
-    'MoVi': ['except test'],
+    'Combined': ['all'],
+    'amass': ['all'],
+    'MoVi': ['all'],
 }
 
 

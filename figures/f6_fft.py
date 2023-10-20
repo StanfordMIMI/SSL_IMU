@@ -17,7 +17,7 @@ def plot_spectrum(results_task):
         ax.set_xticklabels(range(10, 51, 10), fontdict=FONT_DICT)
         ax.set_xlabel('Frequency (Hz)', fontdict=FONT_DICT)
 
-        ax.set_ylabel('vGRF Error (N/kg)', fontdict=FONT_DICT)
+        ax.set_ylabel(r'vGRF Error $(N/kg)$', fontdict=FONT_DICT)
         if i_da == 0 or i_da == 1:
             ax.set_yticks([0., 0.2, 0.4, 0.6, 0.8, 1])
             ax.set_yticklabels([0., 0.2, 0.4, 0.6, 0.8, 1.], fontdict=FONT_DICT)
@@ -64,8 +64,8 @@ def plot_spectrum(results_task):
 def finalize_fig(lines_handle, fill_handle):
     plt.tight_layout(rect=[0., 0., 1., .92], w_pad=2)
     plt.legend([(lines_handle[0], fill_handle[0]), (lines_handle[1], fill_handle[1])],
-               ['Baseline', 'Self-Supervised Learning'], fontsize=FONT_DICT['fontsize'], ncol=2,
-               frameon=False, bbox_to_anchor=(0.7, 1.28))
+               ['Baseline', 'SSL'], fontsize=FONT_DICT['fontsize'], ncol=2,
+               frameon=False, bbox_to_anchor=(0.9, 1.28))
 
 
 colors = [np.array(x) / 255 for x in [[110, 110, 110], [3, 136, 170]]]
@@ -73,7 +73,7 @@ colors = [np.array(x) / 255 for x in [[110, 110, 110], [3, 136, 170]]]
 
 if __name__ == "__main__":
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
-    test_folder = '2023_08_25_12_05_33_data_ratio_amass'
+    test_folder = '2023_09_20_20_19_44_AMASS'
     test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking', 'Task 3 - Drop Landing')
     data_path = RESULTS_PATH + test_folder + '/'
     plt.figure(figsize=(12, 4))

@@ -113,7 +113,7 @@ class FrameworkDownstream:
                              test_sub_ids: List[str]):
         self.set_data = {}
         with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
-            self.data_columns = list(hf[train_sub_ids[0]].attrs['columns'])
+            self.data_columns = json.loads(hf[train_sub_ids[0]].attrs['columns'])
             if 'sub_id' not in self.data_columns:
                 self.data_columns.append('sub_id')
             for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
@@ -170,17 +170,18 @@ class FrameworkDownstream:
     def sample_and_normalize_data(self):
         for data_name, norm_method in zip(['train', 'vali', 'test'], ['fit_transform', 'transform', 'transform']):
             current_set_data = self.set_data[data_name]
-            sampled_rows = np.sort(random.sample(range(current_set_data.shape[0]), int(self.config.da_use_ratio*current_set_data.shape[0])))
-            sampled_data = copy.deepcopy(current_set_data[sampled_rows])
-            logging.info('Downstream {}. Number of steps: {}'.format(data_name, sampled_data.shape[0]))
-            data_ds = preprocess_modality(self.data_columns, self._data_scalar, sampled_data, define_channel_names(self.da_task), norm_method)
-            output_data = sampled_data[:, [self.data_columns.index(x) for x in self.output_columns]]
+            if data_name == 'train':
+                sampled_rows = np.sort(random.sample(range(current_set_data.shape[0]), int(self.config.da_use_ratio*current_set_data.shape[0])))
+                current_set_data = copy.deepcopy(current_set_data[sampled_rows])
+            logging.info('Downstream {}. Number of steps: {}'.format(data_name, current_set_data.shape[0]))
+            data_ds = preprocess_modality(self.data_columns, self._data_scalar, current_set_data, define_channel_names(self.da_task), norm_method)
+            output_data = current_set_data[:, [self.data_columns.index(x) for x in self.output_columns]]
             data_ds['output'] = normalize_data(self._data_scalar, output_data, 'output', norm_method, 'by_each_column')
-            data_ds['sub_id'] = sampled_data[:, self.data_columns.index('sub_id'), 0]
+            data_ds['sub_id'] = current_set_data[:, self.data_columns.index('sub_id'), 0]
             if 'trial_type_id' in self.data_columns:
-                data_ds['trial_type_id'] = sampled_data[:, self.data_columns.index('trial_type_id'), 0]
+                data_ds['trial_type_id'] = current_set_data[:, self.data_columns.index('trial_type_id'), 0]
             else:
-                data_ds['trial_type_id'] = np.zeros([sampled_data.shape[0]])
+                data_ds['trial_type_id'] = np.zeros([current_set_data.shape[0]])
             if self.da_task['data_lost_robustness'] and data_name == 'test':
                 mask = np.random.choice([True, False], size=data_ds['acc'].shape, p=[self.da_task['data_lost_robustness'], 1-self.da_task['data_lost_robustness']])
                 mask[:, 2::3, :] = mask[:, 1::3, :] = mask[:, 0::3, :]
@@ -401,6 +402,7 @@ class FrameworkSSL:
 
         self.emb_net = self.config.emb_net(len(ssl_task['imu_segments'])*6, self.config.nlayers, self.config.nhead,
                                            self.config.FeedForwardDim, [False for _ in range(8)], self.config.MaskPatchNum, self.config.PatchLen)
+        # print(self.emb_net.state_dict()['transformer.layers.0.self_attn.in_proj_weight'])
         logging.info('# of trainable parameters: {}'.format(sum(p.numel() for p in self.emb_net.transformer.parameters() if p.requires_grad)))
         self._data_scalar = {'base_scalar': StandardScaler}
         fix_seed()
@@ -413,6 +415,9 @@ class FrameworkSSL:
         if train_sub_ids == ['except test']:
             train_data = np.concatenate([data_[sub] for sub in list(data_.keys()) if sub not in test_sub_ids], axis=0)
             train_sub_ids_print = [sub for sub in list(data_.keys()) if sub not in test_sub_ids]
+        elif train_sub_ids == ['all']:
+            train_data = np.concatenate([data_[sub] for sub in list(data_.keys())], axis=0)
+            train_sub_ids_print = [sub for sub in list(data_.keys())]
         else:
             train_data = np.concatenate([data_[sub] for sub in train_sub_ids], axis=0)
         vali_data = np.concatenate([data_[sub] for sub in validate_sub_ids], axis=0)
@@ -530,6 +535,7 @@ def run_da(da_frameworks, fold_num=5, run_baseline=True):
     for da_framework in da_frameworks:
         dataset_name = da_framework.da_task['dataset']
         sub_ids = SUB_ID_ALL_DATASETS[dataset_name]
+        np.random.shuffle(sub_ids)
         test_sets = np.array_split(sub_ids, fold_num)
         for i_fold, test_set in enumerate(test_sets):
             test_set = list(test_set)
@@ -588,7 +594,7 @@ def tune_da_hyper():
 DOWNSTREAM_0 = {'_mods': _mods, 'dataset': 'walking_knee_moment', 'output_columns': ['plate_2_force_z'],
                 'da_use_ratios': [1], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
 DOWNSTREAM_1 = {'_mods': _mods, 'dataset': 'Camargo_levelground', 'output_columns': ['fy'],
-                 'da_use_ratios': [1], 'imu_segments': ['CHEST', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise', 'R_FOOT', 'rand_noise'], 'data_lost_robustness': 0.}
+                 'da_use_ratios': [1], 'imu_segments': ['TRUNK', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise', 'R_FOOT', 'rand_noise'], 'data_lost_robustness': 0.}
 DOWNSTREAM_2 = {'_mods': _mods, 'dataset': 'sun_drop_jump', 'output_columns': ['R_GRF_Z'],
                 'da_use_ratios': [1], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
 
@@ -600,7 +606,7 @@ DOWNSTREAM_7.update({'da_use_ratios': linear_array})
 DOWNSTREAM_8.update({'da_use_ratios': linear_array})
 
 DOWNSTREAM_9_FOR_HYPER = {'_mods': _mods, 'dataset': 'Camargo_levelground', 'output_columns': ['fy'], 'da_use_ratios': [1],
-                          'imu_segments': ['CHEST', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise',
+                          'imu_segments': ['TRUNK', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise',
                                            'R_FOOT', 'rand_noise'], 'data_lost_robustness': 0.}
 
 SSL_MOVI = {'ssl_file_names': ['MoVi'], 'imu_segments': STANDARD_IMU_SEQUENCE}
@@ -612,8 +618,8 @@ config = {'NumGradDeSsl': 1e4, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 1, 'log_with
           'BatchSizeSsl': 64, 'BatchSizeLinear': 64, 'LrSsl': 1e-4, 'LrDa': 1e-4, 'FeedForwardDim': 512,
           'nlayers': 6, 'nhead': 8, 'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 
-test_name = 'AMASS'
-test_info = ''
+test_name = 'MOVI'
+test_info = 'final_run'
 
 # config['result_dir'] = os.path.join(RESULTS_PATH, '2023_08_17_23_17_48_hyper_da')      # local
 # config['result_dir'] = os.path.join('../../results/2023_07_14_13_47_19_new_amass_copy')      # cluster
@@ -647,23 +653,11 @@ if __name__ == '__main__':
                 logging.info(config['FileNameAppendix'])
                 logging.info(config)
 
-                FrameworkSSL(config, SSL_AMASS).run_ssl()
+                FrameworkSSL(config, SSL_MOVI).run_ssl()
                 da_frameworks = [FrameworkDownstream(config, da_task) for da_task in
                                  [DOWNSTREAM_0, DOWNSTREAM_1, DOWNSTREAM_2]]
                                  # [DOWNSTREAM_6, DOWNSTREAM_7, DOWNSTREAM_8]]
                 run_da(da_frameworks, fold_num=5)
 
                 plt.show()
-
-
-"""
-[Insights]
-1. Transformer complexity matters. Longer patch length corresponds to larger models. Improvements might be from larger complexity.
-
-[TODO]
-1. [done] Improvement on each window
-2. [done] Robustness against randomly missing datapoints. SSL has no advantage over rand init. 
-5. Compare against 1000+ rand init
-
-"""
 

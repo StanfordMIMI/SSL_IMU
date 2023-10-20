@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import umap
 
 
-imu_segments = ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'WAIST', 'CHEST']
+imu_segments = ['R_FOOT', 'R_SHANK', 'R_THIGH', 'L_SHANK', 'L_THIGH', 'L_FOOT', 'PELVIS', 'TRUNK']
 
 
 def load_ssl_data():

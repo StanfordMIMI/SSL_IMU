@@ -16,9 +16,6 @@ import matplotlib.lines as lines
 
 
 def draw_box(result_df, i_da, i_test):
-    # with_ssl_ = result_df[result_df['UseSsl'] == True][metric].values
-    # no_ssl_ = result_df[result_df['UseSsl'] == False][metric].values
-
     data_ = result_df[metric].values
     x_loc = i_da * 5 + i_test
     bar = plt.bar(x_loc, np.mean(data_), width=0.7, color=colors[i_test], edgecolor='none', linewidth=LINE_WIDTH)
@@ -43,12 +40,9 @@ def draw_error_bars(values_for_anova):
         plt.text((i_ + 13) / 2 - 0.15, top_line - 0.01, '*', fontdict={'fontname': 'Times New Roman'}, color='black', size=20)
 
 
-
 def finalize_fig(bars):
     def format_ticks():
-        # ax.set_ylabel(r'$\Delta R^2$', fontdict=FONT_DICT)
         ax.set_ylabel('Correlation Coefficients - vGRF Peak', fontdict=FONT_DICT)
-        # ax.set_ylabel('Correlation Coefficients - vGRF profile', fontdict=FONT_DICT)
         x_range = (-1, 14)
         ax.set_xlim(x_range[0], x_range[1])
         ax.tick_params(bottom=False)
@@ -80,7 +74,7 @@ if __name__ == "__main__":
 
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
     da_sign_of_peak = [1, -1, 1]
-    test_folders = ['2023_08_25_12_05_00_data_ratio_MOVI', '2023_08_25_12_05_33_data_ratio_amass', '2023_08_25_09_11_52_data_ratio_combined', 'baseline']
+    test_folders = ['2023_09_20_20_21_07_MOVI', '2023_09_20_20_19_44_AMASS', '2023_09_20_16_03_42_COMBINED', 'baseline']
 
     rc('font', family='Arial')
     bars = []
@@ -90,7 +84,7 @@ if __name__ == "__main__":
         values_for_anova = []
         for i_test, test_folder in enumerate(test_folders):
             if test_folder == 'baseline':
-                test_folder = test_folders[i_test - 1]
+                test_folder = test_folders[-2]
                 use_ssl = False
             else:
                 use_ssl = True
@@ -103,18 +97,18 @@ if __name__ == "__main__":
                             f'UseSsl_{use_ssl}' in key_ and
                             'ratio_1' in key_}
             print(da_name, sum([data_.shape[0] for sub_, data_ in list(results_task.values())[0].items()]))
-            result_df = results_to_pd_summary_only_peaks(results_task, 0, sign_of_peak)
+            # result_df = results_to_pd_summary_only_peaks(results_task, 0, sign_of_peak)
+            result_df = results_to_pd_summary(results_task, 0)
             bars.append(draw_box(result_df, i_da, i_test))
             values_for_anova.append(result_df[metric].values)
 
             # record rmse of models pretrained on AMASS
-            if i_test == 1:
-                rmse_value.append(result_df['rmse'].values * 9.81)
+            rmse_value.append(result_df['rmse'].values * 9.81)
         if i_da == 1:
             draw_error_bars(values_for_anova)
         values_for_anova_np = np.array(values_for_anova)
         print(f'{da_name}: {f_oneway(*values_for_anova)}')
-        print(f'{tukey_hsd(*values_for_anova)}')
+        # print(f'{tukey_hsd(*values_for_anova)}')
 
     l1 = lines.Line2D([0.405, 0.405], [0.01, 0.96], linestyle='-', transform=fig.transFigure, color=[0.75]*3)
     l2 = lines.Line2D([0.695, 0.695], [0.01, 0.96], linestyle='-', transform=fig.transFigure, color=[0.75]*3)
