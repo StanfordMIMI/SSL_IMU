@@ -1,3 +1,4 @@
+from ssl_main.const import LINE_WIDTH, FONT_DICT, LINE_WIDTH_THICK
 from ssl_main.const import GRF_ML_AP_V
 import os, sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -5,7 +6,9 @@ sys.path.append(os.path.dirname(SCRIPT_DIR))
 import tempfile
 os.environ['MPLCONFIGDIR'] = tempfile.mkdtemp()
 import numpy as np
-from figures.PaperFigures import load_da_data, results_to_pd_summary
+import matplotlib.pyplot as plt
+from matplotlib import rc, colormaps
+from figures.PaperFigures import save_fig, load_da_data, results_to_pd_summary, format_errorbar_cap
 from ssl_main.config import RESULTS_PATH
 from scipy.stats import ttest_rel
 import prettytable as pt
@@ -37,6 +40,8 @@ if __name__ == "__main__":
     model_name_print = ['Baseline', 'Proposed SSL - real IMU', 'Proposed SSL - synthetic IMU', 'Proposed SSL - synthetic and real IMU']
 
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
+    test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking', 'Task 3 - Drop Landing')
+
     tab_str = ''
 
     for i_model, model_folder in enumerate(model_all):
@@ -65,12 +70,12 @@ if __name__ == "__main__":
             result_df = result_df[result_df['UseSsl'] == use_ssl]
 
             for i_axis, axis in enumerate(GRF_ML_AP_V[da_name[:-7]]):
-                results_list = result_df[f'{axis}_{metric}'] * 500      # !!! 500 N
+                results_list = result_df[f'{axis}_{metric}']
                 # tab_str += '{} ({}) & '.format(np.round(np.mean(results_list), 2), np.round(np.std(results_list), 2))
                 tab_str += '{:.2f} & '.format(np.round(np.mean(results_list), 2))
 
             tab_str = tab_str + '& '
-        tab_str = tab_str[:-3] + '\\\\' + '\n'
+        tab_str = tab_str[:-4] + '\\\\' + '\n'
     print(tab_str)
 
 
