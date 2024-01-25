@@ -51,7 +51,7 @@ def preprocess_modality(data_columns, data_scalar, data_, channel_names, norm_me
         col_loc = [data_columns.index(col) for col in cols]
         group_data = data_[:, col_loc, :]
         group_data = normalize_data(data_scalar, group_data, group_name, norm_method, 'by_all_columns')
-        processed_data[group_name] = group_data
+        processed_data[group_name] = group_data.astype(np.float32)
     return processed_data
 
 
@@ -94,9 +94,9 @@ def get_scores(y_true, y_pred, y_fields, lens):
 
 
 def prepare_dl(data_list, batch_size, shuffle, drop_last=False):
-    data_list_torch = [torch.from_numpy(data).float() for data in data_list]
+    data_list_torch = [torch.from_numpy(data) for data in data_list]
     ds = TensorDataset(*data_list_torch)
-    dl = DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, num_workers=5)
     return dl
 
 
@@ -119,7 +119,7 @@ def get_non_zero_max(data_):
 
 
 def result_folder():
-    folder_name = str(datetime.datetime.now())[:-7]
+    folder_name = str(datetime.datetime.now())[:-9]
     for item in ['.', ':', '-', ' ']:
         folder_name = folder_name.replace(item, '_')
     return folder_name
@@ -205,15 +205,6 @@ def get_data_by_merging_data_struct(data_struct_list):
         x_emg.append(x_emg_trial)
         y.append(y_trial)
     return {'IMU': np.concatenate(x_imu, axis=0), 'EMG': np.concatenate(x_emg, axis=0), 'y': np.concatenate(y, axis=0)}
-
-
-def save_multi_image(filename):
-    pp = PdfPages(filename)
-    fig_nums = plt.get_fignums()
-    figs = [plt.figure(n) for n in fig_nums]
-    for fig in figs:
-        fig.savefig(pp, format='pdf')
-    pp.close()
 
 
 class DataStruct:

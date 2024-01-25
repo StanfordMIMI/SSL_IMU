@@ -1,5 +1,6 @@
 from ssl_main.const import LINE_WIDTH, FONT_DICT, LINE_WIDTH_THICK
-from figures.PaperFigures import format_axis, results_to_pd_summary_only_peaks
+from figures.PaperFigures import format_axis
+from ssl_main.const import mlgrf_names, apgrf_names, vgrf_names
 import os, sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
@@ -48,9 +49,9 @@ def draw_line_1(line_config, amount_list):
         ax.set_xticklabels(x_ticks_label, fontdict=FONT_DICT)
         ax.get_xaxis().set_tick_params(which='minor', size=0)
         ax.get_xaxis().set_tick_params(which='minor', width=0)
-        ax.set_ylim(0.892, 0.98)
-        ax.set_yticks([0.9, 0.92, 0.94, 0.96, 0.98])
-        ax.set_yticklabels([0.9, 0.92, 0.94, 0.96, 0.98], fontdict=FONT_DICT)
+        ax.set_ylim(0.878, 0.981)
+        ax.set_yticks([0.88, 0.9, 0.92, 0.94, 0.96, 0.98])
+        ax.set_yticklabels([0.88, 0.9, 0.92, 0.94, 0.96, 0.98], fontdict=FONT_DICT)
         plt.title(test_names_print[i_da], fontdict=FONT_DICT, pad=15)
     rc('font', family='Arial')
     mean_, std_ = [], []
@@ -79,13 +80,13 @@ def draw_line_0_2(line_config, amount_list):
         ax.set_xticklabels(x_ticks_label, fontdict=FONT_DICT)
 
         if i_da == 0:
-            ax.set_ylim(0.908, 0.95)
-            ax.set_yticks([0.91, 0.92, 0.93, 0.94, 0.95])
-            ax.set_yticklabels([0.91, 0.92, 0.93, 0.94, 0.95], fontdict=FONT_DICT)
+            ax.set_ylim(0.899, 0.941)
+            ax.set_yticks([0.9, 0.91, 0.92, 0.93, 0.94])
+            ax.set_yticklabels([0.9, 0.91, 0.92, 0.93, 0.94], fontdict=FONT_DICT)
         elif i_da == 2:
-            ax.set_ylim(0.915, 0.94)
-            ax.set_yticks([0.915, 0.92, 0.925, 0.93, 0.935, 0.94])
-            ax.set_yticklabels([0.915, 0.92, 0.925, 0.93, 0.935, 0.94], fontdict=FONT_DICT)
+            ax.set_ylim(0.897, 0.931)
+            ax.set_yticks([0.9, 0.91, 0.92, 0.93])
+            ax.set_yticklabels([0.9, 0.91, 0.92, 0.93], fontdict=FONT_DICT)
 
         plt.title(test_names_print[i_da], fontdict=FONT_DICT, pad=15)
 
@@ -110,11 +111,7 @@ def finalize_fig():
                ncol=4, fontsize=FONT_DICT['fontsize'], frameon=False, handlelength=4)
 
 
-folder_movi = ['2023_09_20_20_21_07_MOVI']
-folder_amass = ['2023_09_20_20_19_44_AMASS']
-folder_combined = ['2023_09_20_16_03_42_COMBINED']
-folder_baseline = ['baseline']
-folder_all = [folder_movi, folder_amass, folder_combined, folder_baseline]
+folder_all = ['2023_12_12_23_02_movi_da_ratio', '2023_12_12_23_02_amass_da_ratio', '2023_12_12_23_02_combined_da_ratio', 'baseline']
 
 
 if __name__ == "__main__":
@@ -131,38 +128,38 @@ if __name__ == "__main__":
     bars = []
     fig = init_fig()
 
-    for i_da, (da_name, sign) in enumerate(zip(da_names, [1, -1, 1])):
+    # For p values of apGRF and mlGRF, use apgrf_names and mlgrf_names
+    for i_da, (da_name, sign, vgrf_name) in enumerate(zip(da_names, [1, -1, 1], vgrf_names)):
         plt.subplot(1, 3, i_da + 1)
         arrow_start = []
         combos_for_statistic_test = []
-        for i_test, test_folders in enumerate(test_folders):
-            if test_folders[0] == 'baseline':
-                test_folders = folder_all[-2]
+        for i_test, test_folder in enumerate(folder_all):
+            if test_folder == 'baseline':
+                test_folder = folder_all[-2]
                 use_ssl = False
             else:
                 use_ssl = True
-            data_conditons = []
-            for test_folder in test_folders:
-                data_path = RESULTS_PATH + test_folder + '/'
-                results_task = load_da_data(data_path + da_name + '.h5')
-                results_task = {key_: value_ for key_, value_ in results_task.items()
-                                if f'PatchLen_{patch_len}' in key_ and
-                                f'MaskPatchNum_{mask_patch_num}' in key_ and
-                                'LinearProb_False' in key_}
-                full_size_task = [value_ for key_, value_ in results_task.items() if 'ratio_1' in key_][0]
-                win_number_total = np.sum([data_.shape[0] for _, data_ in full_size_task.items()])
 
-                result_df = results_to_pd_summary(results_task, 0)
+            data_path = RESULTS_PATH + test_folder + '/'
+            results_task, results_columns = load_da_data(data_path + da_name + '.h5')
+            results_task = {key_: value_ for key_, value_ in results_task.items()
+                            if f'PatchLen_{patch_len}' in key_ and
+                            f'MaskPatchNum_{mask_patch_num}' in key_ and
+                            'LinearProb_False' in key_}
+            full_size_task = [value_ for key_, value_ in results_task.items() if 'ratio_1' in key_][0]
+            win_number_total = np.sum([data_.shape[0] for _, data_ in full_size_task.items()])
 
-                param_set = list(set(result_df[target_param]))
-                param_set.sort()
+            result_df = results_to_pd_summary(results_task, results_columns)
 
-                data_cond = result_df[result_df['UseSsl'] == use_ssl][[target_param, metric]]
-                data_conditons.append(data_cond.values)
-            line_config = {'color': colors[i_test], 'style': '.-', 'label': 'Self-Supervised Models Models', 'data': np.row_stack(data_conditons)}
+            param_set = list(set(result_df[target_param]))
+            param_set.sort()
+
+            data_cond = result_df[result_df['UseSsl'] == use_ssl][[target_param, vgrf_name + '_' + metric]]
+
+            line_config = {'color': colors[i_test], 'style': '.-', 'label': 'Self-Supervised Models Models', 'data': data_cond.values}
             if i_da == 0:
                 win_number_list, mean_, result_with_full_data = draw_line_0_2(line_config, param_set)
-                arrow_start_x_index, text_x, efficiency_num, coeffi = 0, 80, 10, 1
+                arrow_start_x_index, text_x, efficiency_num, coeffi = 1, 92, 10, 1
             elif i_da == 1:
                 win_number_list, mean_, result_with_full_data = draw_line_1(line_config, param_set)
                 arrow_start_x_index, text_x, efficiency_num, coeffi = 0, 290, 100, 2

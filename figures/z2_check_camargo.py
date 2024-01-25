@@ -48,7 +48,7 @@ if __name__ == "__main__":
 
     da_name = 'Camargo_levelground_output'
 
-    results_task = load_da_data('D:/Local/results/2023_07_12_17_44_04_ssl_hyper/' + da_name + '.h5')
+    results_task, results_columns = load_da_data('D:/Local/results/2023_07_12_17_44_04_ssl_hyper/' + da_name + '.h5')
     results_task = {key_: value_ for key_, value_ in results_task.items()
                     if f'PatchLen_{patch_len}' in key_ and
                     f'MaskPatchNum_{mask_patch_num}' in key_ and

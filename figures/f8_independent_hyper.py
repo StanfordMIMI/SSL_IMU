@@ -55,7 +55,7 @@ if __name__ == "__main__":
     data_path = RESULTS_PATH + 't03_test_camargo'
     target_param = 'NumGradDeSsl'
     metric = 'r2'
-    results_task = load_da_data(data_path + test_name + '.h5')
+    results_task, results_columns = load_da_data(data_path + test_name + '.h5')
     result_df = results_to_pd_summary(results_task, 1)
 
     param_set = np.sort(list(set(result_df[target_param])))

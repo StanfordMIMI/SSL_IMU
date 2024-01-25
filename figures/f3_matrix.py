@@ -8,7 +8,7 @@ os.environ['MPLCONFIGDIR'] = tempfile.mkdtemp()
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import rc, colormaps
-from figures.PaperFigures import save_fig, load_da_data, results_to_pd_summary, format_axis
+from figures.PaperFigures import save_fig, load_da_data, results_to_pd_summary, format_axis, vgrf_names
 from ssl_main.config import RESULTS_PATH
 
 
@@ -60,7 +60,6 @@ def plot_map(i_da, data_all, x_ticks, y_ticks):
 def plot_curve(i_da, data_all, x_ticks, curve_labels):
     ax = plt.gca()
     data_combined = data_all[0].T
-    # xx = data_all[1, :, :1]
     data_combined = np.flip(data_combined, axis=1)
     curve_labels = reversed(curve_labels)
     for i_col in range(data_combined.shape[1]):
@@ -75,17 +74,17 @@ def plot_curve(i_da, data_all, x_ticks, curve_labels):
     ax.set_ylabel('Correlation Coefficients - vGRF Profile', fontdict=FONT_DICT)
 
     if i_da == 0:
-        ax.set_yticks([0.93, .935, 0.94, .945, 0.95])
-        ax.set_yticklabels([0.93, .935, 0.94, .945, 0.95], fontdict=FONT_DICT)
-        ax.set_ylim(0.928, 0.95)
+        ax.set_yticks([0.91, .915, 0.92, .925, 0.93, .935])
+        ax.set_yticklabels([0.91, .915, 0.92, .925, 0.93, .935], fontdict=FONT_DICT)
+        # ax.set_ylim(0.928, 0.94)
     elif i_da == 1:
-        ax.set_yticks([0.955, 0.96, 0.965, 0.97, 0.975])
-        ax.set_yticklabels([0.955, 0.96, 0.965, 0.97, 0.975], fontdict=FONT_DICT)
-        ax.set_ylim(0.955, 0.976)
+        ax.set_yticks([0.945, 0.95, 0.955, 0.96, 0.965, 0.97])
+        ax.set_yticklabels([0.945, 0.95, 0.955, 0.96, 0.965, 0.97], fontdict=FONT_DICT)
+        # ax.set_ylim(0.955, 0.972)
     elif i_da == 2:
-        ax.set_yticks([0.89, 0.9, 0.91, 0.92, 0.93, 0.94])
-        ax.set_yticklabels([0.89, 0.9, 0.91, 0.92, 0.93, 0.94], fontdict=FONT_DICT)
-        ax.set_ylim(0.89, 0.94)
+        ax.set_yticks([0.88, 0.89, 0.9, 0.91, 0.92, 0.93])
+        ax.set_yticklabels([0.88, 0.89, 0.9, 0.91, 0.92, 0.93], fontdict=FONT_DICT)
+        # ax.set_ylim(0.89, 0.94)
 
     plt.title(test_names_print[i_da], fontdict=FONT_DICT, pad=15)
     plt.tight_layout(rect=[0., 0., 1., 0.87], h_pad=2)
@@ -110,18 +109,18 @@ plot_type = 'curve'
 if __name__ == "__main__":
     test_names = ['/Camargo_levelground', '/walking_knee_moment', '/sun_drop_jump']
     test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking',
-                        'Task 3 - Drop Jump')
-    test_folder = '2023_08_24_16_57_19_mask_ratio'
+                        'Task 3 - Drop Landing')
+    test_folder = '2023_12_13_23_05_movi_PatchLen'
     data_path = RESULTS_PATH + test_folder
     if plot_type == 'curve':
         fig = plt.figure(figsize=(12, 4.5))
     else:
         fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(8, 3.5), height_ratios=[3, 1])
     metric = 'correlation'
-    for i_da, test_name in enumerate(test_names):
+    for i_da, (vgrf_name, test_name) in enumerate(zip(vgrf_names, test_names)):
         plt.subplot(1, 3, i_da + 1)
-        results_task = load_da_data(data_path + test_name + '_output' + '.h5')
-        result_df = results_to_pd_summary(results_task, 0)
+        results_task, results_columns = load_da_data(data_path + test_name + '_output' + '.h5')
+        result_df = results_to_pd_summary(results_task, results_columns)
         result_df['PercentOfMasking'] = result_df['MaskPatchNum'] / (128 / result_df['PatchLen'])
 
         patch_len_list = np.sort(list(set(result_df['PatchLen'])))
@@ -132,9 +131,9 @@ if __name__ == "__main__":
             for i_percent, percent_of_masking in enumerate(percent_of_masking_list):
                 data_cond = result_df[(result_df['PatchLen'] == patch_len) & (result_df['PercentOfMasking'] == percent_of_masking)]
                 data_cond_0 = data_cond[~data_cond['LinearProb']&data_cond['UseSsl']]
-                result_mean_map[0, i_patch, i_percent] = np.mean(data_cond_0[metric])
+                result_mean_map[0, i_patch, i_percent] = np.mean(data_cond_0[vgrf_name + '_' + metric])
                 data_cond_2 = data_cond[~data_cond['LinearProb']&~data_cond['UseSsl']]
-                result_mean_map[1, i_patch, i_percent] = np.mean(data_cond_2[metric])
+                result_mean_map[1, i_patch, i_percent] = np.mean(data_cond_2[vgrf_name + '_' + metric])
         if plot_type == 'curve':
             plot_curve(i_da, result_mean_map, percent_of_masking_list_str, patch_len_list)
         else:

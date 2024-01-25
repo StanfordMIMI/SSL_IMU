@@ -42,7 +42,7 @@ if __name__ == "__main__":
     metric = 'r2'
 
     with PdfPages(data_path + f'f9_{test_folder}.pdf') as pdf:
-        results_task = load_da_data(data_path + da_name + '.h5')
+        results_task, results_columns = load_da_data(data_path + da_name + '.h5')
         hyper_list = [param_tuple.split('_')[0] for param_tuple in list(results_task.keys())[0].split(', ')][3:]
         result_summary = results_to_pd_summary(results_task, 0)
         result_summary = result_summary[(result_summary['LinearProb'] == False) & (result_summary['UseSsl'] == True)]

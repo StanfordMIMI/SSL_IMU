@@ -2,11 +2,9 @@ import copy
 import sys
 sys.path.insert(0, '..')
 import articulate as art
-from utils import data_filter
+from utils import data_filter, resample_to_target_fre
 import numpy as np
-from tqdm import tqdm
 import glob
-from utils import resample_to_target_fre
 import matplotlib.pyplot as plt
 import os
 import torch
@@ -15,6 +13,7 @@ import h5py, json
 from config import AMASS_PATH, DATA_PATH
 import time
 import random
+from argparse import ArgumentParser
 
 
 """ 
@@ -123,14 +122,9 @@ def plot_3d_scatter(vert):
     ax = fig.add_subplot(projection='3d', computed_zorder=False)
     data_ = vert[0].numpy()
     data_ = data_ - np.mean(data_, axis=0)
-    # for i_, data__ in enumerate(data_[::10]):
-    #     ax.text(data__[0], data__[1], data__[2], str(i_*10), 'x', fontsize=8)
     ax.scatter(data_[:, 0], data_[:, 1], data_[:, 2], edgecolors='none', c='gray', s=5, zorder=10)
     for segment, config in IMU_CONFIGS.items():
         ax.scatter(data_[config['vi_sel'], 0], data_[config['vi_sel'], 1], data_[config['vi_sel'], 2], c='r', s=25, zorder=20)
-    # ax.set_xlabel('X')
-    # ax.set_ylabel('Y')
-    # ax.set_zlabel('Z')
     ax.view_init(elev=0., azim=90)
 
     ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
@@ -179,28 +173,55 @@ def process_one_trial(npz_fname, body_model_path, imu_names, columns, i_trial, t
     p = art.math.axis_angle_to_rotation_matrix(data_pose).view(-1, 24, 3, 3)
     grot, joint, traj = body_model.forward_kinematics(p, data_shape, data_trans, calc_mesh=True)
 
+    pelvis_loc = joint[:, 0, :]
+    pelvis_vel = np.diff(pelvis_loc, axis=0, prepend=0) * target_frame_rate
+    pelvis_vel[0] = 0
+    pelvis_acc = np.diff(pelvis_vel, axis=0, prepend=0) * target_frame_rate
+    pelvis_acc[0] = 0
+    # clip the pelvis_acc
+    pelvis_acc = np.clip(pelvis_acc, -160, 160)
+
     # plot_3d_scatter(traj)
     # exit()
 
-    trial_data = []
-    for imu_name in imu_names:
-        imu_config = IMU_CONFIGS[imu_name]
-        synthetic = SyntheticAccGyr(imu_name, R_wb=grot[:, imu_config['ji_sel']], traj=traj[:, imu_config['vi_sel']], R_sb=imu_config['R_sw'])
-        acc_, gyr_ = synthetic.get_acc_gyr()
-        trial_data.append(acc_)
-        trial_data.append(gyr_)
-    trial_data_continuous = np.concatenate(trial_data, axis=1).T.astype(np.float32)
+    # generate synthetic data with 5 orientations
+    for i_orientation in range(5):      # [no variation]
+    # for i_orientation in range(1):      # [no variation]
 
-    temp_save_file = npy_data_path + f'{dset_name}/{i_trial}.npy'
-    temp_dir = os.path.dirname(temp_save_file)
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-    with open(temp_save_file, 'wb') as f:
-        np.save(f, trial_data_continuous)
+        trial_num_string = str(i_trial).zfill(trial_num.__str__().__len__())
+        temp_save_file = npy_data_path + f'{dset_name}/trial_{trial_num_string}orientation_{i_orientation}.npy'
+        temp_dir = os.path.dirname(temp_save_file)
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
+
+        trial_data = []
+        for imu_name in imu_names:
+            angle_1, angle_2, angle_3 = np.random.rand(3) * np.deg2rad(10)
+            R_sb_variation = np.matmul(
+                np.matmul(
+                    np.array([[1, 0, 0], [0, np.cos(angle_1), -np.sin(angle_1)], [0, np.sin(angle_1), np.cos(angle_1)]]),
+                    np.array([[np.cos(angle_2), 0, np.sin(angle_2)], [0, 1, 0], [-np.sin(angle_2), 0, np.cos(angle_2)]])
+                ),
+                np.array([[np.cos(angle_3), -np.sin(angle_3), 0], [np.sin(angle_3), np.cos(angle_3), 0], [0, 0, 1]])
+            )
+            imu_config = IMU_CONFIGS[imu_name]
+            R_sb = np.matmul(R_sb_variation, imu_config['R_sw'])
+            # R_sb = imu_config['R_sw']       # [no variation]
+            synthetic = SyntheticAccGyr(imu_name, R_wb=grot[:, imu_config['ji_sel']], traj=traj[:, imu_config['vi_sel']], R_sb=R_sb)
+            acc_, gyr_ = synthetic.get_acc_gyr()
+            trial_data.append(acc_)
+            trial_data.append(gyr_)
+        trial_data.append(pelvis_loc)
+        trial_data.append(pelvis_vel)
+        trial_data.append(pelvis_acc)
+        trial_data_continuous = np.concatenate(trial_data, axis=1).T.astype(np.float32)
+
+        with open(temp_save_file, 'wb') as f:
+            np.save(f, trial_data_continuous)
 
 
 def load_npy_and_to_h5():
-    with h5py.File(DATA_PATH + 'amass_with_extreme_values.h5', 'w') as hf:
+    with h5py.File(DATA_PATH + 'amass.h5', 'w') as hf:
         hf.attrs['columns'] = json.dumps(columns)
         num_of_removed_static, num_of_removed_extreme, num_of_windows_all = 0, 0, 0
         for dset_name in next(os.walk(npy_data_path))[1]:
@@ -237,7 +258,7 @@ def load_npy_and_to_h5():
         print(f'{num_of_removed_static} / {num_of_removed_extreme} / {num_of_windows_all},'
               f' {num_of_removed_static / num_of_windows_all * 100:.1f}% static, '
               f' {num_of_removed_extreme / num_of_windows_all * 100:.1f}% extreme'
-              f' {num_of_windows_all - num_of_removed_extreme - num_of_removed_static}% kept')
+              f' {(num_of_windows_all - num_of_removed_extreme - num_of_removed_static) / num_of_windows_all}% kept')
 
 
 def npy_to_h5_small_size():
@@ -270,8 +291,6 @@ def check_extreme_values():
         bad_win_num = 0
         badbad_win_num = 0
         for i_win in range(total_win):
-            if np.max(np.abs(data_[i_win, acc_col_loc])) > 320 or np.max(np.abs(data_[i_win, gyr_col_loc])) > 70:
-                badbad_win_num += 1
             if np.max(np.abs(data_[i_win, acc_col_loc])) > 160 or np.max(np.abs(data_[i_win, gyr_col_loc])) > 35:
                 bad_win_num += 1
             plt.subplot(2, 2, 1)
@@ -280,6 +299,7 @@ def check_extreme_values():
             plt.plot(data_[i_win, gyr_col_loc].T)
             plt.title(dset_name)
             plt.show()
+
         print(dset_name, ': {} / {} / {}'.format(badbad_win_num, bad_win_num, total_win))
         total_num += total_win
         total_bad_num += bad_win_num
@@ -288,7 +308,7 @@ def check_extreme_values():
 
 def check_num_of_npy_vs_num_of_npz():
     print('Checking')
-    for dset_name in amass_dset_names:
+    for dset_name in dsets:
         trials = glob.glob(os.path.join(AMASS_PATH, dset_name, '*/*.npz'))
         num_of_trials = len(trials)
         num_of_npy = len(glob.glob(os.path.join(npy_data_path, dset_name, '*.npy')))
@@ -297,7 +317,7 @@ def check_num_of_npy_vs_num_of_npz():
 
 def process_amass_single_thread():
     body_model_path = AMASS_PATH + 'ModelFiles/smpl/models/basicmodel_m_lbs_10_207_0_v1.0.0.pkl'
-    for dset_name in amass_dset_names:
+    for dset_name in dsets:
         t0 = time.time()
         trials = glob.glob(os.path.join(AMASS_PATH, dset_name, '*/*.npz'))
         print('Processing ', dset_name, '\t Num of trials ', len(trials))
@@ -312,38 +332,31 @@ def process_amass_single_thread():
 
 
 imu_names = tuple([imu_name for imu_name, imu_config in IMU_CONFIGS.items()])
-columns = tuple([segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
-amass_dset_names = [
-    'ACCAD', 'BMLhandball',
-    'BioMotionLab_NTroje',
-    'BMLmovi',
-    'CNRS',
-    'DFaust_67',
-    'EKUT', 'Eyes_Japan_Dataset', 'GRAB', 'HUMAN4D', 'HumanEva',
-    'MPI_HDM05',
-    'MPI_Limits',
-    'MPI_mosh',
-    'SFU',
-    'SOMA', 'SSM_synced', 'TotalCapture', 'Transitions_mocap',
-    'WEIZMANN',
-    'CMU',      # 40 GB memory
-    'DanceDB',      # 40 GB memory
-    'KIT',      # 40 GB memory
-]
+columns = tuple([segment + sensor + axis for segment in imu_names for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']] +
+                [f'Pelvis_global_{mod}_{axis}' for mod in ['loc', 'vel', 'acc'] for axis in ['X', 'Y', 'Z']])
 
 target_frame_rate = 100
 win_len, win_stride = 128, 64
 amass_cut_off_fre = 15
 imu_cut_off_fre = None
-npy_data_path = f'{DATA_PATH}../AMASS_data_cutoff_{amass_cut_off_fre}/'
+npy_data_path = f'{AMASS_PATH}../AMASS_data_cutoff_{amass_cut_off_fre}/'
+# npy_data_path = f'{AMASS_PATH}../AMASS_data_cutoff_no_variation_{amass_cut_off_fre}/'       # [no variation]
+
 
 if __name__ == '__main__':
-    # process_amass_single_thread()
-    load_npy_and_to_h5()
+    parser = ArgumentParser()
+    parser.add_argument('--dsets', nargs='+', default=[])
+    parser.add_argument('--to_h5', type=bool, default=False)
+    dsets = parser.parse_args().dsets
+
+    print(dsets)
+    print(parser.parse_args().to_h5)
+
+    if not parser.parse_args().to_h5:
+        process_amass_single_thread()
+    else:
+        load_npy_and_to_h5()
 
     # check_num_of_npy_vs_num_of_npz()
     # check_extreme_values()
-
-
-
 

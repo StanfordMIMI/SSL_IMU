@@ -46,14 +46,15 @@ def scatter_plot_of_peak(results_task):
     assert np.max(np.abs(data_0[:, 0] - data_1[:, 0])) < 1e-10
     data_0, data_1 = data_0 * 9.81, data_1 * 9.81
 
+    np.random.seed(0)
     if i_da == 1:
         index = np.random.choice(data_0.shape[0], config['num_to_plot'], replace=False)
         data_0, data_1 = data_0[index], data_1[index]
 
     data_0, data_1 = data_0 * da_sign_of_peak[i_da], data_1 * da_sign_of_peak[i_da]
-    max_true = np.max(data_0[:, 0], axis=-1)
-    max_pred_bl = np.max(data_0[:, 1], axis=-1)
-    max_pred_ssl = np.max(data_1[:, 1], axis=-1)
+    max_true = np.max(data_0[:, 2], axis=-1)
+    max_pred_bl = np.max(data_0[:, 5], axis=-1)
+    max_pred_ssl = np.max(data_1[:, 5], axis=-1)
     ax = plt.gca()
     min_val, max_val = format_axis(ax)
     for i_scatter, (max_pred, label_) in enumerate(zip([max_pred_bl, max_pred_ssl], ['Baseline', 'SSL'])):
@@ -62,11 +63,7 @@ def scatter_plot_of_peak(results_task):
         poly1d_fn = np.poly1d(coef)
         plt.plot(np.array([min_val, max_val]), poly1d_fn([min_val, max_val]), color=colors[i_scatter], linewidth=LINE_WIDTH, alpha=0.8)
         ax.scatter(max_true, max_pred, s=config['dot_size'], c=colors[i_scatter], alpha=0.55, edgecolors='none',
-                   label=fr'{label_} ($\rho$={round(correlation_, 2)}, ' + r'$y$={:4.2f}$x$+{:4.2f})'.format(coef[0], coef[1]))
-
-    # max_val = np.max(np.concatenate([max_true, max_pred_bl, max_pred_ssl]))
-    # min_val = np.min(np.concatenate([max_true, max_pred_bl, max_pred_ssl]))
-    # ax.set_ylim(min_val, max_val + 0.3 * (max_val - min_val))
+                   label=fr'{label_} ($\rho$=' + r'{:4.2f}, $y$={:4.2f}$x$+{:4.2f})'.format(correlation_, coef[0], coef[1]))
 
     ax.set_xlabel(r'vGRF Peak: Ground Truth ($N/kg$)', fontdict=FONT_DICT)
     ax.set_ylabel(r'vGRF Peak: Model Prediction ($N/kg$)', fontdict=FONT_DICT)
@@ -93,7 +90,7 @@ def format_axis(ax=None, line_width=LINE_WIDTH):
     elif i_da == 1:
         min_val, max_val = 9, 19
         ticks_label = [round(x, 1) for x in np.arange(min_val, max_val + 1, 2)]
-        ax.set_ylim(min_val, max_val+0.9)
+        ax.set_ylim(min_val, max_val+1.3)
     else:
         min_val, max_val = 7, 35
         ticks_label = [round(x, 1) for x in np.arange(min_val, max_val + 1, 7)]
@@ -109,6 +106,7 @@ def format_axis(ax=None, line_width=LINE_WIDTH):
 
 def finalize_fig():
     plt.tight_layout(rect=[0., 0., 1., 1.], w_pad=3)
+    pass
 
 
 colors = [np.array(x) / 255 for x in [[110, 110, 110], [3, 136, 170]]]
@@ -121,7 +119,7 @@ plot_configs = [
 
 if __name__ == "__main__":
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]     # walking_knee_moment
-    test_folder = '2023_09_20_20_19_44_AMASS'
+    test_folder = '2023_12_12_23_02_amass_da_ratio'
     test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking', 'Task 3 - Drop Landing')
     data_path = RESULTS_PATH + test_folder + '/'
 
@@ -129,7 +127,7 @@ if __name__ == "__main__":
         plt.figure(figsize=(12, 4.5))
         for i_da, da_name in enumerate(da_names):
             plt.subplot(1, 3, i_da + 1)
-            results_task = load_da_data(data_path + da_name + '.h5')
+            results_task, results_columns = load_da_data(data_path + da_name + '.h5')
             results_task_ = {key_: value_ for key_, value_ in results_task.items()
                              if 'PatchLen_1' in key_ and 'MaskPatchNum_16' in key_ and 'LinearProb_False' in key_ and
                              'ratio_1' in key_}

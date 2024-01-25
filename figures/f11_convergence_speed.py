@@ -52,7 +52,7 @@ colors = [np.array([125, 172, 80]) / 255, np.array([130, 130, 130]) / 255]
 
 if __name__ == "__main__":
     metric = 'correlation'
-    results_task = load_da_data(data_path + test_name + '.h5')
+    results_task, results_columns = load_da_data(data_path + test_name + '.h5')
 
     result_df = results_dict_to_pd_convergence_speed(results_task)
 

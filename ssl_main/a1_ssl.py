@@ -10,19 +10,20 @@ from customized_logger import logger as logging, add_file_handler
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 import wandb
-from model import RegressNet, transformer, SslReconstructNet, mse_loss_masked, \
+from model import RegressNet, transformer, SslReconstructNet, mse_loss_masked, BaselinePretrainNet, \
     show_reconstructed_signal
 import time
 from types import SimpleNamespace
 from utils import prepare_dl, set_dtype_and_model, fix_seed, normalize_data, result_folder, define_channel_names, \
     preprocess_modality, get_scores, print_table, get_step_len
-from const import DICT_TRIAL_TYPE_ID, RESULTS_PATH, CAMARGO_SUB_HEIGHT_WEIGHT, \
+from const import DICT_TRIAL_TYPE_ID, RESULTS_PATH, CAMARGO_SUB_HEIGHT_WEIGHT, GRF_ML_AP_V, \
     GRAVITY, DSET_SUBS_FOR_SSL_TEST, DSET_SUBS_FOR_SSL_TRAINING, \
     SUB_ID_ALL_DATASETS, _mods, STANDARD_IMU_SEQUENCE
 from config import DATA_PATH
 import json
 import pytorch_warmup as warmup
 import itertools
+from argparse import ArgumentParser
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
@@ -64,6 +65,13 @@ class FrameworkDownstream:
         elif 'opencap' in test_name:
             self.load_and_process_opencap(train_sub_ids, validate_sub_ids, test_sub_ids)
 
+    def add_rand_noise_columns(self, set_data, data_columns):
+        rand_noise = np.random.normal(size=(set_data.shape[0], 6, set_data.shape[2]))
+        set_data = np.concatenate([set_data, rand_noise], axis=1)
+        if 'rand_noise_Accel_X' not in data_columns:
+            data_columns.extend(['rand_noise' + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
+        return set_data, data_columns
+
     def load_and_process_camargo(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         """
         train_sub_ids: a list of subject id for model training
@@ -85,10 +93,7 @@ class FrameworkDownstream:
                 current_set_data = np.concatenate(current_set_data_list, axis=0)
                 """ [step, feature, time] """
                 # use rand noise to replace reduced IMUs
-                rand_noise = np.random.normal(size=(current_set_data.shape[0], 6, current_set_data.shape[2]))
-                current_set_data = np.concatenate([current_set_data, rand_noise], axis=1)
-                self.set_data[data_name] = current_set_data
-            self.data_columns.extend(['rand_noise' + sensor + axis for sensor in ['_Accel_', '_Gyro_'] for axis in ['X', 'Y', 'Z']])
+                self.set_data[data_name], self.data_columns = self.add_rand_noise_columns(current_set_data, self.data_columns)
 
     def load_and_process_kam(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
         self.set_data = {}
@@ -107,6 +112,7 @@ class FrameworkDownstream:
                 current_set_data = np.concatenate(current_set_data_list, axis=0).transpose([0, 2, 1])
                 """ [step, feature, time] """
                 self.set_data[data_name] = current_set_data
+                self.set_data[data_name], self.data_columns = self.add_rand_noise_columns(current_set_data, self.data_columns)
                 # self.check_dataset_imu_orientation(self.set_data[data_name], self.data_columns, self.da_task['imu_segments'])
 
     def load_and_process_sun(self, train_sub_ids: List[str], validate_sub_ids: List[str],
@@ -129,17 +135,8 @@ class FrameworkDownstream:
                 """ padding to 128 samples"""
                 current_set_data = np.concatenate([current_set_data, np.zeros([*current_set_data.shape[:2], 128-80])], axis=2)
                 self.set_data[data_name] = current_set_data
+                self.set_data[data_name], self.data_columns = self.add_rand_noise_columns(current_set_data, self.data_columns)
                 # self.check_dataset_imu_orientation(self.set_data[data_name], self.data_columns, self.da_task['imu_segments'])
-
-    def load_and_process_opencap(self, train_sub_ids: List[str], validate_sub_ids: List[str], test_sub_ids: List[str]):
-        self.set_data = {}
-        with h5py.File(DATA_PATH + self.da_task['dataset'] + '.h5', 'r') as hf:
-            self.data_columns = json.loads(hf.attrs['columns'])
-            for set_sub_ids, data_name in zip([train_sub_ids, validate_sub_ids, test_sub_ids], ['train', 'vali', 'test']):
-                current_set_data_list = [hf[sub_] for sub_ in set_sub_ids]
-                current_set_data = np.concatenate(current_set_data_list, axis=0)
-                """ [step, feature, time] """
-                self.set_data[data_name] = current_set_data
 
     @staticmethod
     def check_dataset_imu_orientation(data_, columns_, imu_list):
@@ -176,17 +173,12 @@ class FrameworkDownstream:
             logging.info('Downstream {}. Number of steps: {}'.format(data_name, current_set_data.shape[0]))
             data_ds = preprocess_modality(self.data_columns, self._data_scalar, current_set_data, define_channel_names(self.da_task), norm_method)
             output_data = current_set_data[:, [self.data_columns.index(x) for x in self.output_columns]]
-            data_ds['output'] = normalize_data(self._data_scalar, output_data, 'output', norm_method, 'by_each_column')
+            data_ds['output'] = normalize_data(self._data_scalar, output_data, 'output', norm_method, 'by_each_column').astype(np.float32)
             data_ds['sub_id'] = current_set_data[:, self.data_columns.index('sub_id'), 0]
             if 'trial_type_id' in self.data_columns:
                 data_ds['trial_type_id'] = current_set_data[:, self.data_columns.index('trial_type_id'), 0]
             else:
                 data_ds['trial_type_id'] = np.zeros([current_set_data.shape[0]])
-            if self.da_task['data_lost_robustness'] and data_name == 'test':
-                mask = np.random.choice([True, False], size=data_ds['acc'].shape, p=[self.da_task['data_lost_robustness'], 1-self.da_task['data_lost_robustness']])
-                mask[:, 2::3, :] = mask[:, 1::3, :] = mask[:, 0::3, :]
-                data_ds['acc'][mask] = 0
-                data_ds['gyr'][mask] = 0
             self.da_task[data_name] = data_ds
 
     def inverse_normalize_output(self, y_true, y_pred):
@@ -221,7 +213,8 @@ class FrameworkDownstream:
     def save_results(self, test_name, y_true, y_pred, sub_ids):
         sub_id_set = list(set(sub_ids))
         results = np.concatenate([y_true, y_pred], axis=1)
-        columns = ['y_true', 'y_pred']
+        columns = [name_1 + name_0 for name_0 in ['_true', '_pred'] for name_1 in self.da_task['output_columns']]
+
         if self.da_task['data_lost_robustness'] == 0:
             save_file_name = os.path.join(self.config.result_dir, self.da_task['dataset'] + '_output' + '.h5')
         else:
@@ -231,7 +224,7 @@ class FrameworkDownstream:
             for i_sub in sub_id_set:
                 results_sub = results[sub_ids == i_sub]
                 grp.require_dataset('sub_' + str(int(i_sub)), shape=results_sub.shape, data=results_sub, dtype='float32')
-                grp.attrs['columns'] = json.dumps(columns)
+            hf.attrs['columns'] = json.dumps(columns)
 
     def set_regress_net_to_post_linear_init_head_first(self, use_ssl):
         model_name = 'LinearProb_True, UseSsl_' + str(use_ssl) + ', ratio_' + str(self.config.da_use_ratio) + self.config.FileNameAppendix
@@ -245,18 +238,17 @@ class FrameworkDownstream:
     def set_regress_net_to_post_ssl_state(self):
         self.regress_net.load_state_dict(self.regress_net_post_ssl_state)
 
-    def regressibility(self, linear_protocol, use_ssl, show_fig=False, verbose=True):
+    def regressibility(self, linear_protocol, use_ssl, show_fig=False, verbose=False):
         def convert_batch_data(batch_data):
-            xb = [data_.float().type(dtype) for data_ in batch_data[:-2]]
-            yb = batch_data[-2].float().type(dtype)
-            lens = batch_data[-1].float()
-            return xb, yb, lens
+            xb = [data_.type(dtype) for data_ in batch_data[:-2]]
+            yb = batch_data[-2].type(dtype)
+            return xb, yb, None
 
         def train_batch(model, train_dl, optimizer, loss_fn, i_optimize):
             model.train()
             for i_batch, batch_data in enumerate(train_dl):
                 optimizer.zero_grad()
-                xb, yb, lens = convert_batch_data(batch_data)
+                xb, yb, _ = convert_batch_data(batch_data)
                 y_pred, _ = model(xb, False, yb)
                 loss = loss_fn(yb, y_pred)
                 if self.config.log_with_wandb:
@@ -264,13 +256,6 @@ class FrameworkDownstream:
                 loss.backward()
                 optimizer.step()
                 i_optimize += 1
-
-                # if not linear_protocol and i_batch == 0:
-                #     plt.figure()
-                #     plt.plot(y_pred.detach().cpu().numpy()[:, 0, :].ravel())
-                #     plt.plot(yb.detach().cpu().numpy()[:, 0, :].ravel())
-                #     plt.show()
-
                 with warmup_scheduler.dampening():
                     scheduler.step()
             return i_optimize
@@ -299,13 +284,6 @@ class FrameworkDownstream:
                 y_true = torch.cat(y_true_list).numpy()
                 y_pred = torch.cat(y_pred_list).numpy()
             return y_true, y_pred
-
-        def record_intermediate_results(i_optimize):
-            y_true, y_pred = evaluate_after_training(test_dl)
-            y_true, y_pred = self.inverse_normalize_output(y_true, y_pred)
-            intermediate_result_name = 'LinearProb_' + str(linear_protocol) + ', UseSsl_' + str(use_ssl) + \
-                                       ', ratio_' + str(self.config.da_use_ratio) + ', i_optimize_' + str(i_optimize)
-            self.save_results(intermediate_result_name, y_true, y_pred, test_data['sub_id'])
 
         test_name = 'LinearProb_' + str(linear_protocol) + ', UseSsl_' + str(use_ssl) + \
                     ', ratio_' + str(self.config.da_use_ratio) + self.config.FileNameAppendix
@@ -432,12 +410,6 @@ class FrameworkSSL:
         logging.info('SSL test with dataset {} subject ids: {}. Number of steps: {}'.format(ssl_file_name, test_sub_ids, list(test_data_ssl.values())[0].shape[0]))
         return train_data_ssl, vali_data_ssl, test_data_ssl
 
-    @staticmethod
-    def show_params(params):
-        plt.figure()
-        for i, param in enumerate(params):
-            plt.plot(param.cpu().detach().numpy(), [i for _ in param], '.', markersize=1)
-
     def ssl_training(self, config):
         def train_batch(model, train_dl, optimizer):
             model.train()
@@ -469,7 +441,7 @@ class FrameworkSSL:
         train_data, vali_data = self.train_data_ssl, self.vali_data_ssl
         train_step_lens = get_step_len(train_data[_mods[0]])
         vali_step_lens = get_step_len(vali_data[_mods[0]])
-        model = SslReconstructNet(self.emb_net, config['ssl_loss_fn'])
+        model = BaselinePretrainNet(self.emb_net, config['ssl_loss_fn'])
         if self.config.log_with_wandb:
             wandb.watch(model, config['ssl_loss_fn'], log='all', log_freq=20)
 
@@ -486,19 +458,14 @@ class FrameworkSSL:
 
         _, mod_output_all = eval_during_training(model, vali_dl, np.nan)
         for i_epoch in range(epoch):
-            train_loss, _ = eval_during_training(model, train_dl)
-            test_loss, _ = eval_during_training(model, vali_dl)
 
             if epoch < 5 or i_epoch % int(epoch / 5) == 0 or i_epoch == epoch - 1:
+                train_loss, _ = eval_during_training(model, train_dl)
+                test_loss, _ = eval_during_training(model, vali_dl)
                 logging.info(f'| SSL | epoch{i_epoch:3d}/{epoch:3d} | time: {time.time() - epoch_end_time:5.2f}s | '
                              f'train loss {train_loss:5.4f} | test loss {test_loss:5.4f}')
-            epoch_end_time = time.time()
-            train_batch(model, train_dl, optimizer)
-            if self.config.log_with_wandb:
-                wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
-
-                # if i_epoch in list(range(0, epoch, int(epoch/6))) + [epoch-1]:
-                if i_epoch in [0, epoch-1]:
+                if self.config.log_with_wandb:
+                    wandb.log({'ssl train loss': train_loss, 'ssl test loss': test_loss})
                     model.eval()
                     with torch.no_grad():
                         x = list(enumerate(vali_dl))[0]
@@ -506,6 +473,8 @@ class FrameworkSSL:
                         loss, mod_outputs, mask_indices = model(xb_mods, None)
                         show_reconstructed_signal(torch.concat(xb_mods, dim=1), mod_outputs,
                                                   'epoch ' + str(i_epoch) + self.config.FileNameAppendix, mask_indices)
+            epoch_end_time = time.time()
+            train_batch(model, train_dl, optimizer)
         self.save_emb_net_post_ssl(model)
         return {'model': model}
 
@@ -516,17 +485,18 @@ class FrameworkSSL:
 
     def run_ssl(self):
         sets_of_data_all_dsets = []
+        logging.info('Start SSL data preprocessing')
         for ssl_file_name in self.ssl_task['ssl_file_names']:
             sets_of_data_all_dsets.append(self.preprocess(ssl_file_name))
-        self.train_data_ssl = {mod: np.concatenate([sets_of_data[0][mod] for sets_of_data in sets_of_data_all_dsets], axis=0) for mod in ['acc', 'gyr']}
-        self.vali_data_ssl = {mod: np.concatenate([sets_of_data[1][mod] for sets_of_data in sets_of_data_all_dsets], axis=0) for mod in ['acc', 'gyr']}
-        self.test_data_ssl = {mod: np.concatenate([sets_of_data[2][mod] for sets_of_data in sets_of_data_all_dsets], axis=0) for mod in ['acc', 'gyr']}
+        self.train_data_ssl = {mod: np.concatenate([sets_of_data[0][mod] for sets_of_data in sets_of_data_all_dsets], axis=0).astype(np.float32) for mod in ['acc', 'gyr']}
+        self.vali_data_ssl = {mod: np.concatenate([sets_of_data[1][mod] for sets_of_data in sets_of_data_all_dsets], axis=0).astype(np.float32) for mod in ['acc', 'gyr']}
+        self.test_data_ssl = {mod: np.concatenate([sets_of_data[2][mod] for sets_of_data in sets_of_data_all_dsets], axis=0).astype(np.float32) for mod in ['acc', 'gyr']}
         self.ssl_training(config)
 
 
 def parse_config(config):
     parser = argparse.ArgumentParser(description='TODO', argument_default=argparse.SUPPRESS)
-    parser.add_argument('--NumGradDeSsl', type=int)
+    parser.add_argument('--ssl_dset', type=str, default='amass')
     config.update(vars(parser.parse_args()))
     return config
 
@@ -591,15 +561,16 @@ def tune_da_hyper():
         plt.show()
 
 
-DOWNSTREAM_0 = {'_mods': _mods, 'dataset': 'walking_knee_moment', 'output_columns': ['plate_2_force_z'],
+DOWNSTREAM_0 = {'_mods': _mods, 'dataset': 'walking_knee_moment', 'output_columns': GRF_ML_AP_V['walking_knee_moment'],
                 'da_use_ratios': [1], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
-DOWNSTREAM_1 = {'_mods': _mods, 'dataset': 'Camargo_levelground', 'output_columns': ['fy'],
+DOWNSTREAM_1 = {'_mods': _mods, 'dataset': 'Camargo_levelground', 'output_columns': GRF_ML_AP_V['Camargo_levelground'],
                  'da_use_ratios': [1], 'imu_segments': ['TRUNK', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise', 'R_FOOT', 'rand_noise'], 'data_lost_robustness': 0.}
-DOWNSTREAM_2 = {'_mods': _mods, 'dataset': 'sun_drop_jump', 'output_columns': ['R_GRF_Z'],
+DOWNSTREAM_2 = {'_mods': _mods, 'dataset': 'sun_drop_jump', 'output_columns': GRF_ML_AP_V['sun_drop_jump'],
                 'da_use_ratios': [1], 'imu_segments': STANDARD_IMU_SEQUENCE, 'data_lost_robustness': 0.}
 
 DOWNSTREAM_6, DOWNSTREAM_7, DOWNSTREAM_8 = copy.deepcopy(DOWNSTREAM_0), copy.deepcopy(DOWNSTREAM_1), copy.deepcopy(DOWNSTREAM_2)
 log_array = [round(10**x, 3) for x in np.linspace(-2, 0, 11)]
+log_array.reverse()
 DOWNSTREAM_6.update({'da_use_ratios': log_array})
 linear_array = np.arange(0.1, 1.01, 0.1).tolist()
 DOWNSTREAM_7.update({'da_use_ratios': linear_array})
@@ -609,22 +580,33 @@ DOWNSTREAM_9_FOR_HYPER = {'_mods': _mods, 'dataset': 'Camargo_levelground', 'out
                           'imu_segments': ['TRUNK', 'rand_noise', 'R_THIGH', 'rand_noise', 'R_SHANK', 'rand_noise',
                                            'R_FOOT', 'rand_noise'], 'data_lost_robustness': 0.}
 
+DOWNSTREAM_10, DOWNSTREAM_11, DOWNSTREAM_12 = copy.deepcopy(DOWNSTREAM_0), copy.deepcopy(DOWNSTREAM_1), copy.deepcopy(DOWNSTREAM_2)
+DOWNSTREAM_10['imu_segments'] = DOWNSTREAM_11['imu_segments'] = DOWNSTREAM_12['imu_segments'] =\
+    ['rand_noise', 'rand_noise', 'rand_noise', 'rand_noise', 'rand_noise', 'rand_noise', 'R_FOOT', 'rand_noise']
+
 SSL_MOVI = {'ssl_file_names': ['MoVi'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 SSL_AMASS = {'ssl_file_names': ['amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 SSL_COMBINED = {'ssl_file_names': ['MoVi', 'amass'], 'imu_segments': STANDARD_IMU_SEQUENCE}
 
-config = {'NumGradDeSsl': 1e4, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 1, 'log_with_wandb': True,
-# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 1e1, 'ssl_use_ratio': 0.01, 'log_with_wandb': False,
+# todo another pre-training class
+SSL_MOTION_TRANSFER = {'ssl_file_names': ['hw_running'], 'imu_segments': ['TRUNK', 'PELVIS', 'L_THIGH', 'L_THIGH', 'L_SHANK', 'L_SHANK', 'L_FOOT', 'L_FOOT']}
+SSL_TASK_TRANSFER = {'ssl_file_names': ['hw_running'], 'imu_segments': ['TRUNK', 'PELVIS', 'L_THIGH', 'L_THIGH', 'L_SHANK', 'L_SHANK', 'L_FOOT', 'L_FOOT']}
+# todo another pre-training class
+
+SSL_CONFIGS = {'movi': SSL_MOVI, 'amass': SSL_AMASS, 'combined': SSL_COMBINED, 'motion_transfer': SSL_MOTION_TRANSFER}
+
+config = {'NumGradDeSsl': 5e4, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 1, 'log_with_wandb': False,
+# config = {'NumGradDeSsl': 1e1, 'NumGradDeDa': 3e2, 'ssl_use_ratio': 0.03, 'log_with_wandb': False,
           'BatchSizeSsl': 64, 'BatchSizeLinear': 64, 'LrSsl': 1e-4, 'LrDa': 1e-4, 'FeedForwardDim': 512,
           'nlayers': 6, 'nhead': 8, 'device': 'cuda', 'ssl_loss_fn': mse_loss_masked, 'emb_net': transformer}
 
-test_name = 'MOVI'
-test_info = 'final_run'
+test_name = 'PatchLen'
+test_info = ''
 
 # config['result_dir'] = os.path.join(RESULTS_PATH, '2023_08_17_23_17_48_hyper_da')      # local
 # config['result_dir'] = os.path.join('../../results/2023_07_14_13_47_19_new_amass_copy')      # cluster
-config['result_dir'] = os.path.join(RESULTS_PATH, result_folder() + "_" + test_name)
 config = parse_config(config)
+config['result_dir'] = os.path.join(RESULTS_PATH, result_folder() + config['ssl_dset'] + "_" + test_name)
 
 if config['log_with_wandb']:
     wandb.init(project="IMU_SSL", config=config, name=test_name)
@@ -653,10 +635,11 @@ if __name__ == '__main__':
                 logging.info(config['FileNameAppendix'])
                 logging.info(config)
 
-                FrameworkSSL(config, SSL_MOVI).run_ssl()
+                FrameworkSSL(config, SSL_CONFIGS[config['ssl_dset']]).run_ssl()
                 da_frameworks = [FrameworkDownstream(config, da_task) for da_task in
                                  [DOWNSTREAM_0, DOWNSTREAM_1, DOWNSTREAM_2]]
-                                 # [DOWNSTREAM_6, DOWNSTREAM_7, DOWNSTREAM_8]]
+                                 # [DOWNSTREAM_6, DOWNSTREAM_7, DOWNSTREAM_8]]      # for da ratio
+                                 # [DOWNSTREAM_10, DOWNSTREAM_11, DOWNSTREAM_12]]       # for foot-only model
                 run_da(da_frameworks, fold_num=5)
 
                 plt.show()

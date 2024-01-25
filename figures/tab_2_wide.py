@@ -33,17 +33,18 @@ if __name__ == "__main__":
     patch_len = 1
     mask_patch_num = 16
 
-    model_all = ['baseline', '2023_12_15_18_01_motion_transfer_PretrainingBaseline', '2023_12_12_23_02_amass_da_ratio']
-    model_name_print = ['Baseline', 'Motion Transfer', 'Proposed SSL\\tnote{a}']
+    model_all = ['baseline', '2023_12_17_22_18_motion_transfer_PretrainingBaseline',
+                 '2023_12_17_22_18_task_transfer_PretrainingBaseline', '2023_12_12_23_02_amass_da_ratio']
+    model_name_print = ['Supervised Learning Baseline', 'Motion Transfer Pre-training',
+                        'Task Transfer Pre-training', 'Proposed SSL Pre-training\\tnote{b}']
 
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
-    da_names_print = ('Overground\\\\ Walking', 'Treadmill\\\\ Walking', 'Drop\\\\ Landing')
+    da_names_print = ('Overground Walking', 'Treadmill Walking', 'Drop Landing')
     tab_str = ''
 
     for i_da, da_name in enumerate(da_names[:]):
-        tab_str += '\multirow{2}{*}{\\begin{tabular}[c]{@{}l@{}}' + da_names_print[i_da] + '\end{tabular}}'
+        results_means, results_stds = [], []
         for i_model, model_folder in enumerate(model_all):
-            tab_str = tab_str + ' & ' + model_name_print[i_model] + ' & '
             if model_folder == 'baseline':
                 model_folder_str = model_all[-1]
                 use_ssl = False
@@ -67,7 +68,20 @@ if __name__ == "__main__":
 
             for i_axis, axis in enumerate(GRF_ML_AP_V[da_name[:-7]]):
                 results_list = result_df[f'{axis}_{metric}']
-                tab_str += '${} \pm {}$ & '.format(np.round(np.mean(results_list), 2), np.round(np.std(results_list), 2))
+
+                results_means.append(np.round(np.mean(results_list), 2))
+                results_stds.append(np.round(np.std(results_list), 2))
+
+        tab_str += '\multirow{2}{*}{\\begin{tabular}[c]{@{}l@{}}' + da_names_print[i_da] + '\end{tabular}}'
+        for i_model, model_folder in enumerate(model_all):
+            tab_str = tab_str + ' & ' + model_name_print[i_model] + ' & '
+            for i_axis, axis in enumerate(GRF_ML_AP_V[da_name[:-7]]):
+                results_mean_current_axis = results_means[i_model*3+i_axis]
+                results_mean_current_axis_four_models = results_means[i_axis::3]
+                if results_mean_current_axis == np.max(results_mean_current_axis_four_models):
+                    tab_str += '\\textbf{' + '{:.2f}'.format(results_mean_current_axis) + '} $\pm$ \\textbf{' + '{:.2f}'.format(results_stds[i_model*3+i_axis]) + '} & '
+                else:
+                    tab_str += '{:.2f} $\pm$ {:.2f} & '.format(results_mean_current_axis, results_stds[i_model*3+i_axis])
 
             tab_str = tab_str[:-3] + ' \\\\ ' + '\n'
         tab_str = tab_str + '\\midrule\n'

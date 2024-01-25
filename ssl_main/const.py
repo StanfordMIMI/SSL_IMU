@@ -16,8 +16,8 @@ TRIAL_TYPES = ['LevelGround', 'Treadmill', 'Stair', 'Ramp']
 IMU_CAMARGO_SEGMENT_LIST = ['TRUNK', 'R_THIGH', 'R_SHANK', 'R_FOOT']
 
 DICT_TRIAL_TYPE_ID = {type: i for i, type in enumerate(TRIAL_TYPES)}
-DICT_LABEL = {'treadmill_walking': -1, 'walk': 0, 'idle': 1, 'stand-walk': 2, 'turn': 3, 'rampascent': 4, 'rampdescent': 5,
-              'walk-ramp': 6, 'stairascent': 7, 'stairdescent': 8, 'walk-stair': 9}
+DICT_LABEL = {'treadmill_walking': -1, 'walk': 0, 'idle': 1, 'stand-walk': 2, 'turn': 3, 'rampascent': 4,
+              'rampdescent': 5, 'walk-ramp': 6, 'stairascent': 7, 'stairdescent': 8, 'walk-stair': 9}
 DICT_AXIS_DIRECTION = {'x': 'medio-lateral', 'y': 'vertical', 'z': 'anterior-posterior'}
 
 GRAVITY = 9.81
@@ -114,14 +114,28 @@ DICT_SUBJECT_ID = {subject: i for i, subject in enumerate(SUB_ID_ALL_DATASETS['C
 DSET_SUBS_FOR_SSL_TEST = {
     'Combined': ['dset' + str(i) for i in range(13, 14)],
     'amass': ['ACCAD'],
+    'amass_no_variation': ['ACCAD'],
     'MoVi': ['sub_88'],
+    'hw_running': ['subject_0'],
 }
 
 DSET_SUBS_FOR_SSL_TRAINING = {
     'Combined': ['all'],
     'amass': ['all'],
+    'amass_no_variation': ['all'],
     'MoVi': ['all'],
+    'hw_running': ['all'],
 }
+
+
+GRF_ML_AP_V = {
+    'Camargo_levelground': ['fz', 'fx', 'fy'],
+    'walking_knee_moment': ['plate_2_force_x', 'plate_2_force_y', 'plate_2_force_z'],
+    'sun_drop_jump': ['R_GRF_X', 'R_GRF_Y', 'R_GRF_Z']
+}
+mlgrf_names = [val[0] for val in GRF_ML_AP_V.values()]
+apgrf_names = [val[1] for val in GRF_ML_AP_V.values()]
+vgrf_names = [val[2] for val in GRF_ML_AP_V.values()]
 
 
 

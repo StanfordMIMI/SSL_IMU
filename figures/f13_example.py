@@ -56,22 +56,22 @@ test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking',
 
 if __name__ == "__main__":
     da_names = [element + '_output' for element in ['Camargo_levelground', 'walking_knee_moment', 'sun_drop_jump']]
-    test_folder = '2023_08_25_12_05_33_data_ratio_amass'
+    test_folder = '2023_09_20_20_19_44_AMASS'
     test_names_print = ('Task 1 - Overground Walking', 'Task 2 - Treadmill Walking', 'Task 3 - Drop Landing')
     data_path = RESULTS_PATH + test_folder + '/'
     plt.figure(figsize=(12, 4))
 
     for i_da, da_name in enumerate(da_names):
         plt.subplot(1, 3, i_da + 1)
-        results_task = load_da_data(data_path + da_name + '.h5')
+        results_task, results_columns = load_da_data(data_path + da_name + '.h5')
         results_task_ = {key_: value_ for key_, value_ in results_task.items()
                          if 'PatchLen_1' in key_ and 'MaskPatchNum_16' in key_ and 'LinearProb_False' in key_ and
                          'ratio_1' in key_}
         plot_example(results_task_)
 
     finalize_fig()
-    save_fig('f13_example')
     plt.show()
+    save_fig('f13_example')
 
 
 

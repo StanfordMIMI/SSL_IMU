@@ -1,7 +1,5 @@
-import copy
 import random
 import wandb
-from const import _mods
 from torch import nn, Tensor
 import torch
 from torch.nn import TransformerEncoderLayer, TransformerEncoder
@@ -10,7 +8,6 @@ import math
 import numpy as np
 from utils import fix_seed
 import matplotlib.pyplot as plt
-import time
 
 fix_seed()
 
@@ -53,6 +50,24 @@ class SslReconstructNet(nn.Module):
         return loss, mod_outputs, mask_indices
 
 
+class BaselinePretrainNet(nn.Module):
+    def __init__(self, emb_net, loss_fn):
+        super(BaselinePretrainNet, self).__init__()
+        self.emb_net = emb_net
+        self.linear = nn.Linear(emb_net.embedding_dim, emb_net.x_dim * emb_net.patch_len)
+        self.loss_fn = loss_fn
+
+    def forward(self, mods, lens, tgt=None):
+        mod_all = torch.concat(mods, dim=1)
+        if tgt is not None:
+            tgt = torch.concat(tgt, dim=1)
+        mod_outputs, mask_indices, mod_all_expanded = self.emb_net(mod_all, lens, tgt)
+        mask_indices = mask_indices.view([*mod_outputs.shape[:2], -1, mod_all.shape[1]]).flatten(1, 2).transpose(1, 2)
+        mod_outputs = self.linear(mod_outputs).view([*mod_outputs.shape[:2], -1, mod_all.shape[1]]).flatten(1, 2).transpose(1, 2)
+        loss = self.loss_fn(mod_outputs, mod_all, mask_indices)
+        return loss, mod_outputs, mask_indices
+
+
 def show_reconstructed_signal(mod_all, mod_outputs, fig_title, mask_indices=None, fig_group='Img', channel_names=['Acc channel 1', 'Gyr channel 1']):
     for i_color, (i_channel, label_) in enumerate(zip([0, -1], channel_names)):       # one acc and one gyr channel
         fig = plt.figure()
@@ -80,8 +95,6 @@ class RegressNet(nn.Module):
     def forward(self, x, test_flag, tgt=None):
         batch_size, _, seq_len = x[0].shape
         mod_all = torch.concat(x, dim=1)
-        # if tgt is not None:       # This is for an encoder-decoder TF
-        #     tgt = tgt.repeat(1, mod_all.shape[1] // tgt.shape[1], 1)
         mod_outputs, _, _ = self.emb_net(mod_all, test_flag, tgt)
         output = self.linear(mod_outputs).view([*mod_outputs.shape[:2], -1, self.output_dim]).flatten(1, 2).transpose(1, 2)
         return output, mod_outputs
